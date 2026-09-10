@@ -724,6 +724,34 @@ class Handler(BaseHTTPRequestHandler):
                 mine = [b for b in BOOKINGS if b.get("booked_by") == me]
             return self._json(200, {"bookings": mine, "principal": me,
                 "note": "principal-scoped: you see only your own bookings"})
+        if u.path.startswith("/bookings/"):
+            # H10: single-booking status poll. Participant (buyer) or listing-owner
+            # only. Unknown-or-not-yours is an indistinguishable 404 (no existence
+            # oracle). Projection is pseudonymous; private details stay secret-gated
+            # via GET /book/{id} + booking secret.
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
+            cred = self.headers.get("X-Hub-Token", "")
+            payload, err = None, "missing X-Hub-Token"
+            if cred:
+                for act in ("book", "list"):
+                    payload, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
+                    if payload: break
+            if payload:
+                payload, err = _gen_check(payload)  # B1
+            if not payload:
+                return self._json(401, {"error": err or "invalid token",
+                    "hint": "send your login/agent token as X-Hub-Token"})
+            me = payload["sub"]
+            bid = u.path[len("/bookings/"):]
+            with LOCK:
+                b = next((x for x in BOOKINGS if x["id"] == bid), None)
+                allowed = bool(b) and (b.get("booked_by") == me or
+                    any(l.get("owner") == me and l["id"] == b.get("listing_id") for l in LISTINGS))
+            if not allowed:
+                return self._json(404, {"error": f"no booking {bid} visible to you (unknown, or you are not the buyer/owner)"})
+            return self._json(200, {**b, "view": "buyer" if b["booked_by"] == me else "owner",
+                "note": "pseudonymous projection; private details remain secret-gated (GET /book/{id})"})
         if u.path == "/orders":
             """Merchant-scoped incoming orders (E1/E2 gap fix): bookings made
             against listings this principal owns. Privacy projection applies:

@@ -28,8 +28,11 @@ _LIST_CAP = 3
 _list_counts: dict[str, int] = {}
 
 
-def _hub_get(hub_url: str, path: str) -> dict:
-    with urllib.request.urlopen(hub_url.rstrip("/") + path, timeout=10) as r:
+def _hub_get(hub_url: str, path: str, token: str | None = None) -> dict:
+    req = urllib.request.Request(hub_url.rstrip("/") + path)
+    if token:
+        req.add_header("X-Hub-Token", token)
+    with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read().decode())
 
 
@@ -90,6 +93,42 @@ def _show_listing(hub_url: str, arg: str) -> str:
     if l.get("capacity"):
         extra = f"\nBooked: {l.get('registered', 0)}/{l['capacity']}"
     return _fmt_listing(l) + extra
+
+
+def _booking_status(hub_url: str, sender: str, arg: str) -> str:
+    """H10: poll one booking's status. Logged-in: session token. Anonymous:
+    re-mint /access for this chat's own agent address (deterministic principal
+    — the same identity that made the booking). No existence oracle: unknown
+    or not-yours are the same answer."""
+    bid = (arg or "").strip()
+    if not bid or " " in bid or "/" in bid:
+        return "Usage: booking <booking id> — e.g. 'booking bk-abc123'"
+    s = _session(sender)
+    token = (s or {}).get("tokens", {}).get("book") or (s or {}).get("tokens", {}).get("list")
+    note = ""
+    if not token:
+        # anonymous chat: this chat's agent address IS its principal — re-mint
+        try:
+            acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["book"]})
+            token = acc[1].get("tokens", {}).get("book")
+            note = "(acting as this chat's agent identity) "
+        except Exception:
+            return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    try:
+        b = _hub_get(hub_url, f"/bookings/{bid}", token=token)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return (f"No booking '{bid}' is visible to you — it either doesn't exist "
+                    "or you are not its buyer/owner.")
+        return f"Could not fetch booking (HTTP {e.code})."
+    except Exception:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    qty = b.get("quantity", 1)
+    qty_s = f" x{qty}" if qty > 1 else ""
+    return (f"📋 Booking {b['id']}{note}\n"
+            f"Listing: {b.get('listing_id')} | Status: {b.get('escrow', '?')} | "
+            f"Amount: {b.get('amount', '?')} USD (fee {b.get('hub_fee', 0)}, payout {b.get('owner_payout', 0)}){qty_s}\n"
+            f"Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.")
 
 
 def _fmt_listing(l: dict) -> str:
@@ -653,6 +692,7 @@ _HELP = (
     "• delete <id> [code] — remove your listing\n"
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
     "• show <id> — full listing details (description, url, availability)\n"
+    "• booking <id> — check your booking's escrow status (buyer or owner)\n"
     "• book <id> — how booking works (free listings skip payment)\n"
     "• fee — how our fee model stays fair"
 )
@@ -716,6 +756,10 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         if low == kw or low.startswith(kw + " "):
             rest = text.strip()[len(kw):].strip()
             return _smart_search(hub_url, (kw + " " + rest) if rest else kw)
+
+    # H10: booking status poll — BEFORE the booking-intent (startswith('book') would swallow it)
+    if low.startswith("booking "):
+        return _booking_status(hub_url, sender, text.strip()[8:].strip())
 
     # --- booking intent (honest guidance: identity + payment are real gates)
     if low.startswith("book"):

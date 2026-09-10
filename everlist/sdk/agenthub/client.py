@@ -80,10 +80,18 @@ class AgentHub:
 
     def get_listing(self, listing_id: str) -> Listing:
         """H9: fetch ONE listing by id (full rich record).
-        Raises ApiError(404) unknown / ApiError(410) archived."""
+        Raises HubError(404) unknown / HubError(410) archived."""
         from urllib.parse import quote
         _, r = self._request("GET", f"/listings/{quote(listing_id)}")
         return Listing.from_api(r)
+
+    def get_booking(self, booking_id: str) -> dict:
+        """H10: poll ONE booking's status (buyer or listing-owner only).
+        Raises HubError(404) unknown-or-not-yours (no existence oracle)."""
+        from urllib.parse import quote
+        _, r = self._request("GET", f"/bookings/{quote(booking_id)}",
+                             token=self._token("book"))
+        return r
 
     def ledger(self) -> dict:
         _, r = self._request("GET", "/ledger")
