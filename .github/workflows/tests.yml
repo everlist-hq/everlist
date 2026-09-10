@@ -49,6 +49,9 @@ jobs:
       - name: Public read limits (B7: q cap, pagination, per-source backstop)
         run: venv/bin/python test_read_limits.py
 
+      - name: Backup rotation (B8: keep-5 chronological, newest == pre-persist)
+        run: venv/bin/python test_backups.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 

@@ -7,7 +7,7 @@ Fairness is enforced in the protocol:
 - escrow by default: money is held until fulfillment is confirmed
 - open participation: no auth gate on the protocol level (identity/staking is a pluggable layer)
 """
-import json, os, sys, threading, time, hmac, hashlib, secrets, base64, binascii
+import json, os, sys, shutil, threading, time, hmac, hashlib, secrets, base64, binascii
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EdPriv, Ed25519PublicKey as _EdPub
 from cryptography.hazmat.primitives import serialization as _ser
 from cryptography.exceptions import InvalidSignature as _InvalidSig
@@ -64,6 +64,10 @@ ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-Do
 READ_Q_MAX = 200                                        # search term length cap
 READ_PAGE_MAX = int(os.environ.get("HUB_READ_PAGE_MAX", "500"))  # max results per page
 READ_LIMIT = int(os.environ.get("HUB_READ_LIMIT", "600"))        # reads/min/source
+# B8: state backup rotation. Backup triggers only when the state file exceeds
+# HUB_BACKUP_MIN_BYTES (default 1MB) so small dev states stay clean.
+BACKUP_MIN_BYTES = int(os.environ.get("HUB_BACKUP_MIN_BYTES", "1000000"))
+BACKUP_KEEP = int(os.environ.get("HUB_BACKUP_KEEP", "5"))
 AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600),
                  "read": (READ_LIMIT, 60)}
@@ -202,8 +206,31 @@ LOCK = threading.Lock()
 # nonces survive restarts.
 
 
+def _backup_locked():
+    """B8: rotate state backups. Called at the START of a persist, BEFORE the
+    incoming snapshot overwrites STATE_FILE: copies the CURRENT file (the
+    pre-persist snapshot) to <state_dir>/backups/state-<ns>.json and keeps the
+    newest BACKUP_KEEP. Backup failure must NEVER break persistence."""
+    try:
+        if not os.path.exists(STATE_FILE) or os.path.getsize(STATE_FILE) < BACKUP_MIN_BYTES:
+            return
+        bdir = os.path.join(os.path.dirname(STATE_FILE), "backups")
+        os.makedirs(bdir, exist_ok=True)
+        shutil.copy2(STATE_FILE, os.path.join(bdir, f"state-{time.time_ns()}.json"))
+        baks = sorted(f for f in os.listdir(bdir)
+                      if f.startswith("state-") and f.endswith(".json"))
+        for old_b in baks[:-BACKUP_KEEP]:
+            try:
+                os.remove(os.path.join(bdir, old_b))
+            except OSError:
+                pass
+    except Exception as ex:
+        print(f"[BACKUP] warning: rotation failed ({ex})", flush=True)
+
+
 def _persist_locked():
     """Atomic snapshot write. Caller MUST hold LOCK."""
+    _backup_locked()
     snap = {"listings": LISTINGS, "bookings": BOOKINGS, "ledger": LEDGER,
             "idempotency": IDEMPOTENCY, "accounts": ACCOUNTS, "id_counters": ID_COUNTERS,
             "nonces": {n: e for n, e in getattr(hublib, "_NONCES", {}).items()},
