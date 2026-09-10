@@ -1,3 +1,4 @@
+import sys
 """Hardening regression suite (B3c-email + archive + id counters).
 Self-managed fresh hub with stdout CAPTURED (email codes are read from the log).
 Run: python test_hardening.py
@@ -56,7 +57,7 @@ def wait_ready(port, timeout=15):
 
 log_fh = open(LOGF, "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_EMAIL_MODE": "log"}
-proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log_fh, stderr=subprocess.STDOUT, env=env)
 _ACTIVE.append(proc)
 assert wait_ready(PORT), "hub did not start"
@@ -180,7 +181,7 @@ check("id not reused after delete", id1 != id2, f"{id1} vs {id2}")
 # restart stability: counter survives process restart
 _kill(proc); _ACTIVE.clear()
 log2 = open(LOGF, "a")
-proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log2, stderr=subprocess.STDOUT, env={**env})
 _ACTIVE.append(proc)
 assert wait_ready(PORT), "hub did not restart"

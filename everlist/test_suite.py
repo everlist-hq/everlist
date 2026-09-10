@@ -1,3 +1,4 @@
+import sys
 """G2 consolidated regression suite for agent-hub-v2.
 Runs the full minimum-check list from the master plan against a fresh, self-managed server.
 Run: python test_suite.py
@@ -61,7 +62,7 @@ def start(port, state_file=None, rate=None):
     env = {**os.environ, "HUB_STATE_FILE": state_file or STATE}
     if rate is not None:
         env["HUB_RATE_BOOKS_PER_MIN"] = str(rate)  # G4: functional sections use a raised limit
-    p = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(port)],
+    p = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(port)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     _ACTIVE.append(p)  # atexit guarantee: crashed runs never leak servers
     return p

@@ -61,7 +61,7 @@ def wait_ready(port, timeout=15):
 log_fh = open(LOGF, "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_EMAIL_MODE": "log",
        "HUB_POW_SIGNUP_BITS": "8", "PYTHONUNBUFFERED": "1"}
-proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log_fh, stderr=subprocess.STDOUT, env=env)
 _ACTIVE.append(proc)
 assert wait_ready(PORT), "hub did not start"
