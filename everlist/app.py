@@ -117,6 +117,17 @@ def _paginate(items, query):
     return items[off:off + lim], off, lim
 
 
+_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash"})
+
+
+def _pub_listing(l):
+    """H9: server-only fields must NEVER reach a public response.
+    manage_code_hash = sha256 of the owner's manage code; with it an attacker
+    could brute-force the ~48-bit code offline and forge ownership. Internal
+    state (LISTINGS) keeps it; every response copy passes through here."""
+    return {k: v for k, v in l.items() if k not in _SERVER_ONLY_LISTING_FIELDS}
+
+
 def _read_gate(handler):
     """B7: coarse per-source read backstop. Caller must NOT hold LOCK."""
     with LOCK:
@@ -567,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
                                                         "network": srec.get("network", "base-sepolia")}})
                         _persist_locked()  # settlement record + ledger event persisted together
                     res = [l for l in LISTINGS if l["vertical"] == "events"]
-                    rich = [{**l, "premium_meta": {"owner_public": l.get("owner", ""),
+                    rich = [{**_pub_listing(l), "premium_meta": {"owner_public": l.get("owner", ""),
                              "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
                              "payment": {"mode": "TESTNET", "verified": True,
                                           "settlement": (srec["status"] if srec else "pending (HUB_SETTLE_MODE=off)"),
@@ -604,7 +615,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 res = [l for l in LISTINGS if l["vertical"] == "events"]
                 # 'richer': only premium gets per-listing owner contact + inventory ratio
-                rich = [{**l, "premium_meta": {"owner_public": l.get("owner", ""),
+                rich = [{**_pub_listing(l), "premium_meta": {"owner_public": l.get("owner", ""),
                          "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
                          "payment": "SIMULATED x402 exact/base-sepolia USDC"}} for l in res]
             return self._json(200, {"mode": "SIMULATED",
@@ -638,17 +649,30 @@ class Handler(BaseHTTPRequestHandler):
                         "hint": "send X-Hub-Token (login token or /access list token)"})
                 me = payload["sub"]
                 with LOCK:
-                    res = [l for l in LISTINGS
+                    res = [_pub_listing(l) for l in LISTINGS
                            if l.get("archived") and l.get("owner") == me
                            and (not v or l["vertical"] == v)]
                 return self._json(200, {"count": len(res), "listings": res})
             with LOCK:
-                res = [l for l in LISTINGS
+                res = [_pub_listing(l) for l in LISTINGS
                        if not l.get("archived") and (not v or l["vertical"] == v)]
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
                                     "returned": len(res), "listings": res})
+        if u.path.startswith("/listings/"):
+            # H9: single-listing fetch, full rich record. Unknown -> 404;
+            # archived -> 410 Gone (exists, not publicly available).
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
+            lid = u.path[len("/listings/"):]
+            with LOCK:
+                l = next((x for x in LISTINGS if x["id"] == lid), None)
+            if not l:
+                return self._json(404, {"error": f"no listing {lid}"})
+            if l.get("archived"):
+                return self._json(410, {"error": f"listing {lid} archived — its owner can unarchive it"})
+            return self._json(200, _pub_listing(l))
         if u.path == "/search":
             """Faceted search: q (substring) + structured filters.
             All filters AND-combined; agents can discover vocab via /verticals."""
@@ -682,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"count": total, "offset": off, "limit": lim,
                 "returned": len(res), "filters": {
                 "q": term, "vertical": fvert, "category": fcat, "tag": ftag,
-                "location": floc, "max_price": fmax or None}, "listings": res})
+                "location": floc, "max_price": fmax or None}, "listings": [_pub_listing(x) for x in res]})
         if u.path == "/bookings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: token required, principal-scoped
             payload, err = None, "missing X-Hub-Token"
@@ -1175,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
                 lid = f"{_pref}-{_n}"  # monotonic: never reused, even after deletes
                 data["id"] = lid
                 data["owner"] = p["sub"]   # SERVER-OWNED: authenticated principal, never client-set (anti-spoof for /orders)
-                manage_code = "mgr-" + secrets.token_hex(6)   # ownership secret: shown ONCE, stored as sha256 only
+                manage_code = "mgr-" + secrets.token_hex(8)   # ownership secret (64-bit): shown ONCE, stored as sha256 only — NEVER echoed (H9 _pub_listing)
                 data["manage_code_hash"] = hashlib.sha256(manage_code.encode()).hexdigest()
                 if v == "events":
                     data["registered"] = 0   # server-initialized counter

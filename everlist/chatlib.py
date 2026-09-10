@@ -71,6 +71,27 @@ def _hub_delete(hub_url: str, path: str, payload: dict, token: str | None = None
             return e.code, {"error": f"hub rejected the request (HTTP {e.code})"}
 
 
+def _show_listing(hub_url: str, arg: str) -> str:
+    """H9: full listing detail via GET /listings/{id} (404 unknown, 410 archived)."""
+    lid = (arg or "").strip()
+    if not lid or " " in lid or "/" in lid:
+        return "Usage: show <listing id> — e.g. 'show even-3'"
+    try:
+        l = _hub_get(hub_url, f"/listings/{lid}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return f"No listing '{lid}'. Try 'search' to browse, or check the id."
+        if e.code == 410:
+            return f"Listing '{lid}' is archived — its owner hid it."
+        return f"Could not fetch listing (HTTP {e.code})."
+    except Exception:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    extra = ""
+    if l.get("capacity"):
+        extra = f"\nBooked: {l.get('registered', 0)}/{l['capacity']}"
+    return _fmt_listing(l) + extra
+
+
 def _fmt_listing(l: dict) -> str:
     price = l.get("price", "?")
     avail = "spots open" if l.get("available") else "SOLD OUT"
@@ -631,6 +652,7 @@ _HELP = (
     "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
     "• delete <id> [code] — remove your listing\n"
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
+    "• show <id> — full listing details (description, url, availability)\n"
     "• book <id> — how booking works (free listings skip payment)\n"
     "• fee — how our fee model stays fair"
 )
@@ -681,6 +703,9 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _owned_listing(hub_url, sender, text.strip()[4:].strip(), "edit")
     if low.startswith("delete "):
         return _owned_listing(hub_url, sender, text.strip()[6:].strip(), "delete")
+    # H9: full listing detail — BEFORE smart-search (it would eat 'show' as a search keyword)
+    if low.startswith("show "):
+        return _show_listing(hub_url, text.strip()[5:].strip())
     if low.startswith("unarchive "):
         return _owned_listing(hub_url, sender, text.strip()[9:].strip(), "unarchive")
     if low.startswith("archive "):
