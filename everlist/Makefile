@@ -76,6 +76,8 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		$(PYTHON) test_restore_drill.py || exit 1; \
 		echo "=== Single-instance guard (H4) ==="; \
 		$(PYTHON) test_single_instance.py || exit 1; \
+		echo "=== Write-path limiter floods (H5) ==="; \
+		$(PYTHON) test_write_limits.py || exit 1; \
 		echo "=== Chat help honesty (B10) ==="; \
 		$(PYTHON) test_chat_help.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \

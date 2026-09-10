@@ -187,6 +187,27 @@ Accounts have a `kind`: `keypair` (default for signups that send a pubkey) or `c
 - **Pagination:** `/listings` and `/search` accept `offset` (default 0, negative→0) and `limit` (default 500, clamped 1..`HUB_READ_PAGE_MAX`, default max 500). Responses add `offset`, `limit`, `returned`; `count` stays the FULL match count (backward compatible: small hubs still get everything in one page).
 - **Read backstop:** `/search` and `/listings` are limited per source (same `_source_of` fairness as auth): `HUB_READ_LIMIT` reads/min (default 600 — generous; legit agents never hit it). Over the limit → `429 too many read requests`. Chat search that hits a hub rejection surfaces the REAL reason, never 'unreachable'.
 
+### Write-path backstops (H5)
+
+Every mutating POST route carries a per-source fixed-window backstop (`_auth_allow`, same fairness as the auth kinds; counts EVERY attempt — wrong manage-codes and wrong admin keys included, so brute-force dies at the limit, not at the secret):
+
+| Kind | Route(s) | Default | Env | Window |
+| --- | --- | --- | --- | --- |
+| `signup` | `/accounts/signup` | 30/h + PoW | — | 3600s |
+| `login` | `/accounts/login` | 120 | — | 60s |
+| `rotate` | `/accounts/rotate` | 10/h | — | 3600s |
+| `email`/`verify`/`recover` | `/accounts/email/*` | 5/20/10 per h | — | 3600s |
+| `read` | `/search`, `/listings` GET | 600/min | `HUB_READ_LIMIT` | 60s |
+| `access` | `/access` | 60/min | `HUB_LIMIT_ACCESS` | 60s |
+| `create` | `POST /listings` | 60/min | `HUB_LIMIT_CREATE` | 60s |
+| `book` | `/book` | 60/min | `HUB_LIMIT_BOOK` | 60s (plus G4 per-principal 10/min) |
+| `manage` | `/listings/{id}/manage` | 60/min | `HUB_LIMIT_MANAGE` | 60s |
+| `admin` | `/accounts/vouch`, `/admin/tokens` | 30/min | `HUB_LIMIT_ADMIN` | 60s |
+
+- Defaults sit far above measured legit volume (the full test pipeline peaks ≈25 writes/min from one source) — only abusers ever feel them.
+- `/accounts/logout-all` is intentionally unlimited: each SUCCESS bumps the account `gen` and revokes the calling token, so a flood is one success plus harmless 401s.
+- Fairness is per source: a flooded source gets 429 while fresh sources keep working — never a global lockout.
+
 ## 16. State backup rotation (B8)
 
 - Before every persist, if the current `state.json` exceeds `HUB_BACKUP_MIN_BYTES` (default 1 MB), the PRE-persist snapshot is copied to `<state_dir>/backups/state-<ns>.json`; only the newest `HUB_BACKUP_KEEP` (default 5) backups are kept (chronological rotation).

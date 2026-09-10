@@ -58,6 +58,9 @@ jobs:
       - name: Single-instance guard (H4: second hub on same state exits 79, crash recovers)
         run: venv/bin/python test_single_instance.py
 
+      - name: Write-path limiter floods (H5: 429 per kind, failed attempts count, per-source fairness)
+        run: venv/bin/python test_write_limits.py
+
       - name: Chat help honesty (B10: every documented command routes to its intent)
         run: venv/bin/python test_chat_help.py
 
