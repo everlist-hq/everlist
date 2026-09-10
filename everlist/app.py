@@ -454,6 +454,78 @@ def hub_fee(price):
     """Fair fee on major units (edge adapter over integer internals)."""
     return hub_fee_c(int(round(price * 100))) / 100.0
 
+# ---- H13: machine-readable API contract (OpenAPI 3.1) -----------------------
+def _openapi_spec():
+    """H13: OpenAPI 3.1 contract, built from the VERIFIED route inventory.
+    test_h13_openapi.py proves every documented path+method is really handled
+    (never the generic 404 catch-all) — the spec cannot lie about a route."""
+    def op(summary, tag, sec=None, note=None):
+        o = {"summary": summary, "tags": [tag]}
+        if sec:
+            o["security"] = sec
+        if note:
+            o["description"] = note
+        return o
+    tok = [{"X-Hub-Token": []}]
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "EverList Hub API",
+            "version": "agent-hub/0.2",
+            "description": "Open, community-driven commerce hub for AI agents. "
+                           "Credentials travel ONLY in the X-Hub-Token header; writes carry "
+                           "an Idempotency-Key. Normative contract: SPEC.md."},
+        "tags": [{"name": t} for t in
+                 ("discovery", "listings", "bookings", "accounts", "payments", "registry", "admin")],
+        "paths": {
+            "/.well-known/agent-hub.json": {"get": op("Discovery manifest", "discovery")},
+            "/manifest.json": {"get": op("Legacy manifest alias", "discovery")},
+            "/openapi.json": {"get": op("This contract (OpenAPI 3.1)", "discovery")},
+            "/verticals": {"get": op("Vertical schema registry", "discovery")},
+            "/listings": {
+                "get": op("Public listings (query: vertical, archived)", "listings",
+                          note="?archived=1 is OWNER-ONLY (auth required)"),
+                "post": op("Create listing (returns manage_code ONCE)", "listings", sec=tok)},
+            "/listings/{id}": {"get": op("One listing, full rich record", "listings",
+                                        note="404 unknown / 410 archived")},
+            "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/delete a listing", "listings", sec=tok)},
+            "/search": {"get": op("Search listings (q, category, max_price, ...)", "listings")},
+            "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
+            "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
+                                        note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
+            "/orders": {"get": op("Incoming orders for listings you own", "bookings", sec=tok)},
+            "/book/{id}": {"get": op("Private booking details", "bookings", sec=tok,
+                                    note="credential = booking secret (shown once at creation), via X-Hub-Token header")},
+            "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0)", "bookings", sec=tok,
+                                 note="Idempotency-Key supported; verified-human gate applies")},
+            "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
+            "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
+            "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
+                                  note="acct- principals refused; accounts use /accounts/login")},
+            "/accounts/signup": {"post": op("Create account (PoW-gated; keypair or legacy code)", "accounts")},
+            "/accounts/login": {"post": op("Login (ed25519 challenge-response or legacy code)", "accounts")},
+            "/accounts/vouch": {"post": op("Operator vouches for a human (pilot-era)", "accounts")},
+            "/accounts/rotate": {"post": op("Rotate account code (old code dies instantly)", "accounts")},
+            "/accounts/logout-all": {"post": op("Revoke all tokens (generation bump)", "accounts")},
+            "/accounts/email/bind": {"post": op("Bind recovery email (code sent)", "accounts")},
+            "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
+            "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
+            "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
+            "/accounts/me": {"delete": op("Account self-deletion (GDPR-style; ledger survives pseudonymously)", "accounts", sec=tok)},
+            "/premium/events": {"get": op("Premium data (x402 payment)", "payments",
+                                         note="402 + payment instructions without a valid payment header")},
+            "/ledger": {"get": op("Public append-only money ledger (pseudonymous)", "registry")},
+            "/registry": {"get": op("Open hub registry (self-listed)", "registry")},
+            "/challenge": {"get": op("Registry ownership proof (echo nonce)", "registry")},
+            "/auth/challenge": {"get": op("Signup PoW / login challenges", "accounts",
+                                         note="?kind=signup | ?kind=login&pubkey=<64hex>")},
+            "/admin/tokens": {"post": op("Operator: mint action tokens (admin key)", "admin")},
+        },
+        "components": {"securitySchemes": {"X-Hub-Token": {
+            "type": "apiKey", "in": "header", "name": "X-Hub-Token"}}},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, data, extra_headers=None):
         body = json.dumps(data, indent=2).encode()
@@ -505,6 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
                 "protocol": "agent-hub/0.2", "open_source": "MIT",
+                "api_contract": "/openapi.json",
                 "hub": "agent-hub-v2",
                 "description": "Open, community-driven commerce hub for AI agents. Universal booking core, per-vertical schemas.",
                 "auth": {
@@ -658,6 +731,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"hub": "agent-hub-v2", "version": "0.3",
                 "type": "universal-commerce",
                 "canonical_manifest": "/.well-known/agent-hub.json"})
+        if u.path == "/openapi.json":
+            # H13: machine-readable API contract — agents read it natively
+            return self._json(200, _openapi_spec())
         if u.path == "/verticals":
             return self._json(200, {"verticals": VERTICAL_SCHEMAS})
         if u.path == "/listings":

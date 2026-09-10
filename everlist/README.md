@@ -29,6 +29,7 @@ discover → search → register & pay (escrow) → confirm/cancel → transpare
 | `wrapper.py` | uAgents wrapper (Fetch/Agentverse ecosystem) |
 | `sdk/agenthub/` | stdlib-only Python merchant/agent SDK (+ `examples/pizzeria.py`) |
 | `SPEC.md` | normative protocol spec (endpoints, auth matrix, escrow state machine) |
+| `/openapi.json` (served by the hub) | machine-readable API contract (OpenAPI 3.1) — agents read it natively; linked from the discovery manifest |
 | `payments_x402.md` | x402 payment design + mode documentation |
 
 ## Payment modes

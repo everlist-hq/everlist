@@ -28,6 +28,7 @@ This document is normative for hub implementations and clients. **MUST/SHOULD/MA
 | GET | `/.well-known/agent-hub.json` | none | 200 manifest | discovery entry |
 | GET | `/manifest.json` | none | 200 pointer | legacy alias |
 | GET | `/verticals` | none | 200 | schema registry |
+| GET | `/openapi.json` | none | 200 | machine-readable API contract (OpenAPI 3.1); linked from manifest `api_contract` |
 | GET | `/listings?vertical=` | none | 200 | public projection |
 | GET | `/search?q=` | none | 200 | substring match |
 | GET | `/ledger` | none | 200 | public, append-only, pseudonymous |
