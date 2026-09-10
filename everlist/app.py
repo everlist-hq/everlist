@@ -7,7 +7,10 @@ Fairness is enforced in the protocol:
 - escrow by default: money is held until fulfillment is confirmed
 - open participation: no auth gate on the protocol level (identity/staking is a pluggable layer)
 """
-import json, os, sys, threading, time, hmac, hashlib, secrets
+import json, os, sys, threading, time, hmac, hashlib, secrets, base64, binascii
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EdPriv, Ed25519PublicKey as _EdPub
+from cryptography.hazmat.primitives import serialization as _ser
+from cryptography.exceptions import InvalidSignature as _InvalidSig
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -55,20 +58,93 @@ ACCOUNTS = {}
 ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
 # auth endpoints: global fixed-window limits (pilot-grade anti-bruteforce/DoS;
 # per-IP is unreliable behind relays, documented honestly in SPEC)
-AUTH_LIMITS = {"signup": (10, 3600), "login": (120, 60), "rotate": (10, 3600),
-                 "email": (5, 3600), "verify": (20, 3600), "recover": (5, 3600)}  # email sends are abuse-expensive: tight limits
-AUTH_HITS = {k: [] for k in AUTH_LIMITS}
+# HARDENING-v2: PoW replaced tight caps as the primary DoS gate — limits are
+# generous per-source backstops now (a fair user hits none of them).
+AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
+                 "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600)}
+# HARDENING-v2: per-source fairness (was: one global bucket per kind — a single
+# attacker could deny service to ALL signups by filling the shared window).
+AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
+_AUTH_HITS_CAP = 100_000  # bound memory vs source-spoofing floods
+TRUST_PROXY = os.environ.get("HUB_TRUST_PROXY", "") == "1"  # behind reverse proxy only
 
 
-def _auth_allow(kind):
-    """Fixed-window limiter for auth endpoints. Caller MUST hold LOCK."""
+def _source_of(handler):
+    """Client source for fairness limiting. Direct socket address by default;
+    X-Forwarded-For only when HUB_TRUST_PROXY=1 (reverse-proxy deployments)."""
+    if TRUST_PROXY:
+        xff = handler.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[0].strip()[:64]
+    return str(handler.client_address[0]) if handler.client_address else "unknown"
+
+
+def _auth_allow(kind, src="global"):
+    """Fixed-window limiter, PER SOURCE. Caller MUST hold LOCK."""
     limit, window = AUTH_LIMITS[kind]
     now = time.time()
-    AUTH_HITS[kind] = [t for t in AUTH_HITS[kind] if now - t < window]
-    if len(AUTH_HITS[kind]) >= limit:
+    key = (kind, str(src))
+    if len(AUTH_HITS) >= _AUTH_HITS_CAP and key not in AUTH_HITS:
+        for k in list(AUTH_HITS)[: len(AUTH_HITS) // 10]:
+            AUTH_HITS.pop(k, None)
+    hist = [t for t in AUTH_HITS.get(key, []) if now - t < window]
+    if len(hist) >= limit:
+        AUTH_HITS[key] = hist
         return False
-    AUTH_HITS[kind].append(now)
+    hist.append(now)
+    AUTH_HITS[key] = hist
     return True
+
+
+# HARDENING-v2: proof-of-work cost curve (hashcash-style). Expensive anonymous
+# actions (signup, recover) must burn client CPU; legit users pay ~0.3s ONCE,
+# attackers pay per attempt — and limits stay generous because PoW is the gate.
+POW_DIFFICULTY = {"signup": 18, "recover": 16}  # ~0.3s / ~0.07s client CPU per solution  # leading zero BITS
+POW_CHALLENGES = {}  # challenge -> {exp, kind, used} ; single-use, TTL 10 min
+POW_CAP = 100_000
+LOGIN_CHALLENGES = {}  # aid -> {ch, exp} ; one live login challenge per account
+
+
+def _pow_issue(kind):
+    ch = secrets.token_hex(16)
+    POW_CHALLENGES[ch] = {"exp": time.time() + 600, "kind": kind}
+    if len(POW_CHALLENGES) > POW_CAP:
+        now = time.time()
+        for k in [k for k, v in POW_CHALLENGES.items() if v["exp"] < now][: len(POW_CHALLENGES) // 2]:
+            POW_CHALLENGES.pop(k, None)
+    return {"algo": "sha256-leading-zeros", "challenge": ch,
+            "difficulty": POW_DIFFICULTY[kind], "ttl": 600,
+            "hint": "find nonce N (int) with sha256(challenge + str(N)) having <difficulty> leading zero bits; POST it back as pow: {challenge, nonce}"}
+
+
+def _pow_spend(kind, powobj):
+    """Verify+consume one PoW solution. Returns error string or None. Caller holds LOCK."""
+    if not isinstance(powobj, dict):
+        return "pow required: GET /auth/challenge?kind=" + kind
+    ch = str(powobj.get("challenge", ""))
+    nonce = powobj.get("nonce")
+    rec = POW_CHALLENGES.get(ch)
+    if not rec or rec["kind"] != kind:
+        return "invalid or expired pow challenge"
+    if rec.pop("used", False):
+        return "pow challenge already used"
+    if time.time() > rec["exp"]:
+        POW_CHALLENGES.pop(ch, None)
+        return "pow challenge expired"
+    if not isinstance(nonce, int) or isinstance(nonce, bool) or abs(nonce) > 10**15:
+        return "pow nonce must be an integer"
+    digest = hashlib.sha256((ch + str(nonce)).encode()).digest()
+    need = POW_DIFFICULTY[kind]
+    bits = 0
+    for b in digest:
+        if b == 0:
+            bits += 8; continue
+        bits += 8 - b.bit_length()  # leading zero bits of this byte
+        break
+    if bits < need:
+        return f"pow insufficient difficulty (need {need} zero bits)"
+    rec["used"] = True
+    return None
 
 
 LOCK = threading.Lock()
@@ -263,6 +339,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == "/auth/challenge":
+            """HARDENING-v2: challenge issuance for cost curves.
+            kind=signup -> sha256 PoW challenge (must be solved to signup)
+            kind=login&pubkey=<hex> -> single-use ed25519 login challenge"""
+            q = parse_qs(u.query)
+            kind = q.get("kind", [""])[0]
+            if kind in ("signup", "recover"):
+                with LOCK:
+                    return self._json(200, _pow_issue(kind))
+            if kind == "login":
+                pubkey_hex = q.get("pubkey", [""])[0].strip().lower()
+                if len(pubkey_hex) != 64:
+                    return self._json(400, {"error": "kind=login needs pubkey=<64 hex>"})
+                with LOCK:
+                    aid = next((a for a, v in ACCOUNTS.items() if v.get("pubkey") == pubkey_hex), None)
+                    if not aid:
+                        return self._json(404, {"error": "unknown pubkey"})
+                    ch = secrets.token_hex(16)
+                    LOGIN_CHALLENGES[aid] = {"ch": ch, "exp": time.time() + 120}
+                    return self._json(200, {"algo": "ed25519", "challenge": ch,
+                        "ttl": 120, "msg": "sign b'everlist-login:' + challenge with your seed's private key; POST sig (128 hex) to /accounts/login with pubkey + agent"})
+            return self._json(400, {"error": "kind must be signup or login"})
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
@@ -575,42 +673,93 @@ class Handler(BaseHTTPRequestHandler):
                 "note": "interim open bootstrap (pre-personhood): anyone may obtain book/list tokens today; production identity = Midnight zk-personhood (A2)",
                 "usage": "send as X-Hub-Token header on POST /book, POST /listings, GET /bookings"})
         if path == "/accounts/signup":
-            # B3c-accounts: chat-native organizer account. The CODE is the credential.
+            # B3c-accounts v2: PoW-gated. Two kinds:
+            #  keypair (default): client generates ed25519 seed OFF-server; we store
+            #    ONLY the public key. Nothing stealable on the server, ever.
+            #  code (legacy): server-minted code, sha256 at rest (kept for compat).
             agent = str(data.get("agent", "")).strip()
             if not agent or len(agent) > 64 or agent.lower().startswith("acct-"):
                 return self._json(400, {"error": "agent name required (max 64 chars, no acct- prefix)"})
+            pubkey_hex = str(data.get("pubkey", "")).strip().lower()
+            if pubkey_hex:
+                if len(pubkey_hex) != 64:
+                    return self._json(400, {"error": "pubkey must be 64 hex chars (ed25519 raw public key, 32 bytes)"})
+                try:
+                    bytes.fromhex(pubkey_hex)
+                except ValueError:
+                    return self._json(400, {"error": "pubkey must be hex"})
+            pow_err = None
             with LOCK:
                 if len(ACCOUNTS) >= ACCOUNTS_CAP:
                     return self._json(429, {"error": "hub at account capacity; contact the operator"})
-                if not _auth_allow("signup"):
-                    return self._json(429, {"error": "signup rate limit reached, retry later"})
+                src = _source_of(self)
+                if not _auth_allow("signup", src):
+                    return self._json(429, {"error": "signup rate limit reached for your source, retry later"})
+                pow_err = _pow_spend("signup", data.get("pow"))
+                if pow_err:
+                    return self._json(400, {"error": pow_err,
+                        "hint": "GET /auth/challenge?kind=signup, solve, POST pow={challenge, nonce}"})
+                if pubkey_hex and any(v.get("pubkey") == pubkey_hex for v in ACCOUNTS.values()):
+                    return self._json(409, {"error": "pubkey already registered — log in instead"})
                 aid = "acct-" + secrets.token_hex(4)
                 while aid in ACCOUNTS:
                     aid = "acct-" + secrets.token_hex(4)
-                code = "acct-" + secrets.token_hex(8)
-                ACCOUNTS[aid] = {"code_hash": hashlib.sha256(code.encode()).hexdigest(),
-                                 "bound": [agent], "human_verified": False,
-                                 "verified_by": None, "created": time.time(),
-                                 "email": None, "email_verified": False,
-                                 "pending_email": None, "pending_code_hash": None,
-                                 "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0}
+                acct = {"bound": [agent], "human_verified": False,
+                        "verified_by": None, "created": time.time(),
+                        "email": None, "email_verified": False,
+                        "pending_email": None, "pending_code_hash": None,
+                        "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0}
+                if pubkey_hex:
+                    acct["kind"] = "keypair"
+                    acct["pubkey"] = pubkey_hex
+                else:
+                    acct["kind"] = "code"
+                    code = "acct-" + secrets.token_hex(8)
+                    acct["code_hash"] = hashlib.sha256(code.encode()).hexdigest()
+                ACCOUNTS[aid] = acct
                 _persist_locked()
-            return self._json(201, {"account_id": aid, "account_code": code,
+            if pubkey_hex:
+                return self._json(201, {"account_id": aid, "kind": "keypair", "pubkey": pubkey_hex,
+                    "account_code": None,
+                    "code_note": "keypair account: the server stores ONLY your public key; your seed never leaves your device — we cannot lose or leak it"})
+            return self._json(201, {"account_id": aid, "kind": "code", "account_code": code,
                 "human_verified": False,
                 "code_note": "shown ONCE — this code OWNS the account; store it like a seed phrase",
                 "next": "verify as human: hub operator vouch (pilot) or POST /accounts/verify email code (deploy); login from any chat: POST /accounts/login {account_code, agent}"})
         if path == "/accounts/login":
-            code = str(data.get("account_code", "")).strip()
             agent = str(data.get("agent", "")).strip()
-            if not code or not agent or len(agent) > 64 or agent.lower().startswith("acct-"):
-                return self._json(400, {"error": "account_code + agent required"})
-            ch = hashlib.sha256(code.encode()).hexdigest()
+            if not agent or len(agent) > 64 or agent.lower().startswith("acct-"):
+                return self._json(400, {"error": "agent required (max 64 chars, no acct- prefix)"})
+            code = str(data.get("account_code", "")).strip()
+            pubkey_hex = str(data.get("pubkey", "")).strip().lower()
             with LOCK:
-                if not _auth_allow("login"):
-                    return self._json(429, {"error": "login rate limit reached, retry later"})
-                aid = next((a for a, v in ACCOUNTS.items() if hmac.compare_digest(v["code_hash"], ch)), None)
-                if not aid:
-                    return self._json(403, {"error": "invalid account code"})
+                src = _source_of(self)
+                if not _auth_allow("login", src):
+                    return self._json(429, {"error": "login rate limit reached for your source, retry later"})
+                if pubkey_hex:
+                    # HARDENING-v2: challenge-response. Server proves nothing secret is needed.
+                    aid = next((a for a, v in ACCOUNTS.items() if v.get("pubkey") == pubkey_hex), None)
+                    if not aid:
+                        return self._json(403, {"error": "unknown pubkey"})
+                    lch = LOGIN_CHALLENGES.pop(aid, None)
+                    if not lch or time.time() > lch["exp"]:
+                        return self._json(403, {"error": "no active login challenge — GET /auth/challenge?kind=login&pubkey=<hex> first"})
+                    sig = str(data.get("sig", ""))
+                    if len(sig) != 128:
+                        return self._json(403, {"error": "sig must be 128 hex chars (ed25519 signature)"})
+                    try:
+                        vk = _EdPub.from_public_bytes(bytes.fromhex(pubkey_hex))
+                        vk.verify(bytes.fromhex(sig), b"everlist-login:" + lch["ch"].encode())
+                    except (_InvalidSig, ValueError, binascii.Error):
+                        return self._json(403, {"error": "signature invalid"})
+                else:
+                    # legacy code login (pre-keypair accounts + recovery fallback)
+                    if not code:
+                        return self._json(400, {"error": "account_code or pubkey required"})
+                    ch = hashlib.sha256(code.encode()).hexdigest()
+                    aid = next((a for a, v in ACCOUNTS.items() if hmac.compare_digest(v.get("code_hash", ""), ch)), None)
+                    if not aid:
+                        return self._json(403, {"error": "invalid account code"})
                 if agent not in ACCOUNTS[aid]["bound"]:
                     if len(ACCOUNTS[aid]["bound"]) >= 25:  # binding cap: no unbounded list growth
                         return self._json(409, {"error": "agent binding limit (25) reached for this account"})
@@ -646,8 +795,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "account_code required"})
             ch = hashlib.sha256(code.encode()).hexdigest()
             with LOCK:
-                if not _auth_allow("rotate"):
-                    return self._json(429, {"error": "rotate rate limit reached, retry later"})
+                if not _auth_allow("rotate", _source_of(self)):
+                    return self._json(429, {"error": "rotate rate limit reached for your source, retry later"})
                 aid = next((a for a, v in ACCOUNTS.items() if hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "invalid account code"})
@@ -673,8 +822,8 @@ class Handler(BaseHTTPRequestHandler):
                     aid = next((a for a, v in ACCOUNTS.items() if ch and hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "login token or valid account_code required"})
-                if not _auth_allow("email"):
-                    return self._json(429, {"error": "email rate limit reached, retry later"})
+                if not _auth_allow("email", _source_of(self)):
+                    return self._json(429, {"error": "email rate limit reached for your source, retry later"})
                 # if another VERIFIED account already holds this email: refuse (no takeover)
                 for a, v in ACCOUNTS.items():
                     if a != aid and v["email"] == email and v["email_verified"]:
@@ -696,8 +845,8 @@ class Handler(BaseHTTPRequestHandler):
             vcode = str(data.get("code", "")).strip().upper()
             ch = hashlib.sha256(vcode.encode()).hexdigest() if vcode else None
             with LOCK:
-                if not _auth_allow("verify"):
-                    return self._json(429, {"error": "verify rate limit reached, retry later"})
+                if not _auth_allow("verify", _source_of(self)):
+                    return self._json(429, {"error": "verify rate limit reached for your source, retry later"})
                 aid = next((a for a, v in ACCOUNTS.items()
                             if v.get("pending_email") == email and v.get("pending_code_hash")
                             and hmac.compare_digest(v["pending_code_hash"], ch or "x")
@@ -718,9 +867,13 @@ class Handler(BaseHTTPRequestHandler):
             if not email:
                 return self._json(400, {"error": "email required"})
             with LOCK:
-                if not _auth_allow("recover"):
-                    return self._json(200, {"ok": True, "delivery": "suppressed",
-                        "note": "if that email is bound to an account, a recovery code was sent"})
+                if not _auth_allow("recover", _source_of(self)):
+                    return self._json(429, {"error": "recover rate limit reached for your source, retry later"})
+                # HARDENING-v2: PoW cost on recovery requests (email sends are expensive)
+                pw = _pow_spend("recover", data.get("pow"))
+                if pw:
+                    return self._json(400, {"error": pw,
+                        "hint": "GET /auth/challenge?kind=recover, solve, POST pow={challenge, nonce}"})
                 aid = next((a for a, v in ACCOUNTS.items() if v.get("email") == email and v.get("email_verified")), None)
                 if not aid:
                     return self._json(200, {"ok": True, "delivery": "suppressed",
@@ -739,24 +892,46 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/accounts/email/recover/confirm":
             email = str(data.get("email", "")).strip().lower()
             rcode = str(data.get("code", "")).strip().upper()
+            pubkey_hex = str(data.get("pubkey", "")).strip().lower()
+            if pubkey_hex:
+                if len(pubkey_hex) != 64:
+                    return self._json(400, {"error": "pubkey must be 64 hex chars"})
+                try:
+                    bytes.fromhex(pubkey_hex)
+                except ValueError:
+                    return self._json(400, {"error": "pubkey must be hex"})
             new_code = "acct-" + secrets.token_hex(8)
             ch = hashlib.sha256(rcode.encode()).hexdigest() if rcode else None
             nch = hashlib.sha256(new_code.encode()).hexdigest()
             with LOCK:
-                if not _auth_allow("recover"):
-                    return self._json(429, {"error": "recover rate limit reached, retry later"})
+                if not _auth_allow("recover", _source_of(self)):
+                    return self._json(429, {"error": "recover rate limit reached for your source, retry later"})
                 aid = next((a for a, v in ACCOUNTS.items()
                             if v.get("email") == email and v.get("email_verified") and v.get("recovery_code_hash")
                             and hmac.compare_digest(v["recovery_code_hash"], ch or "x")
                             and time.time() < v["recovery_exp"]), None)
                 if not aid:
                     return self._json(403, {"error": "invalid or expired recovery code"})
-                ACCOUNTS[aid]["code_hash"] = nch          # recovery == rotation: old code dies
-                ACCOUNTS[aid]["recovery_code_hash"] = None
-                ACCOUNTS[aid]["recovery_exp"] = 0
+                rec = ACCOUNTS[aid]
+                LOGIN_CHALLENGES.pop(aid, None)
+                if rec.get("kind") == "keypair":
+                    # HARDENING-v2: recovery == key rotation — old seed dies, new seed rules
+                    if not pubkey_hex:
+                        return self._json(400, {"error": "keypair account: send pubkey=<64 hex> of your NEW seed"})
+                    if any(a != aid and v.get("pubkey") == pubkey_hex for a, v in ACCOUNTS.items()):
+                        return self._json(409, {"error": "pubkey already registered"})
+                    rec["pubkey"] = pubkey_hex
+                    rec["recovery_code_hash"] = None
+                    rec["recovery_exp"] = 0
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "account_id": aid, "kind": "keypair",
+                        "code_note": "pubkey rotated — OLD SEED INVALID; sign a fresh challenge with the new seed to log in"})
+                rec["code_hash"] = nch          # recovery == rotation: old code dies
+                rec["recovery_code_hash"] = None
+                rec["recovery_exp"] = 0
                 _persist_locked()
-            return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
-                "code_note": "shown ONCE — store it; OLD CODE INVALID; existing 24h login tokens remain valid until expiry"})
+                return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
+                    "code_note": "shown ONCE — store it; OLD CODE INVALID; existing 24h login tokens remain valid until expiry"})
         if path == "/listings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: list token required
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \

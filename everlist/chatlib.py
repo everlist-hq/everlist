@@ -11,12 +11,17 @@ Supported intents:
   help/hello/anything else     -> capability summary (fallback treats text as search)
 """
 
+import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from cryptography.hazmat.primitives import serialization as _ser
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EdPriv
 
 # B3c: per-sender anti-spam cap for chat-created listings (in-memory, pilot-grade)
 _LIST_CAP = 3
@@ -107,31 +112,113 @@ def _session(sender: str):
     return s
 
 
-def _signup(hub_url: str, sender: str) -> str:
+
+def _pow_solve(hub_url: str, kind: str):
+    """HARDENING-v2: fetch a PoW challenge and burn the required CPU here.
+    Returns {challenge, nonce} or None if the hub is unreachable."""
     try:
-        _, res = _hub_post(hub_url, "/accounts/signup", {"agent": sender})
+        ch = _hub_get(hub_url, f"/auth/challenge?kind={kind}")
+    except Exception:
+        return None
+    challenge, diff = ch["challenge"], int(ch["difficulty"])
+    n = 0
+    while True:
+        d = hashlib.sha256((challenge + str(n)).encode()).digest()
+        bits = 0
+        for b in d:
+            if b == 0:
+                bits += 8
+                continue
+            bits += 8 - b.bit_length()  # leading zero bits of first nonzero byte
+            break
+        if bits >= diff:
+            return {"challenge": challenge, "nonce": n}
+        n += 1
+
+
+def _pubkey_of(seed_hex: str) -> str:
+    """ed25519 public key (64 hex) for a 32-byte seed; '' if seed invalid."""
+    try:
+        sk = _EdPriv.from_private_bytes(bytes.fromhex(seed_hex))
+    except Exception:
+        return ""
+    return sk.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw).hex()
+
+
+def _sign_login(hub_url: str, seed_hex: str, agent: str):
+    """Challenge-response login: server proves we need no stored secret.
+    Returns (status_code, body_dict)."""
+    pub = _pubkey_of(seed_hex)
+    if not pub:
+        return None, {"error": "invalid seed (64 hex chars expected)"}
+    try:
+        ch = _hub_get(hub_url, f"/auth/challenge?kind=login&pubkey={pub}")
+        sk = _EdPriv.from_private_bytes(bytes.fromhex(seed_hex))
+        sig = sk.sign(b"everlist-login:" + ch["challenge"].encode()).hex()
+        return _hub_post(hub_url, "/accounts/login", {"pubkey": pub, "agent": agent, "sig": sig})
+    except urllib.error.HTTPError as ex:
+        # real hub rejection (unknown pubkey, bad sig): surface the true reason,
+        # never mask it as 'unreachable'
+        try:
+            return ex.code, json.loads(ex.read().decode())
+        except Exception:
+            return ex.code, {"error": f"HTTP {ex.code}"}
+    except Exception:
+        return None, {"unreachable": True}
+
+
+def _set_session(sender: str, res: dict) -> None:
+    _SESSIONS[sender] = {"account_id": res.get("account_id"), "tokens": res.get("tokens", {}),
+                         "verified": bool(res.get("human_verified")), "ts": time.time()}
+
+def _welcome(res: dict) -> str:
+    v = ("\n✅ You are verified as human — bookings need no extra credential."
+         if res.get("human_verified") else
+         "\n⏳ Not yet human-verified — ask the hub operator to vouch for you (pilot).")
+    return (f"✅ Welcome back! This chat now acts as account {res.get('account_id')} (24h). "
+            f"Your listings: cap {_ACCOUNT_CAP}, no per-listing codes needed.{v}")
+
+
+def _signup(hub_url: str, sender: str) -> str:
+    """CRYPTO accounts: the seed is generated HERE and shown ONCE; the hub
+    stores ONLY the public key. Nothing secret ever exists server-side."""
+    pow_ = _pow_solve(hub_url, "signup")
+    if pow_ is None:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    seed = os.urandom(32).hex()
+    pub = _pubkey_of(seed)
+    try:
+        _, res = _hub_post(hub_url, "/accounts/signup", {"agent": sender, "pubkey": pub, "pow": pow_})
+    except urllib.error.HTTPError as ex:
+        try:
+            err = json.loads(ex.read().decode()).get("error", "")
+        except Exception:
+            err = ""
+        return f"Signup rejected: {err or ('HTTP ' + str(ex.code))}"
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
-    # HARDENING-sprint UX: signup auto-logs-in this chat (code still shown once for storage)
-    try:
-        _, lres = _hub_post(hub_url, "/accounts/login",
-                            {"account_code": res.get("account_code"), "agent": sender})
-        _SESSIONS[sender] = {"account_id": lres.get("account_id"), "tokens": lres.get("tokens", {}),
-                             "verified": bool(lres.get("human_verified")), "ts": time.time()}
+    aid = res.get("account_id")
+    code2, lres = _sign_login(hub_url, seed, sender)  # auto-login: we still hold the seed
+    if code2 == 200:
+        _set_session(sender, lres)
         logged = "\n✅ You are logged in here right away — list away!"
-    except Exception:
-        logged = "\nLog in here with: login <code>"
-    return (f"✅ Account created ({res.get('account_id')})!\n\n"
-            f"🔑 Your account code (shown ONCE — store it like a seed phrase): {res.get('account_code')}\n"
-            "It owns all your listings; log in from any other chat with: login <code>"
+    else:
+        logged = "\nLog in here with: login-seed <seed>"
+    return (f"✅ Account created ({aid}) — cryptographic kind.\n\n"
+            f"🔑 Your account SEED (shown ONCE — store it like a crypto seed phrase):\n"
+            f"{seed}\n"
+            "The hub stores ONLY your public key — it cannot leak or lose your secret. "
+            "From any other chat: login-seed <seed>"
             + logged + "\n"
             "Next: 'email-bind you@example.com' enables self-service recovery, and "
             "operator vouch makes you human-verified (pilot).")
 
 
+
 def _login(hub_url: str, sender: str, code: str) -> str:
+    """Legacy code-account login (pre-crypto accounts + rotate/recover codes)."""
     if not code:
-        return "Usage: login acct-xxxxxxxx  (your account code from signup)"
+        return "Usage: login acct-xxxxxxxx  (your account code) — or login-seed <seed> for keypair accounts"
     try:
         _, res = _hub_post(hub_url, "/accounts/login", {"account_code": code.strip(), "agent": sender})
     except urllib.error.HTTPError as ex:
@@ -140,12 +227,23 @@ def _login(hub_url: str, sender: str, code: str) -> str:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
-    _SESSIONS[sender] = {"account_id": res.get("account_id"), "tokens": res.get("tokens", {}),
-                         "verified": bool(res.get("human_verified")), "ts": time.time()}
-    v = "\n✅ You are verified as human — bookings need no extra credential." if res.get("human_verified") else \
-        "\n⏳ Not yet human-verified — ask the hub operator to vouch for you (pilot)."
-    return (f"✅ Welcome back! This chat now acts as account {res.get('account_id')} (24h). "
-            f"Your listings: cap {_ACCOUNT_CAP}, no per-listing codes needed.{v}")
+    _set_session(sender, res)
+    return _welcome(res)
+
+
+def _login_seed(hub_url: str, sender: str, seed: str) -> str:
+    """Keypair-account login: challenge-response, the seed itself is never sent."""
+    seed = seed.strip().lower().removeprefix("elseed-")
+    if not re.fullmatch(r"[0-9a-f]{64}", seed or ""):
+        return "Usage: login-seed <64-hex seed from signup>"
+    code2, res = _sign_login(hub_url, seed, sender)
+    if code2 is None:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code2 != 200:
+        return f"❌ {res.get('error', 'Login failed — check the seed.')}"
+    _set_session(sender, res)
+    return _welcome(res)
+
 
 
 def _email_bind(hub_url: str, sender: str, email: str) -> str:
@@ -190,7 +288,10 @@ def _recover(hub_url: str, email: str) -> str:
     if not email:
         return "Usage: recover you@example.com"
     try:
-        _, res = _hub_post(hub_url, "/accounts/email/recover", {"email": email})
+        pow_ = _pow_solve(hub_url, "recover")
+        if pow_ is None:
+            raise RuntimeError
+        _, res = _hub_post(hub_url, "/accounts/email/recover", {"email": email, "pow": pow_})
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     mode = res.get("delivery", "")
@@ -201,14 +302,23 @@ def _recover(hub_url: str, email: str) -> str:
 
 
 def _recover_confirm(hub_url: str, email: str, code: str) -> str:
+    """Recovery rotates the credential: keypair accounts get a fresh seed (shown
+    ONCE, hub stores only the new pubkey); legacy code accounts get a fresh code."""
     if not email or not code:
         return "Usage: recover-confirm <email> <6-char code from the recovery email>"
+    seed = os.urandom(32).hex()
+    pub = _pubkey_of(seed)
     try:
-        code2, res = _hub_post(hub_url, "/accounts/email/recover/confirm", {"email": email, "code": code})
+        code2, res = _hub_post(hub_url, "/accounts/email/recover/confirm",
+                               {"email": email, "code": code, "pubkey": pub})
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
         return f"{res.get('error', 'Invalid or expired recovery code. Request a new one with recover <email>.')}"
+    if res.get("kind") == "keypair":
+        return (f"Recovered account {res.get('account_id')}!\n\n"
+                f"\U0001f511 Your NEW account SEED (shown ONCE): {seed}\n"
+                "Store it - and 'login-seed <seed>' to continue here.")
     return (f"Recovered account {res.get('account_id')}!\n\n"
             f"Your NEW account code (shown ONCE): {res.get('account_code')}\n"
             "Store it - and 'login <code>' to continue here.")
@@ -219,7 +329,7 @@ def _whoami(hub_url: str, sender: str) -> str:
     s = _session(sender)
     if not s:
         return ("You're chatting anonymously (per-listing codes, cap 3). "
-                "'signup' creates an account; 'login <code>' restores yours.")
+                "'signup' creates an account; 'login-seed <seed>' or 'login <code>' restores yours.")
     return (f"Logged in as {s['account_id']} · human_verified: {'yes' if s['verified'] else 'no'} · "
             f"listing cap {_ACCOUNT_CAP}. 'logout' to end the session here.")
 
@@ -432,6 +542,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     # --- account auth (B3c-accounts)
     if low == "signup" or low.startswith("signup "):
         return _signup(hub_url, sender)
+    if low.startswith("login-seed "):
+        return _login_seed(hub_url, sender, text.strip()[11:].strip())
     if low.startswith("login"):
         return _login(hub_url, sender, text.strip()[5:].strip())
     if low in ("whoami", "account", "status"):

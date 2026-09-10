@@ -2,7 +2,7 @@
 Self-managed fresh hub with stdout CAPTURED (email codes are read from the log).
 Run: python test_hardening.py
 """
-import json, os, re, socket, subprocess, sys, time, atexit, tempfile
+import hashlib, json, os, re, socket, subprocess, sys, time, atexit, tempfile
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,8 +68,23 @@ def last_code(pat):
     return m[-1] if m else None
 
 
+def solve_pow(kind):
+    """HARDENING-v2: solve the hub's PoW challenge (client CPU cost)."""
+    _, ch = req("GET", f"/auth/challenge?kind={kind}")
+    n = 0
+    while True:
+        d = hashlib.sha256((ch["challenge"] + str(n)).encode()).digest()
+        bits = 0
+        for b in d:
+            if b == 0: bits += 8; continue
+            bits += 8 - b.bit_length(); break
+        if bits >= ch["difficulty"]:
+            return {"challenge": ch["challenge"], "nonce": n}
+        n += 1
+
+
 def signup_login(agent):
-    c, a = req("POST", "/accounts/signup", {"agent": agent})
+    c, a = req("POST", "/accounts/signup", {"agent": agent, "pow": solve_pow("signup")})
     assert c == 201, f"signup {c}: {a}"
     c, l = req("POST", "/accounts/login", {"account_code": a["account_code"], "agent": agent})
     assert c == 200, f"login {c}"
@@ -78,9 +93,9 @@ def signup_login(agent):
 
 # ================= section 1: email recovery chain =================
 print("== email recovery (HUB_EMAIL_MODE=log) ==")
-c, a = req("POST", "/accounts/signup", {"agent": "hard-email"})
+c, a = req("POST", "/accounts/signup", {"agent": "hard-email", "pow": solve_pow("signup")})
 code = a.get("account_code", "")
-check("signup 201", c == 201)
+check("signup 201 (legacy kind=code)", c == 201 and a.get("kind") == "code")
 
 check("bind rejects bad email", req("POST", "/accounts/email/bind",
       {"email": "not-an-email", "account_code": code})[0] == 400)
@@ -99,10 +114,10 @@ check("verify 200", c == 200 and v.get("email_verified"))
 check("verify code single-use", req("POST", "/accounts/email/verify",
       {"email": "hard@example.dev", "code": vc})[0] == 403)
 
-c, r1 = req("POST", "/accounts/email/recover", {"email": "hard@example.dev"})
+c, r1 = req("POST", "/accounts/email/recover", {"email": "hard@example.dev", "pow": solve_pow("recover")})
 rc = last_code(r"recovery code: ([A-F0-9]{6})")
 check("recover request logs code", c == 200 and bool(rc))
-c, r2 = req("POST", "/accounts/email/recover", {"email": "unknown@example.dev"})
+c, r2 = req("POST", "/accounts/email/recover", {"email": "unknown@example.dev", "pow": solve_pow("recover")})
 check("recover: no enumeration (same note)", r2.get("note") == r1.get("note") and r2.get("delivery") == "suppressed")
 
 c, n = req("POST", "/accounts/email/recover/confirm", {"email": "hard@example.dev", "code": rc})
@@ -187,6 +202,63 @@ except urllib.error.HTTPError as e:
     check("oversized body rejected 413", e.code == 413, f"{e.code}")
 except (BrokenPipeError, ConnectionResetError, urllib.error.URLError):
     check("oversized body rejected (connection cut)", True)
+
+# ================= section 5: crypto accounts (keypair + PoW) =================
+print("== crypto accounts: ed25519 keypair + PoW cost curves ==")
+from cryptography.hazmat.primitives import serialization as _ser
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+check("signup without pow rejected", req("POST", "/accounts/signup", {"agent": "crypto-a"})[0] == 400)
+pw = solve_pow("signup")
+c, a = req("POST", "/accounts/signup", {"agent": "crypto-a", "pow": pw})
+check("keyless signup falls back to kind=code", c == 201 and a.get("kind") == "code" and a.get("account_code"))
+seed = os.urandom(32).hex()
+sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed))
+pub = sk.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw).hex()
+c, a2 = req("POST", "/accounts/signup", {"agent": "crypto-b", "pubkey": pub, "pow": solve_pow("signup")})
+check("keypair signup with own pubkey", c == 201 and a2.get("pubkey") == pub)
+check("duplicate pubkey 409", req("POST", "/accounts/signup",
+      {"agent": "crypto-c", "pubkey": pub, "pow": solve_pow("signup")})[0] == 409)
+check("pow challenge single-use", req("POST", "/accounts/signup",
+      {"agent": "crypto-d", "pubkey": os.urandom(32).hex(), "pow": pw})[0] == 400)
+
+_, ch = req("GET", f"/auth/challenge?kind=login&pubkey={pub}")
+sig = sk.sign(b"everlist-login:" + ch["challenge"].encode()).hex()
+c, l = req("POST", "/accounts/login", {"pubkey": pub, "agent": "crypto-b", "sig": sig})
+check("challenge-response login 200 + tokens", c == 200 and l.get("tokens", {}).get("list"))
+check("login challenge single-use (replay 403)",
+      req("POST", "/accounts/login", {"pubkey": pub, "agent": "crypto-b", "sig": sig})[0] == 403)
+_, ch2 = req("GET", f"/auth/challenge?kind=login&pubkey={pub}")
+badsig = sk.sign(b"evil:" + ch2["challenge"].encode()).hex()
+check("wrong-message signature 403",
+      req("POST", "/accounts/login", {"pubkey": pub, "agent": "crypto-b", "sig": badsig})[0] == 403)
+check("unknown pubkey challenge 404",
+      req("GET", f"/auth/challenge?kind=login&pubkey={'ab' * 32}")[0] == 404)
+
+# keypair recovery: bind email via TOKEN (no code exists), verify, recover, rotate pubkey
+tok = l.get("tokens", {}).get("list")
+c, b = req("POST", "/accounts/email/bind", {"email": "crypto@example.dev"}, headers={"X-Hub-Token": tok})
+check("keypair email bind via token", c == 200 and b.get("delivery") == "logged")
+vc = last_code(r"verification code: ([A-F0-9]{6})")
+c, v = req("POST", "/accounts/email/verify", {"email": "crypto@example.dev", "code": vc})
+check("keypair email verify 200", c == 200)
+c, r1 = req("POST", "/accounts/email/recover", {"email": "crypto@example.dev", "pow": solve_pow("recover")})
+rc = last_code(r"recovery code: ([A-F0-9]{6})")
+check("keypair recover request 200", c == 200)
+new_seed = os.urandom(32).hex()
+new_pub = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(new_seed)).public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw).hex()
+c, n = req("POST", "/accounts/email/recover/confirm", {"email": "crypto@example.dev", "code": rc, "pubkey": new_pub})
+check("keypair recovery rotates pubkey", c == 200 and n.get("kind") == "keypair")
+
+def kp_login(seed_hex, agent, pubkey):
+    cst, chx = req("GET", f"/auth/challenge?kind=login&pubkey={pubkey}")
+    if cst != 200:
+        return cst, {"error": "challenge refused (credential dead)"}
+    sg = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex)).sign(b"everlist-login:" + chx["challenge"].encode()).hex()
+    return req("POST", "/accounts/login", {"pubkey": pubkey, "agent": agent, "sig": sg})
+
+check("new seed logs in", kp_login(new_seed, "crypto-b-new", new_pub)[0] == 200)
+check("old seed dead after rotation (pubkey unknown)", kp_login(seed, "crypto-b-old", pub)[0] == 404)
 
 # ================= cleanup + verdict =================
 req("POST", f"/listings/{id2}/manage", {"action": "delete"}, headers={"X-Hub-Token": tok_a["list"]})

@@ -140,6 +140,27 @@ Event-sourced: one append per escrow transition (booking→HELD; confirm→RELEA
 - `POST /accounts/email/recover/confirm` `{email, code}` → NEW `account_code` shown ONCE; old code invalid immediately (recovery == rotation). Existing 24h login tokens remain valid until expiry.
 - Email is optional; accounts without email can still rotate via `/accounts/rotate` with their current code.
 
+### 12a. Crypto accounts (keypair) + PoW cost curves (HARDENING-v2)
+
+Accounts have a `kind`: `keypair` (default for signups that send a pubkey) or `code` (legacy fallback).
+
+- **Keypair accounts**: the client generates an Ed25519 seed locally; the hub stores ONLY the 32-byte
+  public key. The seed never crosses the wire — a full hub compromise reveals no usable credential.
+- `GET /auth/challenge?kind=signup` -> `{algo, challenge, difficulty, ttl}`; client finds a nonce whose
+  sha256(challenge+str(nonce)) has `difficulty` leading zero bits.
+- `POST /accounts/signup {agent, pubkey?, pow}` -> 201 `{account_id, kind, pubkey?}`. Without `pubkey`,
+  a legacy `code` account is created (code shown once, sha256 at rest).
+- `GET /auth/challenge?kind=login&pubkey=<hex>` -> single-use login challenge (TTL 120s, one per account).
+- `POST /accounts/login {pubkey, agent, sig}` with `sig` = ed25519 signature over
+  `b"everlist-login:" + challenge`. Replay impossible: challenges are single-use.
+- Recovery rotates the credential: `recover-confirm {email, code, pubkey}` swaps the account pubkey
+  (old seed dies); legacy accounts receive a new code. Email bind works with a login token or code.
+- **PoW cost curves** are the primary DoS gate: signup 18 bits (~0.3s CPU), recover 16 bits (~0.07s).
+  Env-tunable via `HUB_POW_SIGNUP_BITS` / `HUB_POW_RECOVER_BITS`. Challenges single-use, TTL 600s.
+- **Per-source fairness**: auth limiters are per source IP (set `HUB_TRUST_PROXY=1` behind a reverse
+  proxy to honor X-Forwarded-For). One attacker can no longer lock out signups for everyone.
+- Never persisted: seeds, raw codes, email codes (only hashes + pubkeys at rest).
+
 ## 13. Listing archive (soft delete)
 
 - `POST /listings/{id}/manage` `{action: "archive" | "unarchive"}` (manage code or account token).
