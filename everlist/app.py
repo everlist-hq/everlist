@@ -44,6 +44,7 @@ BOOKINGS = []   # booking records (pseudonymous)
 SECRETS = {}    # booking id -> secret (private detail access)
 LEDGER = []     # public, append-only transaction ledger
 IDEMPOTENCY = {}  # I4: Idempotency-Key -> {hash, response} (persisted with G1)
+IDEMPOTENCY_CAP = 50_000  # HARDENING: bound state.json growth (FIFO evict oldest)
 RATE_LIMITS = {}  # G4: principal -> [timestamps] for the 60s window
 ID_COUNTERS = {}  # per-vertical id counters - persisted, NEVER decremented (ids never reused after deletes)
 # B3c-accounts: chat-native organizer accounts (pilot-grade auth).
@@ -118,7 +119,13 @@ def _load_state():
         print(f"G1: restored {len(BOOKINGS)} bookings, {len(LEDGER)} ledger entries, "
               f"{len(LISTINGS)} listings from {STATE_FILE}")
     except Exception as ex:
-        print(f"G1 WARNING: could not load state ({ex}); starting fresh")
+        # HARDENING: corrupt state = stop, never overwrite. Starting fresh would
+        # let the first mutation atomically destroy potentially recoverable data.
+        sys.stderr.write(
+            f"FATAL: state file {STATE_FILE} is corrupt ({ex}).\n"
+            "Refusing to start to avoid destroying data.\n"
+            "Fix the file or move it aside, then restart.\n")
+        sys.exit(78)
 
 # I2/H1: signing keys from env; never log or return these
 # G5: fail-closed in production — a missing key must never silently fall back to dev defaults
@@ -412,10 +419,27 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/listings":
             v = parse_qs(u.query).get("vertical", [""])[0]
             show_arch = parse_qs(u.query).get("archived", [""])[0] in ("1", "true")
+            if show_arch:
+                # HARDENING: archived listings are OWNER-ONLY. Audit finding:
+                # previously readable by anyone (leaked hidden listings).
+                cred = self.headers.get("X-Hub-Token", "")
+                payload, err = None, "missing X-Hub-Token"
+                if cred:
+                    for act in ("list", "book"):
+                        payload, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
+                        if payload: break
+                if not payload:
+                    return self._json(401, {"error": "archived listings are owner-only",
+                        "hint": "send X-Hub-Token (login token or /access list token)"})
+                me = payload["sub"]
+                with LOCK:
+                    res = [l for l in LISTINGS
+                           if l.get("archived") and l.get("owner") == me
+                           and (not v or l["vertical"] == v)]
+                return self._json(200, {"count": len(res), "listings": res})
             with LOCK:
                 res = [l for l in LISTINGS
-                       if bool(l.get("archived")) == show_arch
-                       and (not v or l["vertical"] == v)]
+                       if not l.get("archived") and (not v or l["vertical"] == v)]
             return self._json(200, {"count": len(res), "listings": res})
         if u.path == "/search":
             """Faceted search: q (substring) + structured filters.
@@ -978,6 +1002,9 @@ class Handler(BaseHTTPRequestHandler):
             canon = json.dumps({"principal": principal, **data}, sort_keys=True, separators=(",", ":"))
             if idem_key:
                 with LOCK:
+                    if len(IDEMPOTENCY) >= IDEMPOTENCY_CAP and idem_key not in IDEMPOTENCY:
+                        for k in list(IDEMPOTENCY)[:len(IDEMPOTENCY) // 10]:
+                            IDEMPOTENCY.pop(k, None)  # FIFO evict oldest 10%
                     prev = IDEMPOTENCY.get(idem_key)
                     if prev:
                         if prev["hash"] != hashlib.sha256(canon.encode()).hexdigest():

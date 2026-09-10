@@ -90,12 +90,16 @@ def _parse_rich(body: str) -> dict | None:
 # B3c-accounts: per-sender chat sessions (sender -> {account_id, tokens, verified, ts}).
 # In-memory, pilot-grade: a logged-in chat acts AS the account for 24h (hub TTL).
 _SESSIONS = {}
+_SESSIONS_CAP = 10_000  # HARDENING: bound memory vs unique-sender spam (evict oldest)
 _SESSION_TTL = 24 * 3600
 _ACCOUNT_CAP = 25   # verified organizers get a higher listing cap than anonymous chat
 
 
 def _session(sender: str):
     """Return the session dict for this sender, or None if expired/absent."""
+    if len(_SESSIONS) >= _SESSIONS_CAP and sender not in _SESSIONS:
+        for k in sorted(_SESSIONS, key=lambda k: _SESSIONS[k].get("ts", 0))[:len(_SESSIONS) // 10]:
+            _SESSIONS.pop(k, None)  # evict oldest 10%
     s = _SESSIONS.get(sender)
     if not s or time.time() - s["ts"] > _SESSION_TTL:
         _SESSIONS.pop(sender, None)
@@ -108,11 +112,21 @@ def _signup(hub_url: str, sender: str) -> str:
         _, res = _hub_post(hub_url, "/accounts/signup", {"agent": sender})
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    # HARDENING-sprint UX: signup auto-logs-in this chat (code still shown once for storage)
+    try:
+        _, lres = _hub_post(hub_url, "/accounts/login",
+                            {"account_code": res.get("account_code"), "agent": sender})
+        _SESSIONS[sender] = {"account_id": lres.get("account_id"), "tokens": lres.get("tokens", {}),
+                             "verified": bool(lres.get("human_verified")), "ts": time.time()}
+        logged = "\n✅ You are logged in here right away — list away!"
+    except Exception:
+        logged = "\nLog in here with: login <code>"
     return (f"✅ Account created ({res.get('account_id')})!\n\n"
-            f"🔑 Your account code (shown ONCE — store it like a seed phrase): {res.get('account_code')}\n\n"
-            "It owns all your listings. Log in from any chat with: login <code>\n"
-            "Next: get verified as human (hub operator vouch during the pilot) — "
-            "then your bookings skip the payment flag automatically.")
+            f"🔑 Your account code (shown ONCE — store it like a seed phrase): {res.get('account_code')}\n"
+            "It owns all your listings; log in from any other chat with: login <code>"
+            + logged + "\n"
+            "Next: 'email-bind you@example.com' enables self-service recovery, and "
+            "operator vouch makes you human-verified (pilot).")
 
 
 def _login(hub_url: str, sender: str, code: str) -> str:
@@ -144,6 +158,7 @@ def _email_bind(hub_url: str, sender: str, email: str) -> str:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
         return f"Email bind rejected: {res.get('error', 'unknown reason')}"
+    s["pending_email"] = res.get("email")  # remember for email-code confirmation
     mode = res.get("delivery", "")
     note = ("(dev mode: code visible in hub log)" if mode == "logged" else
             "check your inbox" if mode == "sent" else f"delivery mode: {mode}")
@@ -156,7 +171,10 @@ def _email_code(hub_url: str, sender: str, code: str) -> str:
     if not s:
         return "Login first, then confirm your email code."
     try:
-        code2, res = _hub_post(hub_url, "/accounts/email/verify", {"code": code, "email_hint": s.get("account_id", "")})
+        pending = s.get("pending_email")
+        if not pending:
+            return "No email pending in this chat. First: email-bind <your email>"
+        code2, res = _hub_post(hub_url, "/accounts/email/verify", {"email": pending, "code": code})
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
@@ -179,14 +197,14 @@ def _recover(hub_url: str, email: str) -> str:
     note = ("(dev mode: code visible in hub log)" if mode == "logged" else
             "check your inbox" if mode == "sent" else
             "a recovery code was sent if that email is bound to an account")
-    return f"{note}. Then: recover-confirm <code>"
+    return f"{note}. Then: recover-confirm <email> <code>"
 
 
-def _recover_confirm(hub_url: str, code: str) -> str:
-    if not code:
-        return "Usage: recover-confirm <6-char code from the recovery email>"
+def _recover_confirm(hub_url: str, email: str, code: str) -> str:
+    if not email or not code:
+        return "Usage: recover-confirm <email> <6-char code from the recovery email>"
     try:
-        code2, res = _hub_post(hub_url, "/accounts/email/recover/confirm", {"code": code})
+        code2, res = _hub_post(hub_url, "/accounts/email/recover/confirm", {"email": email, "code": code})
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
@@ -427,7 +445,10 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     if low.startswith("email-code "):
         return _email_code(hub_url, sender, text.strip()[10:].strip())
     if low.startswith("recover-confirm "):
-        return _recover_confirm(hub_url, text.strip()[15:].strip())
+        bits = text.strip()[15:].strip().split(None, 1)
+        email = bits[0] if bits else ""
+        code = bits[1] if len(bits) > 1 else ""
+        return _recover_confirm(hub_url, email, code)
     if low.startswith("recover "):
         return _recover(hub_url, text.strip()[8:].strip())
 

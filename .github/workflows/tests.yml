@@ -17,7 +17,7 @@ jobs:
       HUB_AGENT_SEED: "ci-throwaway-seed-do-not-fund-000000000000"
     defaults:
       run:
-        working-directory: everlist
+        working-directory: experiments/agent-hub-v2
     steps:
       - uses: actions/checkout@v4
 
@@ -34,21 +34,24 @@ jobs:
       - name: G2 security + functional suite
         run: venv/bin/python test_suite.py
 
+      - name: Hardening suite (email recovery / archive auth / id monotonicity)
+        run: venv/bin/python test_hardening.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 
       - name: Registry service suite (D2)
-        working-directory: registry
+        working-directory: experiments/registry
         run: ../agent-hub-v2/venv/bin/python test_registry.py
 
       - name: Conformance checker suite (D3)
-        working-directory: registry
+        working-directory: experiments/registry
         run: ../agent-hub-v2/venv/bin/python test_check_hub.py
 
       - name: x402 verification suite (C3a)
-        working-directory: everlist
+        working-directory: experiments/agent-hub-v2
         run: venv/bin/python test_x402.py
 
       - name: x402 settlement suite (C3b)
-        working-directory: everlist
+        working-directory: experiments/agent-hub-v2
         run: venv/bin/python test_x402_settle.py
