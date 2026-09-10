@@ -13,6 +13,9 @@ consistency (honesty note: consistency is NOT a fairness proof - see SPEC):
   C4  escrow states are exactly HELD/RELEASED/REFUNDED/WAIVED and reported
       separately in a state breakdown; WAIVED only valid at amount 0 (C4b)
   C5  totals in /ledger response match recomputation from raw entries
+  C6  manifest advertising accounts must serve the SPEC 12a challenge
+      contract (GET <auth.challenge>?kind=signup -> algo/challenge/
+      difficulty/ttl); hubs not advertising accounts skip this check
 
 Output verdicts:
   CONFORMANT            all checks pass
@@ -107,6 +110,32 @@ def check_hub(base_url):
                         f"(volume {recomp_vol}, fees {recomp_fees})")
     else:
         findings.append(f"C5 ok: totals match recomputation ({totals})")
+
+    # C6 (B9): accounts advertising vs served crypto contract (SPEC 12a).
+    # A hub that ADVERTISES accounts must serve the challenge contract;
+    # hubs without accounts make no claim (auth optional, no flag).
+    auth = man.get("auth")
+    if auth:
+        ch_path = auth.get("challenge") if isinstance(auth, dict) else None
+        if not isinstance(ch_path, str) or not ch_path.startswith("/"):
+            verdict = "NON-CONFORMANT"
+            findings.append("C6 FAIL: accounts advertised but challenge endpoint missing/invalid")
+        else:
+            try:
+                ch = fetch_json(base_url.rstrip("/") + ch_path + "?kind=signup")
+            except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
+                ch = None
+                findings.append(f"C6 challenge unreachable: {ex}")
+            if not isinstance(ch, dict) or not ch.get("challenge") \
+                    or not isinstance(ch.get("difficulty"), int) or not ch.get("algo") \
+                    or not isinstance(ch.get("ttl"), int):
+                verdict = "NON-CONFORMANT"
+                findings.append("C6 FAIL: accounts advertised but challenge contract malformed (SPEC 12a)")
+            else:
+                findings.append(f"C6 ok: crypto challenge served (algo={ch['algo']}, "
+                                f"difficulty={ch['difficulty']}, ttl={ch['ttl']}s)")
+    else:
+        findings.append("C6 skipped: no accounts advertised (auth optional)")
 
     findings.append("HONESTY: self-reported consistency != fairness proof; "
                     "independent settlement evidence does not exist at this stage (SPEC)")

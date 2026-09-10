@@ -441,7 +441,13 @@ class Handler(BaseHTTPRequestHandler):
                 "protocol": "agent-hub/0.2", "open_source": "MIT",
                 "hub": "agent-hub-v2",
                 "description": "Open, community-driven commerce hub for AI agents. Universal booking core, per-vertical schemas.",
-                "fairness": {"fee_policy": {"actual_fee_pct": FEE_PCT,
+                "auth": {
+            "kind": "crypto-accounts",
+            "contract": "SPEC 12a: Ed25519 keypair accounts, challenge-response login, PoW-gated signup",
+            "challenge": "/auth/challenge",
+            "signup": "/accounts/signup"
+        },
+        "fairness": {"fee_policy": {"actual_fee_pct": FEE_PCT,
                                 "note": "fully declared by hub; no protocol cap. Agents verify declared vs ledger and choose"},
                               "ledger": "/ledger", "escrow": True,
                               "open_registry": "/registry"},

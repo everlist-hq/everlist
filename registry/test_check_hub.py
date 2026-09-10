@@ -7,6 +7,9 @@
   D4  fee mismatch (charges != declared) -> NON-CONFORMANT (exit 1)
   D5  totals lie vs raw entries -> NON-CONFORMANT (exit 1)
   D6  unknown escrow state -> NON-CONFORMANT (exit 1)
+  D7  accounts advertised + valid challenge -> CONFORMANT (C6 ok)
+  D8  accounts advertised + challenge 404 -> NON-CONFORMANT
+  D9  accounts advertised + malformed challenge -> NON-CONFORMANT
 
 Negative fixtures are served by a local stub hub (manifest + /ledger).
 """
@@ -98,7 +101,10 @@ MANIFEST = {"hub": "stub", "protocol": "agent-hub/0.2",
             "payments": {}, "capabilities": {}}
 
 
-def make_stub(ledger):
+def make_stub(ledger, manifest=None, extra_get=None):
+    """extra_get: {path: payload} served before the standard 404 (C6 fixtures)."""
+    manifest = manifest or MANIFEST
+    extra_get = extra_get or {}
     port = free_port()
 
     class H(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
@@ -106,8 +112,10 @@ def make_stub(ledger):
             pass
 
         def do_GET(self):
-            if self.path == "/.well-known/agent-hub.json":
-                payload = json.dumps(MANIFEST).encode()
+            if self.path in extra_get:
+                payload = json.dumps(extra_get[self.path]).encode()
+            elif self.path == "/.well-known/agent-hub.json":
+                payload = json.dumps(manifest).encode()
             elif self.path == "/ledger":
                 payload = json.dumps({"ledger": ledger, "totals": {
                     "total_volume": round(sum(e["amount"] for e in ledger), 2),
@@ -199,6 +207,28 @@ def main():
     srv, url = make_stub(weird)
     rc, verdict, out = run_check(url)
     check("D6: unknown escrow state -> NON-CONFORMANT", rc == 1 and verdict == "NON-CONFORMANT")
+    srv.shutdown()
+
+    # ---- C6: auth advertising vs challenge contract ----
+    MAN_AUTH = {**MANIFEST, "auth": {"kind": "crypto-accounts",
+                                     "challenge": "/auth/challenge",
+                                     "signup": "/accounts/signup"}}
+    CH_OK = {"algo": "sha256-leading-zeros", "challenge": "c" * 32,
+             "difficulty": 18, "ttl": 600}
+
+    srv, url = make_stub(good, manifest=MAN_AUTH, extra_get={"/auth/challenge?kind=signup": CH_OK})
+    rc, verdict, out = run_check(url)
+    check("D7: accounts advertised + valid challenge -> CONFORMANT", rc == 0 and verdict == "CONFORMANT", out[-200:])
+    srv.shutdown()
+
+    srv, url = make_stub(good, manifest=MAN_AUTH)  # challenge endpoint 404
+    rc, verdict, out = run_check(url)
+    check("D8: accounts advertised + challenge 404 -> NON-CONFORMANT", rc == 1 and verdict == "NON-CONFORMANT")
+    srv.shutdown()
+
+    srv, url = make_stub(good, manifest=MAN_AUTH, extra_get={"/auth/challenge?kind=signup": {"oops": True}})
+    rc, verdict, out = run_check(url)
+    check("D9: malformed challenge -> NON-CONFORMANT", rc == 1 and verdict == "NON-CONFORMANT")
     srv.shutdown()
 
     failed = [n for n, ok in RESULTS if not ok]
