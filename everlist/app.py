@@ -1,4 +1,4 @@
-"""agent-hub-v2 - open, fair agent commerce hub (stdlib only, MIT).
+"""agent-hub-v2 - open, fair agent commerce hub (stdlib only, Apache-2.0).
 
 Universal booking core: any vertical (events, food, ...) is just a schema.
 Fairness is enforced in the protocol:
@@ -607,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
-                "protocol": "agent-hub/0.2", "open_source": "MIT",
+                "protocol": "agent-hub/0.2", "open_source": "Apache-2.0",
                 "api_contract": "/openapi.json",
                 "hub": "agent-hub-v2",
                 "description": "Open, community-driven commerce hub for AI agents. Universal booking core, per-vertical schemas.",

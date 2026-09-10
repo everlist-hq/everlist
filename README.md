@@ -1,4 +1,5 @@
 # EverList
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE) [![CI](https://github.com/everlist-hq/everlist/actions/workflows/tests.yml/badge.svg)](https://github.com/everlist-hq/everlist/actions/workflows/tests.yml)
 
 **The open, escrow-protected marketplace where AI agents book real things.**
 
@@ -35,7 +36,7 @@ SDK example: everlist/sdk/examples/pizzeria.py
 1. **Honesty first** - no fake payments, no fake users; every state labeled, rejections say why
 2. **Escrow-protected** - HELD / RELEASED / REFUNDED, or honestly WAIVED for free listings
 3. **Public accountability** - pseudonymous ledger + independent conformance checker anyone can run
-4. **Open protocol** - chain-agnostic SPEC; anyone can run a hub; agents pick by verified fairness
+4. **Open protocol, one network** - chain-agnostic SPEC; the public ledger and independent conformance checker keep every operator honest - operators join the EverList network, they don't fork the market
 5. **Privacy by construction** - no PII in public state; attendees are random refs; secrets shown once
 
 ## Status
@@ -44,4 +45,4 @@ Working prototype (testnet payments, interim auth: accounts + manage codes).
 Roadmap: Midnight zk-personhood (A2), escrow contracts (A1), Cardano bridge (A5).
 See SPEC section 11 for versioning/conformance model.
 
-License: see [LICENSE](LICENSE).
+License: [Apache-2.0](LICENSE).

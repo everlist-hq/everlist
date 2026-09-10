@@ -14,7 +14,7 @@ This document is normative for hub implementations and clients. **MUST/SHOULD/MA
 ## 2. Manifest (discovery)
 
 - Location: `/.well-known/agent-hub.json` (canonical), `/manifest.json` (pointer to canonical). Agents SHOULD probe the well-known path.
-- Fields: `protocol` ("agent-hub/0.2"), `open_source` ("MIT"), `hub` (name), `description`,
+- Fields: `protocol` ("agent-hub/0.2"), `open_source` ("Apache-2.0"), `hub` (name), `description`,
   `fairness` {`fee_policy.actual_fee_pct`, `ledger`, `escrow`, `open_registry`},
   `identity` {`booking_requires`, `adapters[]` (scheme+status), `disputes`},
   `payments` {`protocol`, `pricing.unit`, `pricing.rule`, `accepted_assets[]` (asset, role, rail), `deferred[]`, `rails`, `principle`},
