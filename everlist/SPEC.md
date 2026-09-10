@@ -218,6 +218,12 @@ Every mutating POST route carries a per-source fixed-window backstop (`_auth_all
 
 - All direct dependencies in `requirements.txt` are pinned to exact versions (`uagents`, `httpx`, `eth-account`, `cryptography`) — upgrades are deliberate, audited events.
 - `make audit` runs `pip-audit` over the full resolved dependency tree; CI runs the same audit (non-blocking until the tree is fully clean upstream).
+
+## 18. Privacy & data (H8)
+
+- Authoritative, exact description of stored data, retention, and deletion: see [PRIVACY.md](PRIVACY.md).
+- Summary: codes/seeds stored as SHA-256 hashes only (keypair accounts: public key only — the seed never leaves the device); recovery email stored in plaintext (required for delivery) and erased by account deletion (§12a path: `DELETE /accounts/me`); the public ledger is pseudonymous; limiter/session/challenge data is memory-only.
+- Honest limitation: pre-persist backups (§16) keep up to 5 snapshots — deleted records can linger in older generations until rotation removes them.
 - Known vulnerabilities, explicitly waived (re-evaluate on every dependency bump):
 
 | ID | Package | Why waived |

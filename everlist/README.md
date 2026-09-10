@@ -14,6 +14,8 @@ discover → search → register & pay (escrow) → confirm/cancel → transpare
   cross-checkable (`../registry/check_hub.py`)
 - **pseudonymous bookings** — public ledger shows pseudonyms only; real identity only
   via per-booking secret; we never store who you are
+- **exact privacy docs** — what the hub stores, never stores, retention and deletion,
+  code-mapped: see [PRIVACY.md](PRIVACY.md)
 - **schemas are versioned + community-extensible** (verticals via schema files)
 
 ## Components
