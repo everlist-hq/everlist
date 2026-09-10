@@ -260,6 +260,40 @@ def kp_login(seed_hex, agent, pubkey):
 check("new seed logs in", kp_login(new_seed, "crypto-b-new", new_pub)[0] == 200)
 check("old seed dead after rotation (pubkey unknown)", kp_login(seed, "crypto-b-old", pub)[0] == 404)
 
+# ================= section 6: B1 token revocation (gen counters) =================
+print("== B1: token revocation (rotate / logout-all kill old tokens) ==")
+
+code_c, tok_c = signup_login("hard-b1-code")
+c, _v = req("GET", "/listings?archived=1", headers={"X-Hub-Token": tok_c["list"]})
+check("B1 fresh token authorized (2xx)", 200 <= c < 300)
+
+# mixed account kinds present (keypair from section 5): legacy scans must not crash
+# (regression: rotate/email-bind iterated accounts assuming code_hash on every kind)
+c, rot = req("POST", "/accounts/rotate", {"account_code": code_c})
+check("B1 rotate 200 on mixed-kind store (no KeyError)", c == 200 and rot.get("ok"))
+c2, _v2 = req("GET", "/listings?archived=1", headers={"X-Hub-Token": tok_c["list"]})
+check("B1 OLD token revoked after rotate (401)", c2 == 401)
+c, l1 = req("POST", "/accounts/login", {"account_code": rot["account_code"], "agent": "hard-b1-b"})
+check("B1 new code logs in", c == 200 and l1.get("tokens", {}).get("list"))
+tok_c2 = l1["tokens"]
+c, eb = req("POST", "/accounts/email/bind",
+            {"account_code": rot["account_code"], "email": "b1@example.com"})
+check("B1 email-bind mixed-kind no crash (2xx)", 200 <= c < 300)
+c, la = req("POST", "/accounts/logout-all", {}, headers={"X-Hub-Token": tok_c2["list"]})
+check("B1 logout-all 200", c == 200 and la.get("ok"))
+c3, _v3 = req("GET", "/listings?archived=1", headers={"X-Hub-Token": tok_c2["list"]})
+check("B1 token revoked after logout-all (401)", c3 == 401)
+
+c, at = req("POST", "/access", {"agent": "hard-b1-anon", "acts": ["list"]})
+check("B1 anon /access 201", c == 201 and at.get("tokens", {}).get("list"))
+c, lst2 = req("POST", "/listings", {"vertical": "events", "title": "B1 anon", "category": "meetup",
+                                    "date": "2026-10-01", "price": 1, "location": "x", "capacity": 1},
+              headers={"X-Hub-Token": at["tokens"]["list"]})
+check("B1 non-account token unaffected (2xx)", 200 <= c < 300 and lst2.get("ok"))
+if lst2.get("id"):
+    req("POST", f"/listings/{lst2['id']}/manage", {"action": "delete"},
+        headers={"X-Hub-Token": at["tokens"]["list"]})
+
 # ================= cleanup + verdict =================
 req("POST", f"/listings/{id2}/manage", {"action": "delete"}, headers={"X-Hub-Token": tok_a["list"]})
 req("POST", f"/listings/{id3}/manage", {"action": "delete"}, headers={"X-Hub-Token": tok_a["list"]})

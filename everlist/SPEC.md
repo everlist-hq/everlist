@@ -137,7 +137,7 @@ Event-sourced: one append per escrow transition (booking→HELD; confirm→RELEA
 - `POST /accounts/email/bind` `{email, account_code | X-Hub-Token}` → 6-char verification code sent. Delivery via `HUB_EMAIL_MODE`: `off` (default, refuse politely) | `log` (dev: code in hub log, chat labels it) | `smtp` (real send; Gmail requires an App Password — account password → SMTP 535).
 - `POST /accounts/email/verify` `{email, code}` → `email_verified=true`; recovery enabled. Codes: 6 chars, 15-min TTL, single-use, hashed at rest.
 - `POST /accounts/email/recover` `{email}` → ALWAYS the same answer whether or not the email is bound (no account enumeration); rate-limited 5/h.
-- `POST /accounts/email/recover/confirm` `{email, code}` → NEW `account_code` shown ONCE; old code invalid immediately (recovery == rotation). Existing 24h login tokens remain valid until expiry.
+- `POST /accounts/email/recover/confirm` `{email, code}` → NEW `account_code` shown ONCE; old code invalid immediately (recovery == rotation). All previously issued login tokens are revoked (B1 generation bump).
 - Email is optional; accounts without email can still rotate via `/accounts/rotate` with their current code.
 
 ### 12a. Crypto accounts (keypair) + PoW cost curves (HARDENING-v2)
@@ -166,6 +166,10 @@ Accounts have a `kind`: `keypair` (default for signups that send a pubkey) or `c
 - **Per-source fairness**: auth limiters are per source IP (set `HUB_TRUST_PROXY=1` behind a reverse
   proxy to honor X-Forwarded-For). One attacker can no longer lock out signups for everyone.
 - Never persisted: seeds, raw codes, email codes (only hashes + pubkeys at rest).
+- **B1 token revocation**: every account login token embeds the account's `gen` counter at mint;
+  `/accounts/rotate`, `/accounts/email/recover/confirm` (both kinds) and the new
+  `POST /accounts/logout-all` (token-authenticated) bump `gen`, instantly killing ALL previously
+  issued tokens. The chat command is `logout-all`.
 
 ## 13. Listing archive (soft delete)
 

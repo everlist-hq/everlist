@@ -79,6 +79,23 @@ def _source_of(handler):
     return str(handler.client_address[0]) if handler.client_address else "unknown"
 
 
+def _gen_check(payload):
+    """B1: per-account token generation. rotate / recover/confirm / logout-all bump
+    the account's gen; tokens embedding an older gen are dead. Non-account tokens
+    (per-booking, /access agent tokens) pass through untouched."""
+    if not payload:
+        return None, "missing token"
+    sub = payload.get("sub", "")
+    if sub.startswith("acct-"):
+        with LOCK:
+            acct = ACCOUNTS.get(sub)
+        if not acct:
+            return None, "account no longer exists"
+        if int(payload.get("gen", 0)) < int(acct.get("gen", 0)):
+            return None, "token revoked - account credential rotated or logout-all; log in again"
+    return payload, None
+
+
 def _auth_allow(kind, src="global"):
     """Fixed-window limiter, PER SOURCE. Caller MUST hold LOCK."""
     limit, window = AUTH_LIMITS[kind]
@@ -181,10 +198,10 @@ def _load_state():
         IDEMPOTENCY.update(snap.get("idempotency", {}))
         ACCOUNTS.update(snap.get("accounts", {}))
         ID_COUNTERS.update(snap.get("id_counters", {}))
-        # B3c-email migration: legacy accounts predate email fields
+        # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
-                    "recovery_code_hash": None, "recovery_exp": 0}
+                    "recovery_code_hash": None, "recovery_exp": 0, "gen": 0}
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
                 _v.setdefault(_k, _d)
@@ -526,6 +543,8 @@ class Handler(BaseHTTPRequestHandler):
                     for act in ("list", "book"):
                         payload, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
                         if payload: break
+                if payload:
+                    payload, err = _gen_check(payload)  # B1
                 if not payload:
                     return self._json(401, {"error": "archived listings are owner-only",
                         "hint": "send X-Hub-Token (login token or /access list token)"})
@@ -573,6 +592,8 @@ class Handler(BaseHTTPRequestHandler):
                 for act in ("book", "list"):
                     payload, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
                     if payload: break
+            if payload:
+                payload, err = _gen_check(payload)  # B1
             if not payload:
                 return self._json(401, {"error": err or "invalid token",
                     "hint": "POST /access {agent: '<your-agent>'} then send token as X-Hub-Token"})
@@ -589,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
             payload, err = None, "missing X-Hub-Token"
             if cred:
                 payload, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                if payload:
+                    payload, err = _gen_check(payload)  # B1
             if not payload:
                 return self._json(401, {"error": err or "invalid token",
                     "hint": "merchant list token required (POST /access acts=['list'])"})
@@ -766,7 +789,9 @@ class Handler(BaseHTTPRequestHandler):
                     ACCOUNTS[aid]["bound"].append(agent)  # multi-agent binding (agent-led onboarding)
                 _persist_locked()
             acts = ["book", "list"]
-            toks = {a: hublib.mint_token(BOOKING_KEY, a, aid, ttl=24*3600) for a in acts}
+            gen = ACCOUNTS[aid].get("gen", 0)
+            toks = {a: hublib.mint_token(BOOKING_KEY, a, aid, ttl=24*3600,
+                                         extra={"gen": gen}) for a in acts}
             return self._json(200, {"account_id": aid, "agent": agent,
                 "human_verified": ACCOUNTS[aid]["human_verified"],
                 "tokens": toks, "ttl": 24*3600,
@@ -797,15 +822,39 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if not _auth_allow("rotate", _source_of(self)):
                     return self._json(429, {"error": "rotate rate limit reached for your source, retry later"})
-                aid = next((a for a, v in ACCOUNTS.items() if hmac.compare_digest(v["code_hash"], ch)), None)
+                aid = next((a for a, v in ACCOUNTS.items() if v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "invalid account code"})
                 new_code = "acct-" + secrets.token_hex(8)
                 ACCOUNTS[aid]["code_hash"] = hashlib.sha256(new_code.encode()).hexdigest()
                 ACCOUNTS[aid]["rotated"] = time.time()
+                ACCOUNTS[aid]["gen"] = ACCOUNTS[aid].get("gen", 0) + 1  # B1: revoke old tokens
+                LOGIN_CHALLENGES.pop(aid, None)
                 _persist_locked()
             return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
-                "code_note": "OLD CODE IS NOW INVALID — new code shown ONCE, store it; existing 24h login tokens remain valid until expiry"})
+                "code_note": "OLD CODE IS NOW INVALID and every previously issued login token is REVOKED — new code shown ONCE, store it"})
+        if path == "/accounts/logout-all":
+            # B1: revoke EVERY login token of this account (all agents, chats, devices).
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = None, "missing X-Hub-Token"
+            if cred:
+                for act in ("list", "book"):
+                    p, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
+                    if p: break
+            if p:
+                p, err = _gen_check(p)
+            if not p or not str(p.get("sub", "")).startswith("acct-"):
+                return self._json(401, {"error": err or "account token required",
+                    "hint": "send a login token as X-Hub-Token"})
+            aid = p["sub"]
+            with LOCK:
+                if aid not in ACCOUNTS:
+                    return self._json(404, {"error": "no account"})
+                ACCOUNTS[aid]["gen"] = ACCOUNTS[aid].get("gen", 0) + 1
+                LOGIN_CHALLENGES.pop(aid, None)
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid,
+                "note": "every previously issued login token (all agents/devices) is now revoked — log in again where needed"})
         if path == "/accounts/email/bind":
             # bind/replace the recovery email. Logged-in account OR current code proves control.
             code = str(data.get("account_code", "")).strip()
@@ -815,11 +864,13 @@ class Handler(BaseHTTPRequestHandler):
             ch = hashlib.sha256(code.encode()).hexdigest() if code else None
             cred = self.headers.get("X-Hub-Token", "")
             p, _err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred else (None, None)
+            if p:
+                p, _err = _gen_check(p)  # B1: a stale token never proves identity
             with LOCK:
                 if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
                     aid = p["sub"]
                 else:
-                    aid = next((a for a, v in ACCOUNTS.items() if ch and hmac.compare_digest(v["code_hash"], ch)), None)
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "login token or valid account_code required"})
                 if not _auth_allow("email", _source_of(self)):
@@ -921,21 +972,25 @@ class Handler(BaseHTTPRequestHandler):
                     if any(a != aid and v.get("pubkey") == pubkey_hex for a, v in ACCOUNTS.items()):
                         return self._json(409, {"error": "pubkey already registered"})
                     rec["pubkey"] = pubkey_hex
+                    rec["gen"] = rec.get("gen", 0) + 1  # B1: old seed's tokens die
                     rec["recovery_code_hash"] = None
                     rec["recovery_exp"] = 0
                     _persist_locked()
                     return self._json(200, {"ok": True, "account_id": aid, "kind": "keypair",
                         "code_note": "pubkey rotated — OLD SEED INVALID; sign a fresh challenge with the new seed to log in"})
                 rec["code_hash"] = nch          # recovery == rotation: old code dies
+                rec["gen"] = rec.get("gen", 0) + 1  # B1: revoke old tokens
                 rec["recovery_code_hash"] = None
                 rec["recovery_exp"] = 0
                 _persist_locked()
                 return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
-                    "code_note": "shown ONCE — store it; OLD CODE INVALID; existing 24h login tokens remain valid until expiry"})
+                    "code_note": "shown ONCE — store it; OLD CODE INVALID and old login tokens REVOKED"})
         if path == "/listings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: list token required
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
+            if p:
+                p, err = _gen_check(p)  # B1
             if not p:
                 return self._json(401, {"error": err or "invalid list token",
                     "hint": "POST /access {agent: '<your-agent>', acts: ['list']} then send token as X-Hub-Token"})
@@ -1028,6 +1083,8 @@ class Handler(BaseHTTPRequestHandler):
             cred = self.headers.get("X-Hub-Token", "")
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
+            if p:
+                p, err = _gen_check(p)  # B1
             if not p:
                 return self._json(401, {"error": err or "missing X-Hub-Token",
                     "hint": "login via POST /accounts/login {account_code, agent} to act as your account, or send a list token + manage_code"})
@@ -1120,6 +1177,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(401, {"error": err or "invalid book token",
                     "hint": "POST /access {agent: '<your-agent>', acts: ['book']} then send token as X-Hub-Token",
                     "note": "interim open bootstrap; production = Midnight zk-personhood (A2)"})
+            p, gerr = _gen_check(p)  # B1
+            if not p:
+                return self._json(401, {"error": gerr or "token revoked",
+                    "hint": "log in again (POST /accounts/login) for fresh tokens"})
             principal = p["sub"]
             # B3c-accounts: verified accounts carry their human proof server-side
             # (admin-vouch pilot / email-code deploy / Midnight zk A2 production)

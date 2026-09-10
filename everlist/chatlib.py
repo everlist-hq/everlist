@@ -340,6 +340,23 @@ def _logout(sender: str) -> str:
     return "You weren't logged in."
 
 
+def _logout_all(hub_url: str, sender: str) -> str:
+    """B1: revoke every login token of this account (all chats/devices/agents)."""
+    s = _session(sender)
+    if not s:
+        return ("Login first (login <code> or login-seed <seed>) - "
+                "logout-all revokes every login of your account everywhere.")
+    try:
+        code2, res = _hub_post(hub_url, "/accounts/logout-all", {}, token=s["tokens"].get("list"))
+    except Exception:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code2 != 200:
+        return f"{res.get('error', 'Could not revoke sessions.')}"
+    _SESSIONS.pop(sender, None)
+    return ("🔒 Every login token of your account is revoked - on every chat, device and agent. "
+            "Log in again wherever you still need access.")
+
+
 def _create_listing(hub_url: str, sender: str, text: str) -> str:
     """One-prompt listing, two formats:
     Quick:  list Title | category | date | price | location | capacity
@@ -550,6 +567,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _whoami(hub_url, sender)
     if low == "logout":
         return _logout(sender)
+    if low == "logout-all":
+        return _logout_all(hub_url, sender)
 
     # --- email recovery (B3c-email)
     if low.startswith("email-bind "):
@@ -631,6 +650,7 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
             "• signup — create your organizer account (cap 25, no per-listing codes)\n"
             "• login <account_code> — act as your account from any chat (24h)\n"
             "• whoami — session status\n"
+            "• logout-all — revoke every login of your account (all chats/devices)\n" +
             "• my-listings — your listings\n"
             "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
             "• delete <id> [code] — remove your listing\n"

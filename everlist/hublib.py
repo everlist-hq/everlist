@@ -25,9 +25,11 @@ def _b64e(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def mint_token(key: str, action: str, principal: str, ttl: int = 3600) -> str:
+def mint_token(key: str, action: str, principal: str, ttl: int = 3600, extra: dict = None) -> str:
     payload = {"v": 1, "act": action, "sub": principal,
                "exp": int(time.time()) + ttl, "nonce": secrets.token_hex(8)}
+    if extra:
+        payload.update(extra)  # B1: e.g. per-account gen for token revocation
     body = _b64e(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
     sig = hmac.new(key.encode(), (TOKEN_DOMAIN + body).encode(), hashlib.sha256).hexdigest()
     return body + "." + sig
