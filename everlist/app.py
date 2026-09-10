@@ -240,7 +240,16 @@ def _backup_locked():
             return
         bdir = os.path.join(os.path.dirname(STATE_FILE), "backups")
         os.makedirs(bdir, exist_ok=True)
-        shutil.copy2(STATE_FILE, os.path.join(bdir, f"state-{time.time_ns()}.json"))
+        try:
+            os.chmod(bdir, 0o700)  # H17: backups hold the same secrets
+        except OSError:
+            pass
+        _bpath = os.path.join(bdir, f"state-{time.time_ns()}.json")
+        shutil.copy2(STATE_FILE, _bpath)
+        try:
+            os.chmod(_bpath, 0o600)  # H17: copy2 preserves the 0644 source mode
+        except OSError:
+            pass
         baks = sorted(f for f in os.listdir(bdir)
                       if f.startswith("state-") and f.endswith(".json"))
         for old_b in baks[:-BACKUP_KEEP]:
@@ -261,7 +270,10 @@ def _persist_locked():
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {})}
     tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    # H17: state contains booking secrets - create 0600 from the start
+    # (plain open() produced a world-readable 0644 file on lax umasks)
+    _fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(_fd, "w") as f:
         json.dump(snap, f)
         if FSYNC_ENABLED:
             f.flush()
@@ -418,7 +430,7 @@ VERTICAL_SCHEMAS = {
                "optional": ["description", "category", "tags", "url", "preparation_minutes"],
                "categories": ["pizzeria", "vegan", "asian", "burger", "bakery",
                                "cafe", "grocery", "other"],
-               "field_types": {},
+               "field_types": {"preparation_minutes": "positive_int"},
                "booking": {"required": ["buyer", "quantity"], "fields": ["buyer", "quantity"],
                             "identity": "buyer", "action": "order+pay"}},
     # H15: second-vertical proof — adding a vertical is DATA, not code.
@@ -1295,6 +1307,13 @@ class Handler(BaseHTTPRequestHandler):
             schema = VERTICAL_SCHEMAS[v]
             missing = [f for f in schema["required"] if f not in data]
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
+            # H17: required string fields must be nonempty and bounded
+            for f in schema["required"]:
+                if isinstance(data[f], str):
+                    _sv = data[f].strip()
+                    if not _sv:
+                        return self._json(400, {"error": f"{f} cannot be empty"})
+                    data[f] = _sv[:80]
             # I1: reject reserved fields, validate types, strip unknowns
             reserved = [k for k in data if k in RESERVED_LISTING_FIELDS and k != "available"]
             if reserved: return self._json(400, {"error": f"reserved fields: {reserved}"})
@@ -1309,9 +1328,13 @@ class Handler(BaseHTTPRequestHandler):
                     if _f not in data:
                         continue
                     if _t == "positive_int":
-                        _iv = int(data[_f])
+                        # H18: clean message — never leak Python exception text
+                        try:
+                            _iv = int(data[_f])
+                        except (TypeError, ValueError):
+                            return self._json(400, {"error": f"invalid field: {_f} must be an integer"})
                         if _iv <= 0:
-                            raise ValueError(f"{_f} must be positive")
+                            return self._json(400, {"error": f"invalid field: {_f} must be positive"})
                         data[_f] = _iv
                     elif _t == "nonempty" and not str(data[_f]).strip():
                         return self._json(400, {"error": f"{_f} required for {v}"})
@@ -1418,8 +1441,16 @@ class Handler(BaseHTTPRequestHandler):
                     note = ("hidden from search; existing bookings stay fulfillable"
                             if listing["archived"] else "visible again")
                     return self._json(200, {"ok": True, "id": lid, "archived": listing["archived"], "note": note})
-                editable = {"title", "description", "price", "location", "date",
-                            "capacity", "category", "tags", "url"}
+                # H17: edit allowlist is SCHEMA-DERIVED (base + owner-name fields
+                # + the vertical's optional fields, intersected with the
+                # vertical's own fields) so services providers can edit
+                # provider/duration_minutes and future verticals inherit editing
+                _sch = VERTICAL_SCHEMAS[listing["vertical"]]
+                _allowed_fields = set(_sch["required"]) | set(_sch.get("optional", []))
+                editable = (({"title", "description", "price", "location", "date",
+                              "capacity", "category", "tags", "url",
+                              "provider", "merchant"}
+                             | set(_sch.get("optional", []))) & _allowed_fields)
                 changes = {k: data[k] for k in editable if k in data}
                 if not changes:
                     return self._json(400, {"error": "no editable fields given",
@@ -1467,6 +1498,24 @@ class Handler(BaseHTTPRequestHandler):
                     if not t3:
                         return self._json(400, {"error": "title cannot be empty"})
                     changes["title"] = t3[:80]
+                # H17: schema-derived edit fields get schema validation
+                for _f, _t in (_sch.get("field_types") or {}).items():
+                    if _f not in changes:
+                        continue
+                    if _t == "positive_int":
+                        try:
+                            _iv = int(changes[_f])
+                        except (TypeError, ValueError):
+                            return self._json(400, {"error": f"{_f} must be an integer"})
+                        if _iv <= 0:
+                            return self._json(400, {"error": f"{_f} must be positive"})
+                        changes[_f] = _iv
+                for _k in ("provider", "merchant"):
+                    if _k in changes:
+                        _pv = str(changes[_k]).strip()
+                        if not _pv:
+                            return self._json(400, {"error": f"{_k} cannot be empty"})
+                        changes[_k] = _pv[:80]
                 listing.update(changes)
                 _persist_locked()
                 return self._json(200, {"ok": True, "edited": lid, "fields": sorted(changes)})
@@ -1525,6 +1574,10 @@ class Handler(BaseHTTPRequestHandler):
             v = listing["vertical"]
             missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
+            # H17: human_verified must be a real boolean ("yes" passed truthiness)
+            hv = data.get("human_verified")
+            if hv is not None and not isinstance(hv, bool):
+                return self._json(400, {"error": "human_verified must be a boolean"})
             if not data.get("human_verified") and not acct_verified:  # H15: consistent with the first gate — vouched accounts carry server-side proof
                 return self._json(403, {"error": "booking requires verified-human credential",
                     "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
@@ -1537,6 +1590,18 @@ class Handler(BaseHTTPRequestHandler):
             if unknown:
                 return self._json(400, {"error": f"unknown fields rejected: {unknown}",
                     "allowed": sorted(CLIENT_BOOKING_FIELDS[v])})
+            # H17: identity field is a bounded nonempty STRING (probe: numbers,
+            # objects, empty and 5000-char values were accepted; schema-driven
+            # so every vertical's identity field gets the same wall)
+            idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]
+            if not isinstance(data[idf], str):
+                return self._json(400, {"error": f"{idf} must be a string"})
+            _idv = data[idf].strip()
+            if not _idv:
+                return self._json(400, {"error": f"{idf} cannot be empty"})
+            if len(_idv) > 80:
+                return self._json(400, {"error": f"{idf} too long (max 80 chars)"})
+            data[idf] = _idv
             qty_raw = data.get("quantity", 1)
             # I3: strict integer quantity — bool/float/str rejected, no silent truncation
             if isinstance(qty_raw, bool) or not isinstance(qty_raw, int) or not (1 <= qty_raw <= 100):

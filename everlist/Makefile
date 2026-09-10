@@ -56,6 +56,8 @@ status: ## show recorded process states
 
 test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bounded
 	@mkdir -p $(RUNDIR)
+	@$(PYTHON) -c 'import cryptography, httpx' 2>/dev/null || { echo 'deps missing for $(PYTHON): pip install -r requirements.txt'; exit 1; }; \
+	$(VPY) -c 'import cryptography, uagents' 2>/dev/null || { echo 'deps missing for $(VPY): python -m venv venv && venv/bin/pip install -r requirements.txt'; exit 1; }; \
 	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
 	@trap '$(MAKE) --no-print-directory down >/dev/null 2>&1' EXIT; \
 		echo "=== G2 suite ==="; \
@@ -89,6 +91,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== H14 selfcheck tool ==='; $(PYTHON) test_h14_selfcheck.py || exit 1; \
 		echo '=== H15 services vertical ==='; $(PYTHON) test_h15_services.py || exit 1; \
 		echo '=== H16 demo seed tools ==='; $(PYTHON) test_h16_demo_seed.py || exit 1; \
+		echo '=== H17 red-team pass 2 ==='; $(PYTHON) test_h17_redteam.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \

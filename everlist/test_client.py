@@ -56,7 +56,10 @@ async def on_resp(ctx: Context, sender: str, msg: HubResponse):
         RESULTS["search"] = titles
         ctx.logger.info(f"SEARCH RESULT via uAgent: {d['count']} listings -> {titles}")
         # follow up with a booking through the wrapper (exercises /access + token path)
-        await ctx.send(HUB_WRAPPER_ADDR, HubRequest(action="book", listing_id="evt-1",
+        # no hardcoded ids: book whatever the search actually found (H16 lesson:
+        # demo-reset reseeded ids; built-in seed differs) — first result
+        first = (d.get("listings") or [{}])[0]
+        await ctx.send(HUB_WRAPPER_ADDR, HubRequest(action="book", listing_id=first.get("id", ""),
                                                     attendee="E2E-Human", human_verified=True))
     elif "id" in d and "escrow" in d:
         RESULTS["book"] = d
@@ -88,7 +91,12 @@ async def main():
     # assertions (not logging-only)
     assert RESULTS["search"] and len(RESULTS["search"]) >= 1, f"search failed: {RESULTS['search']}"
     assert "Rooftop Jazz Night" in RESULTS["search"], RESULTS["search"]
-    assert RESULTS["book"] and RESULTS["book"].get("escrow") == "HELD", f"book failed: {RESULTS['book']}"
+    # escrow must match the amount (H17 lesson: demo state contains free listings
+    # whose honest outcome is WAIVED) - HELD iff amount > 0
+    bk = RESULTS["book"]
+    amt = float(bk.get("amount", -1)) if bk else -1
+    exp = "HELD" if amt > 0 else "WAIVED"
+    assert bk and bk.get("escrow") == exp, f"book failed: escrow={bk.get('escrow')} amount={amt}"
     print(f"E2E_PASSED: search={RESULTS['search']} booking={RESULTS['book']['id']} escrow={RESULTS['book']['escrow']}")
     os._exit(0)  # hard exit inside loop: bounded, no cancellation cascade
 
