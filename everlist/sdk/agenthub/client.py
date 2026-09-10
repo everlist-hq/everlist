@@ -7,6 +7,7 @@ Security posture (SPEC §4/§7):
 """
 import json
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -15,6 +16,11 @@ import uuid
 from typing import Callable, Optional
 
 from .models import Booking, Listing
+
+# H11: central timeout policy — every request uses ONE knob (env-tunable).
+DEFAULT_TIMEOUT = float(os.environ.get("HUB_SDK_TIMEOUT", "10.0"))
+# H11: transient server failures worth one retry (idempotent GETs ONLY).
+_RETRYABLE_STATUS = frozenset({502, 503, 504})
 
 
 class HubError(Exception):
@@ -26,16 +32,31 @@ class HubError(Exception):
         super().__init__(f"hub {status}: {body.get('error', body)}")
 
 
+class HubNetworkError(HubError):
+    """H11: transport-level failure (connection refused/reset, timeout) —
+    no HTTP status exists. Subclasses HubError so existing handlers keep
+    working; check `isinstance(e, HubNetworkError)` to distinguish."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(0, {"error": f"network failure: {reason}", "retryable": True})
+        self.status = None  # H11: no HTTP status exists — must be set AFTER super (it writes 0)
+
+
 class AgentHub:
-    def __init__(self, url: str, timeout: float = 10.0):
+    def __init__(self, url: str, timeout: Optional[float] = None):
         self.url = url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = DEFAULT_TIMEOUT if timeout is None else timeout
         self._tokens: dict[str, str] = {}   # act -> token (book/list/confirm/cancel)
 
     # ---- transport ----
     def _request(self, method: str, path: str, body: Optional[dict] = None,
                  token: Optional[str] = None, idem_key: Optional[str] = None,
                  extra_headers: Optional[dict] = None) -> tuple[int, dict]:
+        """H11: central transport. Retry-once policy:
+        - GETs only (idempotent): on connect errors and 502/503/504
+        - NEVER on POST/writes — an unconfirmed first result could double-book
+        Transport failures raise HubNetworkError (subclass of HubError)."""
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Hub-Token"] = token          # header credentials ONLY
@@ -44,16 +65,32 @@ class AgentHub:
         if extra_headers:
             headers.update(extra_headers)
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return resp.status, json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
+        can_retry = method.upper() == "GET"
+        attempts = 2 if can_retry else 1
+        last_err: Optional[HubError] = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(0.25)  # H11: small fixed backoff before the single retry
+            req = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
             try:
-                payload = json.loads(e.read().decode())
-            except Exception:
-                payload = {"error": f"HTTP {e.code}"}
-            raise HubError(e.code, payload) from None
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return resp.status, json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                try:
+                    payload = json.loads(e.read().decode())
+                except Exception:
+                    payload = {"error": f"HTTP {e.code}"}
+                if can_retry and e.code in _RETRYABLE_STATUS and attempt < attempts - 1:
+                    last_err = HubError(e.code, payload)
+                    continue
+                raise HubError(e.code, payload) from None
+            except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as ex:
+                reason = getattr(ex, "reason", ex)
+                if attempt < attempts - 1:
+                    last_err = HubNetworkError(str(reason))
+                    continue
+                raise HubNetworkError(str(reason)) from None
+        raise last_err or HubNetworkError("unreachable")
 
     @staticmethod
     def _new_idem_key() -> str:

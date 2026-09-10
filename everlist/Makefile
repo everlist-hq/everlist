@@ -83,6 +83,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== H7 account deletion ==='; $(PYTHON) test_account_deletion.py || exit 1; \
 		echo '=== H9 single-listing fetch ==='; $(PYTHON) test_h9_listing_fetch.py || exit 1; \
 		echo '=== H10 booking status ==='; $(PYTHON) test_h10_booking_status.py || exit 1; \
+		echo '=== H11 SDK robustness ==='; $(PYTHON) test_h11_sdk_robustness.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \
