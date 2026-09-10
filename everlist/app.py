@@ -68,6 +68,11 @@ READ_LIMIT = int(os.environ.get("HUB_READ_LIMIT", "600"))        # reads/min/sou
 # HUB_BACKUP_MIN_BYTES (default 1MB) so small dev states stay clean.
 BACKUP_MIN_BYTES = int(os.environ.get("HUB_BACKUP_MIN_BYTES", "1000000"))
 BACKUP_KEEP = int(os.environ.get("HUB_BACKUP_KEEP", "5"))
+# H3: durability. os.replace is atomic but NOT durable — after a power cut the
+# last persist may exist only in page cache. fsync the temp file before the
+# replace and fsync the directory after it (the rename itself needs it).
+# Default ON; HUB_FSYNC=0 disables (benchmarking only).
+FSYNC_ENABLED = os.environ.get("HUB_FSYNC", "1") != "0"
 AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600),
                  "read": (READ_LIMIT, 60)}
@@ -239,7 +244,17 @@ def _persist_locked():
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(snap, f)
+        if FSYNC_ENABLED:
+            f.flush()
+            os.fsync(f.fileno())
     os.replace(tmp, STATE_FILE)  # atomic on POSIX
+    if FSYNC_ENABLED:
+        # H3: make the rename itself durable — fsync the containing directory
+        dfd = os.open(os.path.dirname(os.path.abspath(STATE_FILE)), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
 
 
 def _load_state():

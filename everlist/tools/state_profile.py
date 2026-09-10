@@ -4,7 +4,9 @@
 Loads a real state.json as a template, synthesizes a worst-case snapshot at the
 target scale (default 10k accounts / 5k listings, the backlog's numbers), and
 times the EXACT production write path of app.py::_persist_locked (json.dump to
-tmp + os.replace, no fsync — faithful to the real code) plus the startup load.
+tmp + os.replace; since H3 the production path fsyncs file+dir by default —
+pass --fsync to profile THAT path; default remains no-fsync for comparability
+with the B3 baseline numbers). Plus the startup load.
 All synthetic writes go to a temp dir; the real state file is only ever read.
 
 Run: python tools/state_profile.py [path/to/state.json] [--accounts N] [--listings N]
@@ -79,6 +81,8 @@ def main():
     ap.add_argument("--accounts", type=int, default=DEFAULT_ACCOUNTS)
     ap.add_argument("--listings", type=int, default=DEFAULT_LISTINGS)
     ap.add_argument("--iters", type=int, default=8)
+    ap.add_argument("--fsync", action="store_true",
+                    help="profile the production durability path (app.py fsyncs file+dir since H3, HUB_FSYNC=1 default)")
     args = ap.parse_args()
 
     with open(args.state) as f:
@@ -102,9 +106,18 @@ def main():
         tmp = dst + ".tmp"
         with open(tmp, "w") as f:
             json.dump(snap, f)
+            if args.fsync:
+                f.flush()
+                os.fsync(f.fileno())
         os.replace(tmp, dst)
+        if args.fsync:
+            dfd = os.open(tmpdir, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
         times.append((time.perf_counter() - t0) * 1000)
-    print(f"\npersist (json.dump+os.replace), {args.iters} iters: "
+    print(f"\npersist ({'fsync file+dir (production path)' if args.fsync else 'no fsync'}), {args.iters} iters: "
           f"min {min(times):.1f}ms / avg {statistics.mean(times):.1f}ms / max {max(times):.1f}ms")
 
     t0 = time.perf_counter()
@@ -116,8 +129,10 @@ def main():
     avg = statistics.mean(times)
     print(f"\nVERDICT: persist avg {avg:.1f}ms vs gate {GATE_MS:.0f}ms -> "
           f"{'JSON OK at this scale (B4 optional)' if avg < GATE_MS else 'B4 SQLite adapter MANDATORY per backlog gate'}")
-    print("note: path has NO fsync (faithful to app.py) - durability on power-cut is "
-          "best-effort; worth remembering in B4 regardless of the gate.")
+    print("note: profiled path was "
+          + ("fsync file+dir (matches app.py production since H3)" if args.fsync
+             else "NO fsync (baseline; app.py DOES fsync by default since H3, HUB_FSYNC=0 disables)")
+          + " - durability on power-cut is guaranteed only on the fsync path.")
     return 0
 
 
