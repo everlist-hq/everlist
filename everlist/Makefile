@@ -72,6 +72,8 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		$(PYTHON) test_read_limits.py || exit 1; \
 		echo "=== Backup rotation (B8) ==="; \
 		$(PYTHON) test_backups.py || exit 1; \
+		echo "=== Restore drill (H2) ==="; \
+		$(PYTHON) test_restore_drill.py || exit 1; \
 		echo "=== Chat help honesty (B10) ==="; \
 		$(PYTHON) test_chat_help.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
