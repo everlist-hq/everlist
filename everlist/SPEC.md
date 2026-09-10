@@ -43,8 +43,8 @@ This document is normative for hub implementations and clients. **MUST/SHOULD/MA
 | POST | `/accounts/vouch` | X-Admin-Key | 200 / 403 | pilot human proof: operator vouches by name; sets `human_verified` server-side |
 | POST | `/listings/{id}/manage` | list token; account owner (`sub=acct-` == `owner`) OR `manage_code` | 200 / 401 no token / 403 wrong code or not owner / 409 active bookings | edit allowlist: `title, description, price, location, date, capacity, category, tags, url`; capacity ≥ registered; delete refused while bookings are HELD/WAIVED |
 | POST | `/book` | book token + optional `Idempotency-Key` | 201 / 201(replayed) / 409 conflict | escrow HELD on creation; **WAIVED when amount = 0**; human proof: verified account (server-side) OR client `human_verified` stub |
-| POST | `/book/{id}/confirm` | admin-minted confirm token (single-use) | 200 RELEASED | owner-side fulfillment confirmation |
-| POST | `/book/{id}/cancel` | booking cancel token (single-use) | 200 REFUNDED | restores inventory, refunds |
+| POST | `/book/{id}/confirm` | admin-minted confirm token (single-use) | 200 RELEASED | owner-side fulfillment confirmation; H15: also accepts WAIVED (free listings) |
+| POST | `/book/{id}/cancel` | booking cancel token (single-use) | 200 REFUNDED | restores inventory, refunds; H15: also valid on WAIVED (free listings — no money moves) |
 | POST | `/admin/tokens` | admin key (constant-time compare) | 201 token | restricted minting |
 | GET | `/premium/events` | x402 payment (or none → 402) | 402 terms / 200 rich feed | mode label SIMULATED until C3a |
 
@@ -86,11 +86,17 @@ Intentional public exceptions: read routes, `/access` bootstrap (interim; A2 rep
    (no payment rail; verified-human gate unchanged; conformance C4b:
     WAIVED is only valid at amount 0 — enforced by check_hub.py)
 
+   H15: WAIVED bookings are first-class lifecycle participants —
+   confirm (owner side) ----------------------------> [ RELEASED ]
+   cancel (cancel token)  ----------------------------> [ REFUNDED ]
+   (no money moves in either transition — amount stays 0, C4b
+    still passes; inventory restored on cancel exactly as HELD)
+
 Invalid transitions (all 403/409, verified): confirm→confirm (replay 403),
 cancel→cancel (replay 403), cancel after RELEASED (409).
 ```
 
-Server-owned booking fields (clients CANNOT set): `id` (24-hex random), `escrow`, `amount`, `hub_fee`, `owner_payout`, `created`, `booked_by`, per-vertical projection fields. **Server-owned listing fields:** `owner` = authenticated token principal (anti-spoof: a merchant can never claim another merchant's listings, which `/orders` authorization depends on) and `manage_code_hash` = sha256 of the per-listing manage code (shown ONCE in the create response; knowledge of the code proves ownership for edit/delete — pilot-grade ownership until A2 personhood; never stored in plaintext, never returned again). Client fields (allowlist): events `attendee, quantity`; food `buyer, quantity`. Everything else → 400.
+Server-owned booking fields (clients CANNOT set): `id` (24-hex random), `escrow`, `amount`, `hub_fee`, `owner_payout`, `created`, `booked_by`, per-vertical projection fields. **Server-owned listing fields:** `owner` = authenticated token principal (anti-spoof: a merchant can never claim another merchant's listings, which `/orders` authorization depends on) and `manage_code_hash` = sha256 of the per-listing manage code (shown ONCE in the create response; knowledge of the code proves ownership for edit/delete — pilot-grade ownership until A2 personhood; never stored in plaintext, never returned again). Client fields (booking allowlist, DERIVED from the vertical schemas — adding a vertical extends it automatically): events `attendee, quantity`; food `buyer, quantity`; services `client, quantity`. Everything else → 400.
 
 ## 6. Identity + delegation
 

@@ -6,7 +6,7 @@ Kept separate from wrapper.py so it is unit-tested without starting an Agent.
 Supported intents:
   search/find/listings [query] -> GET /search?q=...
   list Title | cat | date | price | loc | cap -> POST /listings (one-prompt listing, B3c)
-  book ...                     -> honest guidance (identity + payment are real gates)
+  book <id> <name>             -> books FREE listings for logged-in accounts; guidance otherwise
   fee/commission               -> manifest declared-fee transparency info
   help/hello/anything else     -> capability summary (fallback treats text as search)
 """
@@ -148,7 +148,8 @@ def _fmt_listing(l: dict) -> str:
 
 
 _RICH_KEYS = ("title", "category", "date", "price", "location", "capacity",
-              "description", "tags", "url", "merchant")
+              "description", "tags", "url", "merchant", "vertical", "provider",
+              "duration_minutes")
 
 
 def _parse_rich(body: str) -> dict | None:
@@ -491,7 +492,8 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         parts = [rich.get("title", "")]
         tail = [rich.get(k, "") for k in ("category", "date", "price", "location", "capacity")]
         parts += tail
-        extra = {k: rich[k] for k in ("description", "tags", "url") if rich.get(k)}
+        extra = {k: rich[k] for k in ("description", "tags", "url", "vertical",
+                                      "provider", "duration_minutes") if rich.get(k)}
     else:
         parts = [p.strip() for p in body.split("|")]
         extra = {}
@@ -520,11 +522,36 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     except ValueError:
         cap = 20
     # mint a list token for this sender, then create the listing (owner = token principal)
-    payload = {
-        "vertical": "events", "title": title, "category": category,
-        "date": date, "price": float(price), "location": location,
-        "capacity": cap, "source": "chat-agent",
-    }
+    # H15: vertical is DATA - chat supports events (default) and services; the
+    # hub schema (GET /verticals) decides required fields, not chat code.
+    vert = str(extra.get("vertical", "events")).strip().lower()
+    if vert not in ("events", "services"):
+        return (f"Unknown vertical '{vert}'. Chat supports: events (default), services.\n"
+                "Example:\nlist\nvertical: services\ntitle: Mobile Massage\n"
+                "provider: Serenity Spa\nprice: 30\ncategory: wellness")
+    if vert == "services":
+        provider = str(extra.get("provider", "")).strip()
+        if not provider:
+            return ("Services listings need a provider. Example:\n"
+                    "list\nvertical: services\ntitle: Mobile Massage\nprovider: Serenity Spa\n"
+                    "price: 30\ncategory: wellness\nlocation: Vienna\nduration_minutes: 60\n"
+                    "description: what you offer")
+        payload = {
+            "vertical": "services", "title": title, "provider": provider,
+            "price": float(price), "category": category, "source": "chat-agent",
+        }
+        if location and location != "TBD":
+            payload["location"] = location
+        try:
+            payload["duration_minutes"] = int(str(extra.get("duration_minutes", "")).strip())
+        except (TypeError, ValueError):
+            pass
+    else:
+        payload = {
+            "vertical": "events", "title": title, "category": category,
+            "date": date, "price": float(price), "location": location,
+            "capacity": cap, "source": "chat-agent",
+        }
     if extra.get("description"):
         payload["description"] = extra["description"][:500]
     if extra.get("url"):
@@ -693,7 +720,7 @@ _HELP = (
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
     "• show <id> — full listing details (description, url, availability)\n"
     "• booking <id> — check your booking's escrow status (buyer or owner)\n"
-    "• book <id> — how booking works (free listings skip payment)\n"
+    "• book <id> <name> — book a FREE listing instantly with your account (paid = guidance)\n"
     "• fee — how our fee model stays fair"
 )
 
@@ -761,27 +788,59 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     if low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
 
-    # --- booking intent (honest guidance: identity + payment are real gates)
+    # --- booking intent (H15: FREE listings book IN CHAT for logged-in accounts;
+    # paid listings stay honest guidance - payment is a real gate)
     if low.startswith("book"):
-        lid = text.strip()[4:].strip()
-        free_note = ""
+        rest = text.strip()[4:].strip()
+        bits = rest.split(None, 1)
+        lid = bits[0] if bits else ""
+        who = bits[1].strip() if len(bits) > 1 else ""
+        target = None
         if lid:
             try:
                 d = _hub_get(hub_url, "/search")
                 target = next((l for l in (d.get("listings") or []) if l.get("id") == lid), None)
-                if target is not None and float(target.get("price", 1)) == 0:
-                    free_note = (f"\n'{target.get('title')}' is FREE — no payment needed; "
-                                 "your booking is escrow-WAIVED but still identity-gated.\n")
             except Exception:
-                pass
-        return (
-            "Bookings need two things EverList enforces for fairness:\n"
-            "1. a verified-human credential (fake agents are rejected)\n"
-            "2. payment via x402 — skipped automatically for free listings (escrow WAIVED)\n"
-            + free_note
-            + (f"\nUse the EverList SDK (agenthub client) with listing id '{lid}'.\n" if lid else "\n")
-            + "A booking agent with credentials can complete it end-to-end."
-        )
+                target = None
+        if target is None:
+            return (
+                "Bookings need two things EverList enforces for fairness:\n"
+                "1. a verified-human credential (fake agents are rejected)\n"
+                "2. payment via x402 — skipped automatically for free listings (escrow WAIVED)\n"
+                + (f"\nUse the EverList SDK (agenthub client) with listing id '{lid}'.\n" if lid else "\n")
+                + "A booking agent with credentials can complete it end-to-end."
+            )
+        if float(target.get("price", 1)) > 0:
+            return (
+                f"'{target.get('title')}' is a PAID listing ({target.get('price')}).\n"
+                "Payment goes through x402 — use the EverList SDK (agenthub client) "
+                f"with listing id '{lid}'. Free listings book right here in chat."
+            )
+        sess = _session(sender)
+        if not sess:
+            return (f"'{target.get('title')}' is FREE — I can book it for you right here.\n"
+                    "First create an account ('signup'), then: book " + lid + " <your-name>")
+        if not who:
+            return (f"'{target.get('title')}' is FREE. Who is the booking for?\n"
+                    "book " + lid + " <your-name>")
+        try:
+            sch = _hub_get(hub_url, "/verticals")["verticals"][target["vertical"]]["booking"]
+            payload = {"listing_id": lid, sch["identity"]: who[:80]}
+            status, res = _hub_post(hub_url, "/book", payload, token=sess["tokens"]["book"])
+        except Exception:
+            return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+        if status == 201:
+            return (f"✅ Booked! '{target.get('title')}' — booking {res.get('id')} "
+                    f"(escrow {res.get('escrow')}, amount {res.get('amount')}).\n"
+                    f"🔑 Booking secret (shown ONCE — view your private details with it): {res.get('booking_secret')}\n"
+                    "The owner confirms via the hub; cancel before fulfillment via the SDK "
+                    "(your cancel_token is in the booking).")
+        err = res.get("error", "unknown error")
+        if "verified-human" in err:
+            return ("Booking rejected: your account needs a human proof.\n"
+                    "Pilot: the operator can vouch for you. Production: Midnight zk-personhood "
+                    "(real human, identity stays private).")
+        return f"Booking rejected: {err}"
 
     # --- fee transparency intent
     if any(k in low for k in ("fee", "commission", "cost")):

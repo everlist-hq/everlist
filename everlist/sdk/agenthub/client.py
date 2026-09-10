@@ -149,17 +149,22 @@ class AgentHub:
         return tok
 
     # ---- merchant side ----
-    def add_listing(self, vertical: str, title: str, price: float, capacity: int,
+    def add_listing(self, vertical: str, title: str, price: float,
+                    capacity: Optional[int] = None,
                     idem_key: Optional[str] = None, **fields) -> Listing:
-        """Publish a listing. Server owns id/registered/available (SPEC §5)."""
-        payload = {"vertical": vertical, "title": title,
-                   "price": price, "capacity": capacity, **fields}
+        """Publish a listing. Server owns id/registered/available (SPEC §5).
+        H15: capacity is optional — only capacity-tracked verticals (events)
+        require it; services/food-style verticals omit it."""
+        payload = {"vertical": vertical, "title": title, "price": price, **fields}
+        if capacity is not None:
+            payload["capacity"] = capacity
         st, r = self._request("POST", "/listings", body=payload,
                               token=self._token("list"),
                               idem_key=idem_key or self._new_idem_key())
         return Listing.from_api({"id": r["id"], "vertical": vertical,
                                  "title": title, "price": price,
-                                 "capacity": capacity, "registered": 0,
+                                 "capacity": capacity if capacity is not None else 0,
+                                 "registered": 0,
                                  "available": True})
 
     # ---- buyer side ----

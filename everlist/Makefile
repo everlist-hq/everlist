@@ -87,6 +87,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== H12 request logging ==='; $(PYTHON) test_h12_request_logging.py || exit 1; \
 		echo '=== H13 openapi contract ==='; $(PYTHON) test_h13_openapi.py || exit 1; \
 		echo '=== H14 selfcheck tool ==='; $(PYTHON) test_h14_selfcheck.py || exit 1; \
+		echo '=== H15 services vertical ==='; $(PYTHON) test_h15_services.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \

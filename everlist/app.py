@@ -401,16 +401,35 @@ BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # official tes
 # G5: identities stay memory-only by default (no persistence of secrets/PII);
 
 VERTICAL_SCHEMAS = {
+    # H15: verticals are DATA. tracks_capacity = server-counts registrations
+    # (events-style, registered increments/decrements); field_types = per-field
+    # validation applied when the field is present; booking.fields = client-
+    # settable booking fields; booking.identity = the ONE field whose real value
+    # goes to the secret store (public copy gets an unlinkable anon-ref).
     "events": {"required": ["title", "date", "location", "price", "capacity"],
                "optional": ["description", "category", "tags", "url"],
                "categories": ["meetup", "concert", "workshop", "conference", "market",
                                "sports", "community", "party", "exhibition", "other"],
-               "booking": {"required": ["attendee"], "action": "register+pay"}},
+               "tracks_capacity": True,
+               "field_types": {"capacity": "positive_int", "date": "nonempty"},
+               "booking": {"required": ["attendee"], "fields": ["attendee", "quantity"],
+                            "identity": "attendee", "action": "register+pay"}},
     "food":   {"required": ["title", "merchant", "price"],
                "optional": ["description", "category", "tags", "url", "preparation_minutes"],
                "categories": ["pizzeria", "vegan", "asian", "burger", "bakery",
                                "cafe", "grocery", "other"],
-               "booking": {"required": ["buyer", "quantity"], "action": "order+pay"}},
+               "field_types": {},
+               "booking": {"required": ["buyer", "quantity"], "fields": ["buyer", "quantity"],
+                            "identity": "buyer", "action": "order+pay"}},
+    # H15: second-vertical proof — adding a vertical is DATA, not code.
+    "services": {"required": ["title", "provider", "price"],
+                 "optional": ["description", "category", "tags", "url", "location",
+                               "duration_minutes"],
+                 "categories": ["cleaning", "repair", "tutoring", "design", "consulting",
+                                 "wellness", "transport", "other"],
+                 "field_types": {"duration_minutes": "positive_int"},
+                 "booking": {"required": ["client"], "fields": ["client", "quantity"],
+                              "identity": "client", "action": "book+pay"}},
 }
 
 # I1: field ownership. Server-owned fields may never come from clients.
@@ -439,10 +458,10 @@ def normalize_tags(raw):
         if len(tags) >= TAXONOMY["tag_max"]:
             break
     return tags
-CLIENT_BOOKING_FIELDS = {
-    "events": {"attendee", "quantity"},
-    "food": {"buyer", "quantity"},
-}
+# H15: client-settable booking fields DERIVED from the vertical schemas —
+# adding a vertical extends this automatically (no code edit).
+CLIENT_BOOKING_FIELDS = {v: set(s["booking"]["fields"])
+                         for v, s in VERTICAL_SCHEMAS.items()}
 RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash"}  # owner = authenticated principal; manage_code_hash = server-only (anti-spoof)
 
 def hub_fee_c(price_c):
@@ -876,9 +895,11 @@ class Handler(BaseHTTPRequestHandler):
             me = payload["sub"]
             with LOCK:
                 my_listings = {l["id"] for l in LISTINGS if l.get("owner") == me}
+                # H15: identity field is schema-declared per vertical (attendee/buyer/client)
+                _idf = tuple(sorted({s["booking"]["identity"] for s in VERTICAL_SCHEMAS.values()}))
                 pubfields = ("id", "listing_id", "vertical", "escrow", "amount",
                              "hub_fee", "owner_payout", "quantity", "created",
-                             "booked_by", "attendee", "buyer")
+                             "booked_by") + _idf
                 orders = [{k: b[k] for k in pubfields if k in b}
                           for b in BOOKINGS if b.get("listing_id") in my_listings]
             return self._json(200, {"orders": orders, "merchant": me, "count": len(orders)})
@@ -1282,12 +1303,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not (price >= 0 and price == price and price not in (float("inf"), float("-inf"))):
                     raise ValueError("price must be a nonnegative finite number")
                 data["price"] = price
-                if v == "events":
-                    cap = int(data["capacity"])
-                    if cap <= 0: raise ValueError("capacity must be positive")
-                    data["capacity"] = cap
-                    if not str(data.get("date", "")).strip():
-                        return self._json(400, {"error": "date required for events"})
+                # H15: per-field validation is SCHEMA DATA (field_types), not code —
+                # events capacity/date, services duration_minutes, any future field.
+                for _f, _t in (schema.get("field_types") or {}).items():
+                    if _f not in data:
+                        continue
+                    if _t == "positive_int":
+                        _iv = int(data[_f])
+                        if _iv <= 0:
+                            raise ValueError(f"{_f} must be positive")
+                        data[_f] = _iv
+                    elif _t == "nonempty" and not str(data[_f]).strip():
+                        return self._json(400, {"error": f"{_f} required for {v}"})
             except (TypeError, ValueError) as ex:
                 return self._json(400, {"error": f"invalid field: {ex}"})
             # EverList taxonomy: category from controlled vocab (optional but
@@ -1338,10 +1365,11 @@ class Handler(BaseHTTPRequestHandler):
                 data["owner"] = p["sub"]   # SERVER-OWNED: authenticated principal, never client-set (anti-spoof for /orders)
                 manage_code = "mgr-" + secrets.token_hex(8)   # ownership secret (64-bit): shown ONCE, stored as sha256 only — NEVER echoed (H9 _pub_listing)
                 data["manage_code_hash"] = hashlib.sha256(manage_code.encode()).hexdigest()
-                if v == "events":
+                if schema.get("tracks_capacity"):
                     data["registered"] = 0   # server-initialized counter
                     data["available"] = True  # default; SOLD OUT derives from registered>=capacity at booking time
-                if v == "food": data["available"] = bool(data.get("available", True))
+                else:
+                    data["available"] = bool(data.get("available", True))
                 LISTINGS.append(data)
                 _persist_locked()
             return self._json(201, {"ok": True, "id": lid, "manage_code": manage_code,
@@ -1497,9 +1525,9 @@ class Handler(BaseHTTPRequestHandler):
             v = listing["vertical"]
             missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
-            if not data.get("human_verified"):
+            if not data.get("human_verified") and not acct_verified:  # H15: consistent with the first gate — vouched accounts carry server-side proof
                 return self._json(403, {"error": "booking requires verified-human credential",
-                    "note": "production: zk-proof of personhood (Midnight); stub accepts human_verified: true"})
+                    "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
             # I1: field ownership — reject reserved fields, keep only allowlisted client fields
             reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
             if reserved_seen:
@@ -1534,10 +1562,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not listing: return self._json(404, {"error": f"no listing {lid}"})
                 if listing.get("archived"):
                     return self._json(409, {"error": "listing archived - not bookable"})
-                if listing["vertical"] == "events":
-                    if listing["registered"] + qty > listing["capacity"]:
+                _lsch = VERTICAL_SCHEMAS[listing["vertical"]]
+                if _lsch.get("tracks_capacity"):
+                    if listing.get("registered", 0) + qty > listing["capacity"]:
                         return self._json(409, {"error": "event full"})
-                elif listing["vertical"] == "food" and not listing.get("available", True):
+                elif not listing.get("available", True):
                     return self._json(409, {"error": "listing unavailable"})
                 # I3: money as integer minor units internally (convert at the edge)
                 price_c = int(round(listing["price"] * 100)) * qty
@@ -1550,8 +1579,9 @@ class Handler(BaseHTTPRequestHandler):
                 bid = "bk-" + secrets.token_hex(12)
                 secret = secrets.token_hex(16)
                 # I1: server-owned fields ONLY; client data enters via explicit allowlist
-                priv_fields = {k: d for k, d in data.items() if k in ("attendee", "buyer")}
-                pub = {k: (anon_ref() if k in ("attendee", "buyer") else d)
+                _idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]  # H15: schema-declared
+                priv_fields = {k: d for k, d in data.items() if k == _idf}
+                pub = {k: (anon_ref() if k == _idf else d)
                        for k, d in data.items() if k in CLIENT_BOOKING_FIELDS[v]}
                 booking = {"id": bid, "listing_id": lid, "vertical": v,
                     "escrow": escrow_state, "amount": price, "hub_fee": fee,
@@ -1562,7 +1592,8 @@ class Handler(BaseHTTPRequestHandler):
                 BOOKINGS.append(booking)
                 LEDGER.append({"ts": time.time(), "booking": bid, "amount": price,
                     "hub_fee": fee, "owner_payout": payout, "escrow": escrow_state})
-                if v == "events": listing["registered"] += qty
+                if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
+                    listing["registered"] = listing.get("registered", 0) + qty
                 _persist_locked()
             resp = {**booking,
                 "booking_secret": secret, "secret_note": "shown ONCE; required to view private details",
@@ -1589,7 +1620,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
-                if b["escrow"] != "HELD": return self._json(409, {"error": f"escrow is {b['escrow']}"})
+                if b["escrow"] not in ("HELD", "WAIVED"):  # H15: free (WAIVED) bookings confirm too — no money moves
+                    return self._json(409, {"error": f"escrow is {b['escrow']}"})
                 b["escrow"] = "RELEASED"
                 for t in LEDGER:
                     if t["booking"] == bid: t["escrow"] = "RELEASED"; t["released_to"] = "owner"
@@ -1608,12 +1640,13 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
-                if b["escrow"] != "HELD": return self._json(409, {"error": f"escrow is {b['escrow']}"})
+                if b["escrow"] not in ("HELD", "WAIVED"):  # H15: WAIVED (free) bookings are cancellable too
+                    return self._json(409, {"error": f"escrow is {b['escrow']}"})
                 b["escrow"] = "REFUNDED"
                 # I3: restore capacity exactly once, atomically with the escrow transition
                 lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
-                if lst and b["vertical"] == "events":
-                    lst["registered"] = max(0, lst["registered"] - b.get("quantity", 1))
+                if lst and VERTICAL_SCHEMAS.get(b["vertical"], {}).get("tracks_capacity"):
+                    lst["registered"] = max(0, lst.get("registered", 0) - b.get("quantity", 1))
                 for t in LEDGER:
                     if t["booking"] == bid: t["escrow"] = "REFUNDED"; t["refunded_to"] = "buyer"
                 _persist_locked()
