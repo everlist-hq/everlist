@@ -1,0 +1,8 @@
+# runtime state, secrets, logs, caches - never in the public repo
+.run/
+.secrets/
+*.log
+state.json
+__pycache__/
+.pytest_cache/
+venv/

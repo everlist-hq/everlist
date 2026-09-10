@@ -1,0 +1,12 @@
+# runtime state (registered hub records) - regenerable, not for publication
+registry.json
+registry.json.tmp
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# local env / secrets
+.env
+*.key

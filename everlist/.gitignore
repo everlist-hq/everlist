@@ -1,0 +1,16 @@
+# runtime state contains booking secrets, admin keys, wallets - NEVER commit
+.run/
+state.json
+*.state.json
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# local env / secrets
+.env
+*.key
+
+# canonical agent identity seed (TESTNET ONLY - never commit, never attach real funds)
+.secrets/

@@ -1,0 +1,54 @@
+name: tests
+
+# F4a: CI for agent-hub-v2 + registry. Mirrors `make test` (the REAL suite:
+# G2 security/functional suite + A2A uAgent E2E) plus the registry suites.
+# No pytest dir exists; do not invent one.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      # CI-only THROWAWAY seed for the uAgents wrapper (fail-closed env var).
+      # Never funded, never used outside this run. Never commit real seeds.
+      HUB_AGENT_SEED: "ci-throwaway-seed-do-not-fund-000000000000"
+    defaults:
+      run:
+        working-directory: everlist
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies (into ./venv so Makefile VPY default works)
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install -r requirements.txt
+
+      - name: G2 security + functional suite
+        run: venv/bin/python test_suite.py
+
+      - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
+        run: make test PYTHON=venv/bin/python
+
+      - name: Registry service suite (D2)
+        working-directory: registry
+        run: ../agent-hub-v2/venv/bin/python test_registry.py
+
+      - name: Conformance checker suite (D3)
+        working-directory: registry
+        run: ../agent-hub-v2/venv/bin/python test_check_hub.py
+
+      - name: x402 verification suite (C3a)
+        working-directory: everlist
+        run: venv/bin/python test_x402.py
+
+      - name: x402 settlement suite (C3b)
+        working-directory: everlist
+        run: venv/bin/python test_x402_settle.py
