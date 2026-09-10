@@ -60,8 +60,13 @@ ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-Do
 # per-IP is unreliable behind relays, documented honestly in SPEC)
 # HARDENING-v2: PoW replaced tight caps as the primary DoS gate — limits are
 # generous per-source backstops now (a fair user hits none of them).
+# B7: public-read sanity limits. Generous by design — legit agents never feel them.
+READ_Q_MAX = 200                                        # search term length cap
+READ_PAGE_MAX = int(os.environ.get("HUB_READ_PAGE_MAX", "500"))  # max results per page
+READ_LIMIT = int(os.environ.get("HUB_READ_LIMIT", "600"))        # reads/min/source
 AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
-                 "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600)}
+                 "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600),
+                 "read": (READ_LIMIT, 60)}
 # HARDENING-v2: per-source fairness (was: one global bucket per kind — a single
 # attacker could deny service to ALL signups by filling the shared window).
 AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
@@ -77,6 +82,28 @@ def _source_of(handler):
         if xff:
             return xff.split(",")[0].strip()[:64]
     return str(handler.client_address[0]) if handler.client_address else "unknown"
+
+
+def _paginate(items, query):
+    """B7: offset pagination for public reads. Default (no params) returns up to
+    READ_PAGE_MAX — identical behavior for small hubs; huge result sets page via
+    offset+limit instead of growing responses unboundedly. Returns (slice, off, lim)."""
+    try:
+        off = max(0, int(query.get("offset", ["0"])[0]))
+    except (ValueError, TypeError):
+        off = 0
+    try:
+        lim = int(query.get("limit", [str(READ_PAGE_MAX)])[0])
+    except (ValueError, TypeError):
+        lim = READ_PAGE_MAX
+    lim = max(1, min(lim, READ_PAGE_MAX))
+    return items[off:off + lim], off, lim
+
+
+def _read_gate(handler):
+    """B7: coarse per-source read backstop. Caller must NOT hold LOCK."""
+    with LOCK:
+        return _auth_allow("read", _source_of(handler))
 
 
 def _gen_check(payload):
@@ -535,6 +562,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/verticals":
             return self._json(200, {"verticals": VERTICAL_SCHEMAS})
         if u.path == "/listings":
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
             v = parse_qs(u.query).get("vertical", [""])[0]
             show_arch = parse_qs(u.query).get("archived", [""])[0] in ("1", "true")
             if show_arch:
@@ -560,12 +589,19 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 res = [l for l in LISTINGS
                        if not l.get("archived") and (not v or l["vertical"] == v)]
-            return self._json(200, {"count": len(res), "listings": res})
+            total = len(res)
+            res, off, lim = _paginate(res, parse_qs(u.query))
+            return self._json(200, {"count": total, "offset": off, "limit": lim,
+                                    "returned": len(res), "listings": res})
         if u.path == "/search":
             """Faceted search: q (substring) + structured filters.
             All filters AND-combined; agents can discover vocab via /verticals."""
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
             q = parse_qs(u.query)
             term = q.get("q", [""])[0].lower()
+            if len(term) > READ_Q_MAX:
+                return self._json(400, {"error": f"q too long (max {READ_Q_MAX} chars)"})
             fvert = q.get("vertical", [""])[0]
             fcat = q.get("category", [""])[0].strip().lower()
             ftag = q.get("tag", [""])[0].strip().lower()
@@ -585,7 +621,10 @@ class Handler(BaseHTTPRequestHandler):
                         res = [l for l in res if float(l.get("price", 0)) <= lim]
                     except ValueError:
                         return self._json(400, {"error": "max_price must be a number"})
-            return self._json(200, {"count": len(res), "filters": {
+            total = len(res)
+            res, off, lim = _paginate(res, parse_qs(u.query))
+            return self._json(200, {"count": total, "offset": off, "limit": lim,
+                "returned": len(res), "filters": {
                 "q": term, "vertical": fvert, "category": fcat, "tag": ftag,
                 "location": floc, "max_price": fmax or None}, "listings": res})
         if u.path == "/bookings":

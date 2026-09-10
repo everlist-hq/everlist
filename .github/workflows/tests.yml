@@ -46,6 +46,9 @@ jobs:
       - name: Chat E2E via real wrapper (B6: signup/list/login-seed/edit across two senders)
         run: venv/bin/python -u test_chat_e2e.py
 
+      - name: Public read limits (B7: q cap, pagination, per-source backstop)
+        run: venv/bin/python test_read_limits.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 

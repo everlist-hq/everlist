@@ -180,3 +180,9 @@ Accounts have a `kind`: `keypair` (default for signups that send a pubkey) or `c
 ## 14. Listing ID policy
 
 - IDs are `{vertical[:4]}-{N}` from a persistent per-vertical counter (state `id_counters`), monotonic, NEVER reused after deletes, stable across restarts. Legacy `len(LISTINGS)+1` allocation was removed (collision risk after deletes).
+
+## 15. Public-read sanity limits (B7)
+
+- **Search term cap:** `q` longer than 200 chars is rejected with `400 q too long (max 200 chars)` (applies to `/search`; chat surfaces the same reason honestly).
+- **Pagination:** `/listings` and `/search` accept `offset` (default 0, negative→0) and `limit` (default 500, clamped 1..`HUB_READ_PAGE_MAX`, default max 500). Responses add `offset`, `limit`, `returned`; `count` stays the FULL match count (backward compatible: small hubs still get everything in one page).
+- **Read backstop:** `/search` and `/listings` are limited per source (same `_source_of` fairness as auth): `HUB_READ_LIMIT` reads/min (default 600 — generous; legit agents never hit it). Over the limit → `429 too many read requests`. Chat search that hits a hub rejection surfaces the REAL reason, never 'unreachable'.

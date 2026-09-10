@@ -539,6 +539,14 @@ def _smart_search(hub_url: str, text: str) -> str:
             listings = list(seen.values())
         else:
             listings = base
+    except urllib.error.HTTPError as ex:
+        # B7 honesty: real hub rejections (e.g. q too long) must not masquerade
+        # as 'unreachable' — surface the actual reason.
+        try:
+            err = json.loads(ex.read().decode()).get("error", "")
+        except Exception:
+            err = ""
+        return f"Search rejected: {err or ('HTTP ' + str(ex.code))}"
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
     qualifier = " (free only)" if free else ""
