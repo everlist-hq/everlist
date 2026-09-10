@@ -89,3 +89,8 @@ clean: ## remove .run/ (harness-owned ONLY; never touches other files)
 	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
 	@rm -rf $(RUNDIR)
 	@echo "[clean] removed $(RUNDIR)/ (harness-owned only)"
+
+audit: ## H6: pip-audit the dependency tree (waivers documented in SPEC 17)
+	@$(VPY) -m pip_audit --version >/dev/null 2>&1 || { echo "[audit] pip-audit missing — install with: $(VPY) -m pip install pip-audit"; exit 2; }
+	@$(VPY) -m pip_audit -r requirements.txt --ignore-vuln PYSEC-2026-3002 --ignore-vuln PYSEC-2026-1325 \
+		&& echo "[audit] no known vulnerabilities (2 waived — reasoning in SPEC 17)"

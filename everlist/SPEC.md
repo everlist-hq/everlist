@@ -213,3 +213,14 @@ Every mutating POST route carries a per-source fixed-window backstop (`_auth_all
 - Before every persist, if the current `state.json` exceeds `HUB_BACKUP_MIN_BYTES` (default 1 MB), the PRE-persist snapshot is copied to `<state_dir>/backups/state-<ns>.json`; only the newest `HUB_BACKUP_KEEP` (default 5) backups are kept (chronological rotation).
 - Newest backup therefore always equals the state immediately before the latest write — a bad write or operator error can lose at most one mutation, not the ledger.
 - Backup failure degrades to a logged warning; persistence itself never breaks. Env knobs: `HUB_BACKUP_MIN_BYTES`, `HUB_BACKUP_KEEP`.
+
+## 17. Dependency hygiene (H6)
+
+- All direct dependencies in `requirements.txt` are pinned to exact versions (`uagents`, `httpx`, `eth-account`, `cryptography`) — upgrades are deliberate, audited events.
+- `make audit` runs `pip-audit` over the full resolved dependency tree; CI runs the same audit (non-blocking until the tree is fully clean upstream).
+- Known vulnerabilities, explicitly waived (re-evaluate on every dependency bump):
+
+| ID | Package | Why waived |
+| --- | --- | --- |
+| PYSEC-2026-3002 (CVE-2025-69277) | pynacl 1.6.0 (transitive via cosmpy) | Vulnerability is in bundled libsodium's `crypto_core_ed25519_is_valid_point` with untrusted data ("atypical use cases"); that API is not reachable through our stack, and cosmpy 0.12.2 pins `pynacl==1.6.0` exactly — the fixed 1.6.2 would break the declared tree. EverList's own crypto is Ed25519 via `cryptography` 50.0.1, not PyNaCl. Re-audit when cosmpy lifts the pin. |
+| PYSEC-2026-1325 | ecdsa 0.19.2 (transitive via cosmpy, uagents-core) | Minerva timing attack on P-256 ECDSA *signing*; no fixed version exists upstream. Our own code never uses ecdsa (Ed25519 via `cryptography`); ecdsa signing occurs only inside Fetch agent identity registration — rare, local, non-adversarial. Monitor upstream. |

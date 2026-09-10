@@ -82,3 +82,10 @@ jobs:
       - name: x402 settlement suite (C3b)
         working-directory: experiments/agent-hub-v2
         run: venv/bin/python test_x402_settle.py
+
+      - name: Dependency audit (H6: pip-audit; waivers reasoned in SPEC 17)
+        working-directory: experiments/agent-hub-v2
+        continue-on-error: true
+        run: |
+          venv/bin/pip install -q pip-audit
+          venv/bin/pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-3002 --ignore-vuln PYSEC-2026-1325

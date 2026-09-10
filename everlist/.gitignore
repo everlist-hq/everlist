@@ -2,6 +2,8 @@
 .run/
 state.json
 *.state.json
+# H4 lockfiles + any runtime locks (flock discipline files)
+*.lock
 
 # python
 venv/

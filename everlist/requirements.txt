@@ -1,4 +1,4 @@
 uagents==0.25.5
 httpx==0.28.1
 eth-account==0.14.0
-cryptography>=42.0
+cryptography==50.0.1
