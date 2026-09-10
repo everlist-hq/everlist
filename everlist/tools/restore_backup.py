@@ -73,16 +73,18 @@ def restore(state_path, backup_name, dry_run=False):
     if not os.path.exists(src):
         raise SystemExit(f"backup not found: {src}")
     snap = verify_snapshot(src)
-    if hub_is_live(state_path):
-        raise SystemExit("REFUSING: a live hub appears to hold this state lock. "
-                         "Stop it first (make down).")
     stats = {k: len(snap.get(k) or []) for k in sorted(REQUIRED_KEYS)}
     print(f"backup : {backup_name}")
     print(f"source : {src}")
     print(f"stats  : {stats}")
     if dry_run:
+        # --check is read-only: allowed even while a live hub holds the lock
+        # (H4) — operators may preview a restore before stopping the hub.
         print("dry-run: no changes made (--check)")
         return
+    if hub_is_live(state_path):
+        raise SystemExit("REFUSING: a live hub appears to hold this state lock. "
+                         "Stop it first (make down).")
     # keep the current state as an undo point
     if os.path.exists(state_path):
         undo = os.path.join(os.path.dirname(state_path),

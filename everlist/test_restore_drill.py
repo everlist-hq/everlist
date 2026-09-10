@@ -103,18 +103,22 @@ rc, out = run_tool("--list")
 check("H2 --list shows backups with indices", rc == 0 and "[1]" in out and target in out)
 rc, out = run_tool("--check", "--file", "1")
 check("H2 --check is a no-op", rc == 0 and "dry-run" in out and sha(STATE) != target_hash)
-# live-state refusal: the tool must refuse while ANY process holds the state
-# flock. The hub itself only takes this lock once H4 lands; prove the guard
-# semantics now with a simulated lock-holder (exactly the future H4 condition).
+# live-state refusal: the hub now HOLDS the state flock itself (H4 landed).
+# Prove both halves: a non-blocking acquire fails while the hub runs, and the
+# tool refuses to restore a live state. (Supersedes the old simulated
+# lock-holder, which would now block forever against the real hub lock.)
 lockf = open(STATE + ".lock", "a+")
 import fcntl
-fcntl.flock(lockf, fcntl.LOCK_EX)
-rc, out = run_tool("--latest")
-fcntl.flock(lockf, fcntl.LOCK_UN)
+try:
+    fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.flock(lockf, fcntl.LOCK_UN)
+    hub_holds = False
+except OSError:
+    hub_holds = True
 lockf.close()
-check("H2 refuses restore while state is flocked", rc != 0 and "REFUSING" in out)
-rc2, out2 = run_tool("--latest")
-check("H2 proceeds once the lock is released", rc2 == 0 and "restored" in out2)
+check("H2 hub holds the state flock while running (H4)", hub_holds)
+rc, out = run_tool("--latest")
+check("H2 refuses restore while hub is live", rc != 0 and "REFUSING" in out)
 
 # ---- phase 3: stop hub, restore the earlier world ----
 stop(hub, logf)

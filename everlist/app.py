@@ -1443,6 +1443,22 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    # H4: single-instance guard. Two hubs sharing one state.json on different
+    # ports would interleave writes and corrupt it (the Makefile port guard
+    # cannot catch same-state-different-port starts). Take a non-blocking
+    # flock on <state>.lock and HOLD the fd for the process lifetime — closing
+    # it would release the lock. tools/restore_backup.py probes this same lock
+    # before restoring. Exit 79 (78 = corrupt state fail-closed).
+    import fcntl
+    _H4_LOCK_FD = open(os.path.abspath(STATE_FILE) + ".lock", "a+")
+    try:
+        fcntl.flock(_H4_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(f"REFUSING to start: state lock is held — another hub is likely "
+              f"running on this state ({STATE_FILE}). Stop it first, or if this "
+              f"is a stale lock after a crash, remove the .lock file.",
+              file=sys.stderr)
+        sys.exit(79)
     _load_state()
     print(f"agent-hub-v2 (open/fair) on :{port} - fee {FEE_PCT}%, env {RUN_ENV}, state {STATE_FILE}")
     class HubServer(ThreadingHTTPServer):
