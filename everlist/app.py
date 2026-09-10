@@ -82,7 +82,8 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "create": (int(os.environ.get("HUB_LIMIT_CREATE", "60")), 60),
                  "book": (int(os.environ.get("HUB_LIMIT_BOOK", "60")), 60),
                  "manage": (int(os.environ.get("HUB_LIMIT_MANAGE", "60")), 60),
-                 "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60)}
+                 "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60),
+                 "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60)}
 # HARDENING-v2: per-source fairness (was: one global bucket per kind — a single
 # attacker could deny service to ALL signups by filling the shared window).
 AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
@@ -1473,6 +1474,60 @@ class Handler(BaseHTTPRequestHandler):
             tok = hublib.mint_token(ADMIN_KEY, "confirm", sub, ttl=int(data.get("ttl", 3600)))
             return self._json(201, {"ok": True, "token": tok, "act": "confirm", "booking_id": sub})
         return self._json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        # H7: account self-deletion (GDPR-style erasure). The money trail
+        # (LEDGER + booking records) survives BY DESIGN — pseudonymous refs,
+        # needed for escrow auditability. Owned listings are archived, not
+        # destroyed (bookers keep escrow resolution; owner can no longer be
+        # relinked because the account is gone).
+        path = urlparse(self.path).path
+        if int(self.headers.get("Content-Length", 0)) > 65536:
+            return self._json(413, {"error": "request body too large (max 64KB)"})
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(n)
+            data = json.loads(raw) if raw.strip() else {}
+        except Exception as ex:
+            return self._json(400, {"error": str(ex)})
+        if path == "/accounts/me":
+            # H5 lesson: count the attempt BEFORE validation — failed deletes
+            # count, so brute-forcing the token wall dies at the limit.
+            with LOCK:
+                if not _auth_allow("delete", _source_of(self)):
+                    return self._json(429, {"error": "delete rate limit reached for your source, retry later"})
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = None, "missing X-Hub-Token"
+            if cred:
+                for act in ("list", "book"):
+                    p, err = hublib.verify_token(BOOKING_KEY, cred, act, single_use=False)
+                    if p: break
+            if p:
+                p, err = _gen_check(p)
+            if not p or not str(p.get("sub", "")).startswith("acct-"):
+                return self._json(401, {"error": err or "account token required",
+                    "hint": "send a login token as X-Hub-Token"})
+            aid = p["sub"]
+            confirm = str(data.get("confirm", "")).strip()
+            with LOCK:
+                if aid not in ACCOUNTS:
+                    return self._json(404, {"error": "no account"})
+                if confirm != aid:
+                    return self._json(400, {"error": "deletion needs typed confirmation: send {\"confirm\": \"<your account id>\"} in the body"})
+                n_archived = 0
+                for l in LISTINGS:
+                    if l.get("owner") == aid and not l.get("archived"):
+                        l["archived"] = True
+                        n_archived += 1
+                del ACCOUNTS[aid]
+                LOGIN_CHALLENGES.pop(aid, None)
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid,
+                "listings_archived": n_archived,
+                "note": "account erased (incl. recovery email); owned listings archived; "
+                        "the public ledger keeps its pseudonymous refs for escrow auditability; "
+                        "every token of this account is now invalid"})
+        return self._json(404, {"error": "unknown DELETE route"})
 
     def log_message(self, *a): pass
 

@@ -52,6 +52,25 @@ def _hub_post(hub_url: str, path: str, payload: dict, token: str | None = None) 
             return e.code, {"error": f"hub rejected the request (HTTP {e.code})"}
 
 
+def _hub_delete(hub_url: str, path: str, payload: dict, token: str | None = None) -> tuple[int, dict]:
+    """H7: DELETE with body (token-authed), surfacing real rejection reasons."""
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        hub_url.rstrip("/") + path, data=body, method="DELETE",
+        headers={"Content-Type": "application/json"},
+    )
+    if token:
+        req.add_header("X-Hub-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode())
+        except Exception:
+            return e.code, {"error": f"hub rejected the request (HTTP {e.code})"}
+
+
 def _fmt_listing(l: dict) -> str:
     price = l.get("price", "?")
     avail = "spots open" if l.get("available") else "SOLD OUT"
@@ -360,6 +379,40 @@ def _logout_all(hub_url: str, sender: str) -> str:
             "Log in again wherever you still need access.")
 
 
+def _delete_account(hub_url: str, sender: str, arg: str) -> str:
+    """H7: two-step account self-deletion. Step 1 asks for the typed account id
+    (intent proof against accidents); step 2 performs it and ends the session.
+    The public ledger keeps its pseudonymous refs — the money trail survives."""
+    s = _session(sender)
+    if not s:
+        return ("Login first (login <code> or login-seed <seed>) - "
+                "delete-account erases YOUR logged-in account and archives its listings.")
+    arg = (arg or "").strip()
+    if not arg:
+        s["pending_delete"] = s.get("account_id")
+        aid = s.get("account_id", "?")
+        return (f"⚠️ This PERMANENTLY erases account {aid}: your recovery email is deleted and "
+                f"all your listings are archived (bookers keep their escrow rights).\n"
+                f"Sure? Type:  delete-account confirm {aid}")
+    if not s.get("pending_delete"):
+        return "Safety first: run delete-account once to see what it does, then confirm."
+    expected = s.get("pending_delete")
+    if arg != f"confirm {expected}" and arg != expected:
+        return (f"Confirmation mismatch. To erase account {expected}, type exactly:\n"
+                f"delete-account confirm {expected}")
+    try:
+        code2, res = _hub_delete(hub_url, "/accounts/me", {"confirm": expected},
+                                 token=s["tokens"].get("list"))
+    except Exception:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code2 != 200:
+        return f"{res.get('error', 'Could not delete the account.')}"
+    _SESSIONS.pop(sender, None)
+    n = res.get("listings_archived", 0)
+    return (f"🗑️ Account {expected} is erased (recovery email deleted, every token revoked). "
+            f"{n} listing(s) archived. The public ledger keeps its pseudonymous refs for escrow auditability.")
+
+
 def _create_listing(hub_url: str, sender: str, text: str) -> str:
     """One-prompt listing, two formats:
     Quick:  list Title | category | date | price | location | capacity
@@ -573,6 +626,7 @@ _HELP = (
     "• email-bind <email> / email-code <code> — enable email recovery\n"
     "• recover <email> / recover-confirm <email> <code> — recover a lost account code\n"
     "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
+    "• delete-account — erase your account (typed confirmation; listings archived, ledger refs kept)\n"
     "• my-listings — your listings\n"
     "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
     "• delete <id> [code] — remove your listing\n"
@@ -603,6 +657,9 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _logout(sender)
     if low == "logout-all":
         return _logout_all(hub_url, sender)
+    # H7: account deletion — must match BEFORE the 'delete ' listing branch
+    if low == "delete-account" or low.startswith("delete-account "):
+        return _delete_account(hub_url, sender, text.strip()[14:].strip())
 
     # --- email recovery (B3c-email)
     if low.startswith("email-bind "):
