@@ -222,13 +222,14 @@ def _login(hub_url: str, sender: str, code: str) -> str:
     if not code:
         return "Usage: login acct-xxxxxxxx  (your account code) — or login-seed <seed> for keypair accounts"
     try:
-        _, res = _hub_post(hub_url, "/accounts/login", {"account_code": code.strip(), "agent": sender})
-    except urllib.error.HTTPError as ex:
-        if ex.code in (400, 403):
-            return "❌ Invalid account code. Check it and try again."
-        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+        code_st, res = _hub_post(hub_url, "/accounts/login", {"account_code": code.strip(), "agent": sender})
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code_st != 200:
+        # _hub_post RETURNS (status, body) for HTTP rejections. A failed login
+        # must never mint a session (B10: a bogus code used to answer
+        # 'Welcome back ... account None' and poison the chat session).
+        return f"❌ {res.get('error') or 'Invalid account code. Check it and try again.'}"
     _set_session(sender, res)
     return _welcome(res)
 
@@ -477,7 +478,9 @@ def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
                     + (f"edit {lid} price: 5 capacity: 30" if sess else f"edit {lid} mgr-abc123 price: 5"))
     try:
         if sess:
-            token = sess["tokens"]["list"]       # sub=acct-<id>: hub checks account ownership
+            token = (sess.get("tokens") or {}).get("list")  # sub=acct-<id>: hub checks account ownership
+            if not token:
+                return "Session expired — 'login <account_code>' again, or use your manage code."
         else:
             _, acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["list"]})
             token = acc["tokens"]["list"]
@@ -556,6 +559,27 @@ def _smart_search(hub_url: str, text: str) -> str:
     lines = [_fmt_listing(l) for l in listings[:8]]
     tail = "\n\nTo book one, say 'book <id>' — free listings book without payment."
     return f"Found {len(listings)} listing(s){qualifier}:\n" + "\n".join(lines) + tail
+
+
+_HELP = (
+    "Hi! I'm EverList Booking — an open, escrow-protected marketplace "
+    "where AI agents book real things.\n\nCommands:\n"
+    "• search — all listings; 'search jazz' — filtered; 'find me a free yoga class' — natural language\n"
+    "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
+    "• list\n title: … description: … tags: … url: … — rich listing (description, tags, link)\n"
+    "• signup — create a keypair organizer account (seed shown ONCE; cap 25, no per-listing codes)\n"
+    "• login-seed <seed> — act as your keypair account from any chat (24h)\n"
+    "• login <account_code> — legacy code accounts (24h)\n"
+    "• email-bind <email> / email-code <code> — enable email recovery\n"
+    "• recover <email> / recover-confirm <email> <code> — recover a lost account code\n"
+    "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
+    "• my-listings — your listings\n"
+    "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
+    "• delete <id> [code] — remove your listing\n"
+    "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
+    "• book <id> — how booking works (free listings skip payment)\n"
+    "• fee — how our fee model stays fair"
+)
 
 
 def handle_text(hub_url: str, text: str, sender: str = "") -> str:
@@ -649,24 +673,7 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
 
     # --- greeting/help
     if low in ("hi", "hello", "hey", "help", "menu", "commands"):
-        return (
-            "Hi! I'm EverList Booking — an open, escrow-protected marketplace "
-            "where AI agents book real things.\n\nTry:\n"
-            "• search — all listings\n"
-            "• search jazz — filtered search\n"
-            "• find me a free yoga class — natural-language search\n"
-            "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
-            "• list\n title: … description: … tags: … url: … — rich listing\n"
-            "• signup — create your organizer account (cap 25, no per-listing codes)\n"
-            "• login <account_code> — act as your account from any chat (24h)\n"
-            "• whoami — session status\n"
-            "• logout-all — revoke every login of your account (all chats/devices)\n" +
-            "• my-listings — your listings\n"
-            "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
-            "• delete <id> [code] — remove your listing\n"
-            "• book <id> — how booking works (free listings skip payment)\n"
-            "• fee — how our fee model stays fair"
-        )
+        return _HELP
 
     # --- fallback: treat the whole text as a search query
     return handle_text(hub_url, "search " + text.strip(), sender=sender)

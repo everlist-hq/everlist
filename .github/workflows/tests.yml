@@ -52,6 +52,9 @@ jobs:
       - name: Backup rotation (B8: keep-5 chronological, newest == pre-persist)
         run: venv/bin/python test_backups.py
 
+      - name: Chat help honesty (B10: every documented command routes to its intent)
+        run: venv/bin/python test_chat_help.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 
