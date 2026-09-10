@@ -1,8 +1,8 @@
 name: tests
 
-# F4a: CI for agent-hub-v2 + registry. Mirrors `make test` (the REAL suite:
-# G2 security/functional suite + A2A uAgent E2E) plus the registry suites.
-# No pytest dir exists; do not invent one.
+# CI for EverList: mirrors `make test` (G2 suite + A2A uAgent E2E)
+# plus the registry, x402 and audit suites. Paths follow the
+# published repo layout: everlist/ and registry/.
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       HUB_AGENT_SEED: "ci-throwaway-seed-do-not-fund-000000000000"
     defaults:
       run:
-        working-directory: experiments/agent-hub-v2
+        working-directory: everlist
     steps:
       - uses: actions/checkout@v4
 
@@ -31,60 +31,57 @@ jobs:
           venv/bin/pip install --upgrade pip
           venv/bin/pip install -r requirements.txt
 
-      - name: G2 security + functional suite
+      - name: "G2 security + functional suite"
         run: venv/bin/python test_suite.py
 
-      - name: Hardening suite (email recovery / archive auth / id monotonicity)
+      - name: "Hardening suite (email recovery / archive auth / id monotonicity)"
         run: venv/bin/python test_hardening.py
 
-      - name: Concurrency battery (B2: parallel signups + listings)
+      - name: "Concurrency battery (B2 - parallel signups + listings)"
         run: venv/bin/python test_concurrency.py
 
-      - name: SDK Tier-1 accounts (B5: keypair signup/login/ownership)
+      - name: "SDK Tier-1 accounts (B5 - keypair signup/login/ownership)"
         run: venv/bin/python test_sdk_accounts.py
 
-      - name: Chat E2E via real wrapper (B6: signup/list/login-seed/edit across two senders)
+      - name: "Chat E2E via real wrapper (B6)"
         run: venv/bin/python -u test_chat_e2e.py
 
-      - name: Public read limits (B7: q cap, pagination, per-source backstop)
+      - name: "Public read limits (B7)"
         run: venv/bin/python test_read_limits.py
 
-      - name: Backup rotation (B8: keep-5 chronological, newest == pre-persist)
+      - name: "Backup rotation (B8)"
         run: venv/bin/python test_backups.py
 
-      - name: Restore drill (H2: earlier backup restores byte-exact, hub serves it)
+      - name: "Restore drill (H2)"
         run: venv/bin/python test_restore_drill.py
 
-      - name: Single-instance guard (H4: second hub on same state exits 79, crash recovers)
+      - name: "Single-instance guard (H4)"
         run: venv/bin/python test_single_instance.py
 
-      - name: Write-path limiter floods (H5: 429 per kind, failed attempts count, per-source fairness)
+      - name: "Write-path limiter floods (H5)"
         run: venv/bin/python test_write_limits.py
 
-      - name: Chat help honesty (B10: every documented command routes to its intent)
+      - name: "Chat help honesty (B10)"
         run: venv/bin/python test_chat_help.py
 
-      - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
+      - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 
-      - name: Registry service suite (D2)
-        working-directory: experiments/registry
-        run: ../agent-hub-v2/venv/bin/python test_registry.py
+      - name: "Registry service suite (D2)"
+        working-directory: registry
+        run: ../everlist/venv/bin/python test_registry.py
 
-      - name: Conformance checker suite (D3)
-        working-directory: experiments/registry
-        run: ../agent-hub-v2/venv/bin/python test_check_hub.py
+      - name: "Conformance checker suite (D3)"
+        working-directory: registry
+        run: ../everlist/venv/bin/python test_check_hub.py
 
-      - name: x402 verification suite (C3a)
-        working-directory: experiments/agent-hub-v2
+      - name: "x402 verification suite (C3a)"
         run: venv/bin/python test_x402.py
 
-      - name: x402 settlement suite (C3b)
-        working-directory: experiments/agent-hub-v2
+      - name: "x402 settlement suite (C3b)"
         run: venv/bin/python test_x402_settle.py
 
-      - name: Dependency audit (H6: pip-audit; waivers reasoned in SPEC 17)
-        working-directory: experiments/agent-hub-v2
+      - name: "Dependency audit (H6 - waivers reasoned in SPEC 17)"
         continue-on-error: true
         run: |
           venv/bin/pip install -q pip-audit

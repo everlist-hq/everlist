@@ -8,6 +8,7 @@ SHELL := /bin/bash
 PYTHON   ?= /opt/venv/bin/python
 VPY      ?= venv/bin/python
 HUB_PORT ?= 8802
+WRAPPER_PORT ?= 8010
 RUNDIR   := .run
 
 .PHONY: up down status test clean selfcheck demo-seed demo-reset
@@ -32,7 +33,7 @@ up: ## start hub+wrapper, record PIDs in .run/
 	@ok=""; for i in $$(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$(HUB_PORT)) 2>/dev/null && { exec 3>&- 3<&-; ok=1; break; }; sleep 0.2; done; \
 	[ -n "$$ok" ] || { echo "[up] hub FAILED to start; last log lines:"; tail -n 20 $(RUNDIR)/hub.log; exit 1; }
 	@echo "[up] wrapper -> $(RUNDIR)/wrapper.log"
-	@HUB_AGENT_SEED=$$(cat "$(SEEDFILE)") nohup $(VPY) wrapper.py > $(RUNDIR)/wrapper.log 2>&1 & echo $$! > $(RUNDIR)/wrapper.pid
+	@HUB_AGENT_SEED=$$(cat "$(SEEDFILE)") HUB_PORT=$(HUB_PORT) HUB_WRAPPER_PORT=$(WRAPPER_PORT) nohup $(VPY) wrapper.py > $(RUNDIR)/wrapper.log 2>&1 & echo $$! > $(RUNDIR)/wrapper.pid
 	@sleep 2
 	@echo "[up] done. hub pid=$$(cat $(RUNDIR)/hub.pid), wrapper pid=$$(cat $(RUNDIR)/wrapper.pid). stop with: make down"
 
@@ -94,7 +95,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== H17 red-team pass 2 ==='; $(PYTHON) test_h17_redteam.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
-		$(VPY) -u test_client.py || exit 1; \
+		HUB_PORT=$(HUB_PORT) HUB_WRAPPER_PORT=$(WRAPPER_PORT) $(VPY) -u test_client.py || exit 1; \
 		echo "=== make test: ALL PASSED ==="
 
 clean: ## remove .run/ (harness-owned ONLY; never touches other files)
