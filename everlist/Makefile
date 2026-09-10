@@ -62,6 +62,8 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		$(PYTHON) test_suite.py || exit 1; \
 		echo "=== Hardening suite (email/archive/ids) ==="; \
 		$(PYTHON) test_hardening.py || exit 1; \
+		echo "=== Concurrency battery (B2) ==="; \
+		$(PYTHON) test_concurrency.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \

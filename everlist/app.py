@@ -116,7 +116,10 @@ def _auth_allow(kind, src="global"):
 # HARDENING-v2: proof-of-work cost curve (hashcash-style). Expensive anonymous
 # actions (signup, recover) must burn client CPU; legit users pay ~0.3s ONCE,
 # attackers pay per attempt — and limits stay generous because PoW is the gate.
-POW_DIFFICULTY = {"signup": 18, "recover": 16}  # ~0.3s / ~0.07s client CPU per solution  # leading zero BITS
+POW_DIFFICULTY = {  # leading zero BITS; env-tunable (B2: tests lower it; ops can raise it)
+    "signup": int(os.environ.get("HUB_POW_SIGNUP_BITS", "18")),
+    "recover": int(os.environ.get("HUB_POW_RECOVER_BITS", "16")),
+}  # ~0.3s / ~0.07s client CPU per solution at defaults
 POW_CHALLENGES = {}  # challenge -> {exp, kind, used} ; single-use, TTL 10 min
 POW_CAP = 100_000
 LOGIN_CHALLENGES = {}  # aid -> {ch, exp} ; one live login challenge per account

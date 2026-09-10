@@ -37,6 +37,9 @@ jobs:
       - name: Hardening suite (email recovery / archive auth / id monotonicity)
         run: venv/bin/python test_hardening.py
 
+      - name: Concurrency battery (B2: parallel signups + listings)
+        run: venv/bin/python test_concurrency.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 
