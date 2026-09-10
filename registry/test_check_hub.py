@@ -25,8 +25,8 @@ import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.join(HERE, "..", "agent-hub-v2")
-PY = os.path.join(HUB_DIR, "venv", "bin", "python")
+HUB_DIR = os.path.join(HERE, "..", "everlist")
+PY = sys.executable  # run under the same interpreter as this test (venv-portable)
 CHECK = os.path.join(HERE, "check_hub.py")
 RESULTS = []
 

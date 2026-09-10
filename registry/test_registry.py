@@ -29,8 +29,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.join(HERE, "..", "agent-hub-v2")
-PY = os.path.join(HUB_DIR, "venv", "bin", "python")
+HUB_DIR = os.path.join(HERE, "..", "everlist")
+PY = sys.executable  # run under the same interpreter as this test (venv-portable)
 REG_STATE = os.path.join("/tmp", f"registry_test_{uuid.uuid4().hex[:8]}.json")
 RESULTS = []
 
