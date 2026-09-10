@@ -1,0 +1,77 @@
+{
+  "listings": [
+    {
+      "slug": "surya-kriya",
+      "vertical": "events",
+      "title": "Free Surya Kriya Taster Class",
+      "category": "workshop",
+      "date": "2026-09-20",
+      "price": 0,
+      "location": "Bad Tatzmannsdorf",
+      "capacity": 12,
+      "description": "Free taster session of Surya Kriya, a powerful ancient yoga from the Isha tradition. Gentle upa-yoga, guided practice, and Q&A about the full weekend retreat at Reduce Gesundheitszentrum. No experience needed.",
+      "tags": ["yoga", "free", "meditation", "wellness", "beginners"],
+      "url": "https://reduce-gesundheitszentrum.example/surya-kriya"
+    },
+    {
+      "slug": "rooftop-jazz",
+      "vertical": "events",
+      "title": "Rooftop Jazz Night",
+      "category": "concert",
+      "date": "2026-10-03",
+      "price": 15,
+      "location": "Vienna",
+      "capacity": 50,
+      "description": "Live jazz on the rooftop — quartet, sunset, and a bar with local wine.",
+      "tags": ["jazz", "music", "rooftop"],
+      "url": "https://rooftopjazz.example"
+    },
+    {
+      "slug": "repair-cafe",
+      "vertical": "events",
+      "title": "Repair Café Linz",
+      "category": "community",
+      "date": "2026-10-11",
+      "price": 0,
+      "location": "Linz",
+      "capacity": 30,
+      "description": "Bring your broken things — volunteers fix them with you. Free coffee, tools provided.",
+      "tags": ["free", "community", "sustainability"]
+    },
+    {
+      "slug": "astro-photography",
+      "vertical": "events",
+      "title": "Astrophotography Workshop",
+      "category": "workshop",
+      "date": "2026-10-24",
+      "price": 45,
+      "location": "Neusiedler See",
+      "capacity": 15,
+      "description": "Night-sky photography under dark skies. Tripods provided, bring any camera.",
+      "tags": ["photography", "workshop", "night"]
+    },
+    {
+      "slug": "mobile-massage",
+      "vertical": "services",
+      "title": "Mobile Massage",
+      "provider": "Serenity Spa",
+      "price": 30,
+      "category": "wellness",
+      "location": "Vienna",
+      "duration_minutes": 60,
+      "description": "Relaxing 60-minute massage at your home or office.",
+      "tags": ["wellness", "massage"]
+    },
+    {
+      "slug": "home-repair",
+      "vertical": "services",
+      "title": "Home Repair Visit",
+      "provider": "FixIt Co",
+      "price": 0,
+      "category": "repair",
+      "duration_minutes": 90,
+      "description": "Free first consultation visit — small repairs around the house.",
+      "tags": ["free", "repair"]
+    }
+  ]
+}

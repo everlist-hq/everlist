@@ -10,7 +10,7 @@ VPY      ?= venv/bin/python
 HUB_PORT ?= 8802
 RUNDIR   := .run
 
-.PHONY: up down status test clean
+.PHONY: up down status test clean selfcheck demo-seed demo-reset
 
 # canonical wrapper identity seed (gitignored, TESTNET ONLY)
 SEEDFILE := .secrets/agent_seed
@@ -88,6 +88,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== H13 openapi contract ==='; $(PYTHON) test_h13_openapi.py || exit 1; \
 		echo '=== H14 selfcheck tool ==='; $(PYTHON) test_h14_selfcheck.py || exit 1; \
 		echo '=== H15 services vertical ==='; $(PYTHON) test_h15_services.py || exit 1; \
+		echo '=== H16 demo seed tools ==='; $(PYTHON) test_h16_demo_seed.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \
@@ -105,3 +106,16 @@ audit: ## H6: pip-audit the dependency tree (waivers documented in SPEC 17)
 
 selfcheck: ## on-demand read-only health probe against the running hub (H14)
 	@HUB_URL=http://127.0.0.1:$(HUB_PORT) $(PYTHON) tools/selfcheck.py
+
+demo-seed: ## seed the running hub with demo_listings.json (H16; refuses if listings exist)
+	@$(PYTHON) tools/seed_demo.py --hub http://127.0.0.1:$(HUB_PORT)
+
+demo-reset: ## one-command reproducible pilot demo: archive state -> fresh stack -> seed (H16)
+	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
+	@if [ -s $(RUNDIR)/state.json ]; then \
+		mv $(RUNDIR)/state.json $(RUNDIR)/state.pre-demo-$$(date +%Y%m%d-%H%M%S).json; \
+		echo "[demo] previous state archived in $(RUNDIR)/"; fi
+	@printf '%s' '{"listings": [], "bookings": [], "ledger": []}' > $(RUNDIR)/state.json; \
+		echo "[demo] empty snapshot written (H16 test-proven: replaces built-in seed data)"
+	@$(MAKE) --no-print-directory up >/dev/null
+	@$(MAKE) --no-print-directory demo-seed
