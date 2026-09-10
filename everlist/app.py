@@ -327,6 +327,26 @@ if not (0 <= FEE_PCT <= 50):
     sys.exit(78)
 DATA_DIR = os.environ.get("HUB_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 STATE_FILE = os.environ.get("HUB_STATE_FILE", os.path.join(DATA_DIR, "state.json"))
+# H12: bounded rotating request log (ops hygiene; wrapper.py got its own in B4).
+# One structured line per response: method, path (query stripped, truncated),
+# status, latency, source, request-id. Bodies/headers are NEVER logged; log
+# failures are swallowed — observability must never break the hub.
+import logging
+import logging.handlers
+REQ_LOG_FILE = os.environ.get("HUB_REQUEST_LOG",
+    os.path.join(os.path.dirname(STATE_FILE), "requests.log"))  # beside state: per-instance isolation
+REQ_LOG_MAX = int(os.environ.get("HUB_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+REQ_LOG_N = int(os.environ.get("HUB_LOG_BACKUPS", "3"))
+_reqlog = None
+try:  # H12: a logging problem must never prevent startup
+    os.makedirs(os.path.dirname(REQ_LOG_FILE), exist_ok=True)
+    _reqlog = logging.getLogger("hub.requests")
+    _reqlog.setLevel(logging.INFO)
+    _reqlog.addHandler(logging.handlers.RotatingFileHandler(
+        REQ_LOG_FILE, maxBytes=REQ_LOG_MAX, backupCount=REQ_LOG_N))
+    _reqlog.propagate = False
+except Exception:
+    _reqlog = None  # hub runs unlogged rather than not at all
 PAY_MODE = os.environ.get("HUB_PAY_MODE", "simulated")  # simulated | testnet (real EIP-3009 verification)
 if PAY_MODE not in ("simulated", "testnet"):
     sys.stderr.write(f"FATAL: HUB_PAY_MODE must be simulated|testnet, got {PAY_MODE}\n")
@@ -437,15 +457,27 @@ def hub_fee(price):
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, data, extra_headers=None):
         body = json.dumps(data, indent=2).encode()
+        rid = "req-" + secrets.token_hex(8)  # H12: per-request trace id
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("X-Request-Id", rid)  # H12: echoed for support/traceability
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        if _reqlog is not None:  # H12: bounded request log — never breaks the hub
+            try:
+                p = self.path.split("?", 1)[0][:120]  # query NEVER logged (challenges/nonces), truncated
+                lat = (time.time() - getattr(self, "_t0", time.time())) * 1000.0
+                _reqlog.info("%s %s -> %d %.1fms src=%s rid=%s",
+                             getattr(self, "command", "?"), p, code, lat,
+                             _source_of(self), rid)
+            except Exception:
+                pass
 
     def do_GET(self):
+        self._t0 = time.time()  # H12: latency start
         u = urlparse(self.path)
         if u.path == "/auth/challenge":
             """HARDENING-v2: challenge issuance for cost curves.
@@ -817,6 +849,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found", "hint": "GET /.well-known/agent-hub.json"})
 
     def do_POST(self):
+        self._t0 = time.time()  # H12: latency start
         path = urlparse(self.path).path
         # G4: global request-body cap (64KB) - reject before parsing
         if int(self.headers.get("Content-Length", 0)) > 65536:
@@ -1528,6 +1561,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):
+        self._t0 = time.time()  # H12: latency start
         # H7: account self-deletion (GDPR-style erasure). The money trail
         # (LEDGER + booking records) survives BY DESIGN — pseudonymous refs,
         # needed for escrow auditability. Owned listings are archived, not
