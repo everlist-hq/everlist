@@ -131,3 +131,21 @@ Event-sourced: one append per escrow transition (booking→HELD; confirm→RELEA
 - Protocol version in manifest (`agent-hub/0.2`). Additive changes bump minor; breaking bump major.
 - A conformant hub MUST: serve this manifest shape; enforce the §4 matrix exactly; project §7 fields exactly; label payment modes truthfully; fail closed in production on dev keys; keep the ledger append-only.
 - A conformant client SHOULD: probe `/.well-known/agent-hub.json` first; use header-only credentials; send `Idempotency-Key` on bookings; treat 402 per x402; never log credentials.
+
+## 12. Account email recovery (B3c-email)
+
+- `POST /accounts/email/bind` `{email, account_code | X-Hub-Token}` → 6-char verification code sent. Delivery via `HUB_EMAIL_MODE`: `off` (default, refuse politely) | `log` (dev: code in hub log, chat labels it) | `smtp` (real send; Gmail requires an App Password — account password → SMTP 535).
+- `POST /accounts/email/verify` `{email, code}` → `email_verified=true`; recovery enabled. Codes: 6 chars, 15-min TTL, single-use, hashed at rest.
+- `POST /accounts/email/recover` `{email}` → ALWAYS the same answer whether or not the email is bound (no account enumeration); rate-limited 5/h.
+- `POST /accounts/email/recover/confirm` `{email, code}` → NEW `account_code` shown ONCE; old code invalid immediately (recovery == rotation). Existing 24h login tokens remain valid until expiry.
+- Email is optional; accounts without email can still rotate via `/accounts/rotate` with their current code.
+
+## 13. Listing archive (soft delete)
+
+- `POST /listings/{id}/manage` `{action: "archive" | "unarchive"}` (manage code or account token).
+- Archived listings: hidden from `/listings` and `/search`; booking attempts answered `409 listing archived` BEFORE field/payment validation (after the verified-human gate); visible to owners via `GET /listings?archived=1`.
+- Existing bookings remain fulfillable. `delete` stays hard removal (refused while bookings HELD/WAIVED).
+
+## 14. Listing ID policy
+
+- IDs are `{vertical[:4]}-{N}` from a persistent per-vertical counter (state `id_counters`), monotonic, NEVER reused after deletes, stable across restarts. Legacy `len(LISTINGS)+1` allocation was removed (collision risk after deletes).
