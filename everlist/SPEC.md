@@ -142,10 +142,11 @@ Event-sourced: one append per escrow transition (booking→HELD; confirm→RELEA
 
 ### 12a. Crypto accounts (keypair) + PoW cost curves (HARDENING-v2)
 
-> **STATUS: transitional pilot scaffolding** (master-plan buy-vs-build auth clause, 2026-09-10).
+> **STATUS: permanent Tier-1 signup** (owner identity model, 2026-09-10). Two tiers: Tier 1 = this
+> super-easy signup — always available, registration must never get harder. Tier 2 = Midnight
+> wallet/personhood verification (A2) as an optional trust BENEFIT on top (replaces operator vouch).
 > Standard primitives only (cryptography lib, RFC 8032 Ed25519 — the key type uAgents use) + thin
-> challenge-response glue. FROZEN from new features. End-state: sign-in via existing identities —
-> agent on-chain identity now, Midnight wallet/personhood at A2 — after which §12a is demoted to legacy.
+> challenge-response glue; PoW cost curves remain the abuse gate.
 
 Accounts have a `kind`: `keypair` (default for signups that send a pubkey) or `code` (legacy fallback).
 
