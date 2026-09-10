@@ -43,6 +43,9 @@ jobs:
       - name: SDK Tier-1 accounts (B5: keypair signup/login/ownership)
         run: venv/bin/python test_sdk_accounts.py
 
+      - name: Chat E2E via real wrapper (B6: signup/list/login-seed/edit across two senders)
+        run: venv/bin/python -u test_chat_e2e.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 

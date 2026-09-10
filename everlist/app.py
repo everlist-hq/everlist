@@ -683,8 +683,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/access":
             # I2 interim bootstrap: open issuance PRE-personhood (documented; replaced by Midnight A2)
             agent = str(data.get("agent", "")).strip()
-            if not agent or len(agent) > 64:
-                return self._json(400, {"error": "agent name required (max 64 chars)"})
+            if not agent or len(agent) > 128:
+                return self._json(400, {"error": "agent name required (max 128 chars)"})
             if agent.lower().startswith("acct-"):
                 # B3c-accounts forgery wall (CASE-INSENSITIVE: ACCT- would mint a token
                 # whose sub only differs by case — future case-insensitive comparisons
@@ -704,8 +704,8 @@ class Handler(BaseHTTPRequestHandler):
             #    ONLY the public key. Nothing stealable on the server, ever.
             #  code (legacy): server-minted code, sha256 at rest (kept for compat).
             agent = str(data.get("agent", "")).strip()
-            if not agent or len(agent) > 64 or agent.lower().startswith("acct-"):
-                return self._json(400, {"error": "agent name required (max 64 chars, no acct- prefix)"})
+            if not agent or len(agent) > 128 or agent.lower().startswith("acct-"):
+                return self._json(400, {"error": "agent name required (max 128 chars, no acct- prefix)"})
             pubkey_hex = str(data.get("pubkey", "")).strip().lower()
             if pubkey_hex:
                 if len(pubkey_hex) != 64:
@@ -754,8 +754,8 @@ class Handler(BaseHTTPRequestHandler):
                 "next": "verify as human: hub operator vouch (pilot) or POST /accounts/verify email code (deploy); login from any chat: POST /accounts/login {account_code, agent}"})
         if path == "/accounts/login":
             agent = str(data.get("agent", "")).strip()
-            if not agent or len(agent) > 64 or agent.lower().startswith("acct-"):
-                return self._json(400, {"error": "agent required (max 64 chars, no acct- prefix)"})
+            if not agent or len(agent) > 128 or agent.lower().startswith("acct-"):
+                return self._json(400, {"error": "agent required (max 128 chars, no acct- prefix)"})
             code = str(data.get("account_code", "")).strip()
             pubkey_hex = str(data.get("pubkey", "")).strip().lower()
             with LOCK:
@@ -1358,4 +1358,11 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
     _load_state()
     print(f"agent-hub-v2 (open/fair) on :{port} - fee {FEE_PCT}%, env {RUN_ENV}, state {STATE_FILE}")
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    class HubServer(ThreadingHTTPServer):
+        # B6-lesson: default backlog (5) refuses burst connections (B2 caught -1
+        # transports at 40 parallel signups). Agentverse/SDK traffic arrives in
+        # bursts — a public marketplace hub must queue them instead.
+        request_queue_size = 128
+        daemon_threads = True
+
+    HubServer(("0.0.0.0", port), Handler).serve_forever()

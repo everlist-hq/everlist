@@ -188,7 +188,7 @@ def _signup(hub_url: str, sender: str) -> str:
     seed = os.urandom(32).hex()
     pub = _pubkey_of(seed)
     try:
-        _, res = _hub_post(hub_url, "/accounts/signup", {"agent": sender, "pubkey": pub, "pow": pow_})
+        code, res = _hub_post(hub_url, "/accounts/signup", {"agent": sender, "pubkey": pub, "pow": pow_})
     except urllib.error.HTTPError as ex:
         try:
             err = json.loads(ex.read().decode()).get("error", "")
@@ -197,6 +197,8 @@ def _signup(hub_url: str, sender: str) -> str:
         return f"Signup rejected: {err or ('HTTP ' + str(ex.code))}"
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code != 201:
+        return f"Signup rejected: {res.get('error') or ('HTTP ' + str(code))}"
     aid = res.get("account_id")
     code2, lres = _sign_login(hub_url, seed, sender)  # auto-login: we still hold the seed
     if code2 == 200:
@@ -362,7 +364,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     Quick:  list Title | category | date | price | location | capacity
     Rich:   list\n title: ... \n description: ... \n tags: a, b \n url: https://...
     Only title and price are mandatory; the rest get honest defaults (events vertical)."""
-    sender = (sender or "anonymous-chat")[:64]
+    sender = (sender or "anonymous-chat")[:128]
     sess = _session(sender)
     cap = _ACCOUNT_CAP if sess else _LIST_CAP
     if _list_counts.get(sender, 0) >= cap:
@@ -497,7 +499,7 @@ def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
 
 def _my_listings(hub_url: str, sender: str) -> str:
     sess = _session(sender)
-    sender_n = (sender or "anonymous-chat")[:64]
+    sender_n = (sender or "anonymous-chat")[:128]
     try:
         data = _hub_get(hub_url, "/listings")
     except Exception:

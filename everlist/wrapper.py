@@ -15,6 +15,8 @@ in local logs only.
 
 Run:  HUB_AGENT_SEED=<your-seed> venv/bin/python wrapper.py
 """
+import asyncio
+import chatlib
 import json
 import logging
 import logging.handlers
