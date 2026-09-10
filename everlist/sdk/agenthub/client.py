@@ -6,6 +6,7 @@ Security posture (SPEC §4/§7):
 - bookings() is principal-scoped server-side; the client never widens it
 """
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -153,6 +154,72 @@ class AgentHub:
     def cancel(self, booking_id: str, cancel_token: str) -> dict:
         return self._request("POST", f"/book/{booking_id}/cancel",
                              body={}, token=cancel_token)[1]
+
+    # ---- Tier-1 cryptographic accounts (B5; SPEC §12a transitional) ----
+    # crypto imports are LAZY here on purpose: the rest of the SDK stays stdlib-only;
+    # keypair accounts need ed25519 (already in requirements.txt via the hub).
+
+    @staticmethod
+    def generate_keypair() -> str:
+        """Generate an ed25519 seed (64 hex chars). The seed NEVER leaves this
+        machine; the hub stores ONLY the derived public key."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        return os.urandom(32).hex()
+
+    @staticmethod
+    def _pubkey_of(seed_hex: str) -> str:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        if len(seed_hex) != 64:
+            raise ValueError("seed must be 64 hex chars")
+        sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
+        return sk.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+    @staticmethod
+    def _solve_pow(challenge: str, difficulty: int) -> dict:
+        import hashlib
+        n = 0
+        while True:
+            d = hashlib.sha256((challenge + str(n)).encode()).digest()
+            bits = 0
+            for b in d:
+                if b == 0:
+                    bits += 8
+                    continue
+                bits += 8 - b.bit_length()
+                break
+            if bits >= difficulty:
+                return {"challenge": challenge, "nonce": n}
+            n += 1
+
+    def signup_keypair(self, agent: str, seed: Optional[str] = None) -> dict:
+        """Tier-1 account signup (keypair). Generates a seed when none is given.
+        Returns {'seed', 'pubkey', 'account_id', ...} — the seed is shown ONCE and
+        never transmitted; the hub stores only the public key. Logs this client in."""
+        seed = seed or self.generate_keypair()
+        pub = self._pubkey_of(seed)
+        _, ch = self._request("GET", "/auth/challenge?kind=signup")
+        pw = self._solve_pow(ch["challenge"], int(ch["difficulty"]))
+        st, r = self._request("POST", "/accounts/signup",
+                              body={"agent": agent, "pubkey": pub, "pow": pw})
+        out = dict(r)
+        out["seed"], out["pubkey"] = seed, pub
+        self.login_seed(seed, agent)
+        return out
+
+    def login_seed(self, seed: str, agent: str) -> dict:
+        """Challenge-response login for keypair accounts: the seed itself is never
+        sent — the hub proves nothing secret needs to travel. Stores tokens."""
+        pub = self._pubkey_of(seed)
+        _, ch = self._request("GET", f"/auth/challenge?kind=login&pubkey={pub}")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        sig = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed)).sign(
+            b"everlist-login:" + ch["challenge"].encode()).hex()
+        st, r = self._request("POST", "/accounts/login",
+                              body={"pubkey": pub, "agent": agent, "sig": sig})
+        self._tokens.update(r.get("tokens", {}))
+        return r
 
     # ---- watch loop ----
     def on_booking(self, callback: Callable[[Booking], None],

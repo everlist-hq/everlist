@@ -40,6 +40,9 @@ jobs:
       - name: Concurrency battery (B2: parallel signups + listings)
         run: venv/bin/python test_concurrency.py
 
+      - name: SDK Tier-1 accounts (B5: keypair signup/login/ownership)
+        run: venv/bin/python test_sdk_accounts.py
+
       - name: Full suite incl. A2A E2E (make test with overridable PYTHON)
         run: make test PYTHON=venv/bin/python
 

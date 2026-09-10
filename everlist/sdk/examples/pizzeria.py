@@ -30,8 +30,15 @@ def main():
     man = hub.manifest()
     print(f"  hub={man['hub']} fee={man['fairness']['fee_policy']['actual_fee_pct']}% escrow={man['fairness']['escrow']}")
 
-    print("* bootstrapping merchant identity (interim /access; production = personhood)")
-    hub.bootstrap("pizzeria-napoli", acts=("book", "list"))
+    # TRY_KEYPAIR=1: demo Tier-1 cryptographic account instead of interim /access.
+    # The seed is generated locally and shown once — the hub stores only the pubkey.
+    if os.environ.get("TRY_KEYPAIR"):
+        print("* creating Tier-1 keypair account (seed stays local; hub stores pubkey only)")
+        acct = hub.signup_keypair("pizzeria-napoli")
+        print(f"  account {acct['account_id']} — SEED (store it!): {acct['seed']}")
+    else:
+        print("* bootstrapping merchant identity (interim /access; production = personhood)")
+        hub.bootstrap("pizzeria-napoli", acts=("book", "list"))
 
     print("* publishing menu")
     for item in MENU:
