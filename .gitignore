@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Runtime state & secrets
+.run/
+.secrets/
+*.log
+state.json
+state.json.lock
+registry.json
+
+# Env
+.env
+*.key
+
+# Caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
