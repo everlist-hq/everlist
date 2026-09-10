@@ -142,11 +142,6 @@ Event-sourced: one append per escrow transition (booking→HELD; confirm→RELEA
 
 ### 12a. Crypto accounts (keypair) + PoW cost curves (HARDENING-v2)
 
-> **STATUS: transitional pilot scaffolding** (owner directive 2026-09-10: least resistance,
-> established paths). Standard primitives + thin glue only. FROZEN from new features.
-> End-state: sign-in via existing identities — the agent's Fetch/uAgents identity interim,
-> Midnight wallet/personhood at A2 — after which this section is demoted to legacy.
-
 > **STATUS: transitional pilot scaffolding** (master-plan buy-vs-build auth clause, 2026-09-10).
 > Standard primitives only (cryptography lib, RFC 8032 Ed25519 — the key type uAgents use) + thin
 > challenge-response glue. FROZEN from new features. End-state: sign-in via existing identities —
