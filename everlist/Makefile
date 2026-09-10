@@ -27,7 +27,8 @@ up: ## start hub+wrapper, record PIDs in .run/
 		echo "  then stop it yourself, OR run:  make up HUB_PORT=8803"; \
 		exit 1; fi
 	@echo "[up] hub on :$(HUB_PORT) -> $(RUNDIR)/hub.log"
-	@HUB_STATE_FILE=$$PWD/$(RUNDIR)/state.json nohup $(PYTHON) app.py $(HUB_PORT) > $(RUNDIR)/hub.log 2>&1 & echo $$! > $(RUNDIR)/hub.pid
+	@if [ -f .secrets/email.env ]; then . ./.secrets/email.env; fi; \
+		HUB_STATE_FILE=$$PWD/$(RUNDIR)/state.json nohup $(PYTHON) app.py $(HUB_PORT) > $(RUNDIR)/hub.log 2>&1 & echo $$! > $(RUNDIR)/hub.pid
 	@ok=""; for i in $$(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$(HUB_PORT)) 2>/dev/null && { exec 3>&- 3<&-; ok=1; break; }; sleep 0.2; done; \
 	[ -n "$$ok" ] || { echo "[up] hub FAILED to start; last log lines:"; tail -n 20 $(RUNDIR)/hub.log; exit 1; }
 	@echo "[up] wrapper -> $(RUNDIR)/wrapper.log"

@@ -45,15 +45,17 @@ SECRETS = {}    # booking id -> secret (private detail access)
 LEDGER = []     # public, append-only transaction ledger
 IDEMPOTENCY = {}  # I4: Idempotency-Key -> {hash, response} (persisted with G1)
 RATE_LIMITS = {}  # G4: principal -> [timestamps] for the 60s window
+ID_COUNTERS = {}  # per-vertical id counters - persisted, NEVER decremented (ids never reused after deletes)
 # B3c-accounts: chat-native organizer accounts (pilot-grade auth).
 # acct-<id> -> {code_hash, bound: [agent names], human_verified, verified_by, created}.
 # The account CODE is the credential (shown ONCE, sha256-only); login mints tokens
 # with sub=acct-<id>; open /access can NEVER mint acct- principals (forgery wall).
 ACCOUNTS = {}
-ACCOUNTS_CAP = 10_000  # hard cap: unbounded signups = state-bloat DoS
+ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
 # auth endpoints: global fixed-window limits (pilot-grade anti-bruteforce/DoS;
 # per-IP is unreliable behind relays, documented honestly in SPEC)
-AUTH_LIMITS = {"signup": (10, 3600), "login": (120, 60), "rotate": (10, 3600)}
+AUTH_LIMITS = {"signup": (10, 3600), "login": (120, 60), "rotate": (10, 3600),
+                 "email": (5, 3600), "verify": (20, 3600), "recover": (5, 3600)}  # email sends are abuse-expensive: tight limits
 AUTH_HITS = {k: [] for k in AUTH_LIMITS}
 
 
@@ -79,7 +81,7 @@ LOCK = threading.Lock()
 def _persist_locked():
     """Atomic snapshot write. Caller MUST hold LOCK."""
     snap = {"listings": LISTINGS, "bookings": BOOKINGS, "ledger": LEDGER,
-            "idempotency": IDEMPOTENCY, "accounts": ACCOUNTS,
+            "idempotency": IDEMPOTENCY, "accounts": ACCOUNTS, "id_counters": ID_COUNTERS,
             "nonces": {n: e for n, e in getattr(hublib, "_NONCES", {}).items()},
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {})}
@@ -101,6 +103,14 @@ def _load_state():
         LEDGER[:] = snap.get("ledger", [])
         IDEMPOTENCY.update(snap.get("idempotency", {}))
         ACCOUNTS.update(snap.get("accounts", {}))
+        ID_COUNTERS.update(snap.get("id_counters", {}))
+        # B3c-email migration: legacy accounts predate email fields
+        _EFIELDS = {"email": None, "email_verified": False, "pending_email": None,
+                    "pending_code_hash": None, "pending_exp": 0,
+                    "recovery_code_hash": None, "recovery_exp": 0}
+        for _a, _v in ACCOUNTS.items():
+            for _k, _d in _EFIELDS.items():
+                _v.setdefault(_k, _d)
         hublib._NONCES.update(snap.get("nonces", {}))
         if PAY_MODE == "testnet":
             x402verify.load_used_nonces(snap.get("x402_nonces", {}))
@@ -137,6 +147,34 @@ SETTLE_MODE = os.environ.get("HUB_SETTLE_MODE", "off")  # off (verify-only) | au
 if SETTLE_MODE not in ("off", "auto"):
     sys.stderr.write(f"FATAL: HUB_SETTLE_MODE must be off|auto, got {SETTLE_MODE}\n")
     sys.exit(78)
+# B3c-email: account email binding + recovery. Modes: off (default) | log (dev: code in hub log) | smtp
+EMAIL_MODE = os.environ.get("HUB_EMAIL_MODE", "off")
+if EMAIL_MODE not in ("off", "log", "smtp"):
+    sys.stderr.write(f"FATAL: HUB_EMAIL_MODE must be off|log|smtp, got {EMAIL_MODE}\n")
+    sys.exit(78)
+SMTP_HOST = os.environ.get("HUB_SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("HUB_SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("HUB_SMTP_USER", "")
+SMTP_PASS = os.environ.get("HUB_SMTP_PASS", "")
+MAIL_FROM = os.environ.get("HUB_MAIL_FROM", SMTP_USER or "everlist@localhost")
+
+
+def _send_email(to, subject, body):
+    """Honest delivery: off/log are dev modes (label says so); smtp really sends."""
+    if EMAIL_MODE == "off":
+        return "off"
+    if EMAIL_MODE == "log":
+        print(f"[EMAIL:log] to={to} subject={subject!r} body={body!r}", flush=True)
+        return "logged"
+    import smtplib
+    msg = f"From: {MAIL_FROM}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}"
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
+        srv.starttls()
+        srv.login(SMTP_USER, SMTP_PASS)
+        srv.sendmail(MAIL_FROM, [to], msg)
+    return "sent"
+
+
 if PAY_MODE == "testnet":
     FACIL = x402facilitate.FacilitatorClient(
         os.environ.get("HUB_FACILITATOR_URL", x402facilitate.DEFAULT_FACILITATOR),
@@ -373,8 +411,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"verticals": VERTICAL_SCHEMAS})
         if u.path == "/listings":
             v = parse_qs(u.query).get("vertical", [""])[0]
+            show_arch = parse_qs(u.query).get("archived", [""])[0] in ("1", "true")
             with LOCK:
-                res = [l for l in LISTINGS if not v or l["vertical"] == v]
+                res = [l for l in LISTINGS
+                       if bool(l.get("archived")) == show_arch
+                       and (not v or l["vertical"] == v)]
             return self._json(200, {"count": len(res), "listings": res})
         if u.path == "/search":
             """Faceted search: q (substring) + structured filters.
@@ -388,7 +429,8 @@ class Handler(BaseHTTPRequestHandler):
             fmax = q.get("max_price", [""])[0]
             with LOCK:
                 res = [l for l in LISTINGS
-                       if (not term or term in json.dumps(l).lower())
+                       if not l.get("archived")
+                       and (not term or term in json.dumps(l).lower())
                        and (not fvert or l["vertical"] == fvert)
                        and (not fcat or l.get("category") == fcat)
                        and (not ftag or ftag in (l.get("tags") or []))
@@ -524,7 +566,10 @@ class Handler(BaseHTTPRequestHandler):
                 code = "acct-" + secrets.token_hex(8)
                 ACCOUNTS[aid] = {"code_hash": hashlib.sha256(code.encode()).hexdigest(),
                                  "bound": [agent], "human_verified": False,
-                                 "verified_by": None, "created": time.time()}
+                                 "verified_by": None, "created": time.time(),
+                                 "email": None, "email_verified": False,
+                                 "pending_email": None, "pending_code_hash": None,
+                                 "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0}
                 _persist_locked()
             return self._json(201, {"account_id": aid, "account_code": code,
                 "human_verified": False,
@@ -588,6 +633,106 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
             return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
                 "code_note": "OLD CODE IS NOW INVALID — new code shown ONCE, store it; existing 24h login tokens remain valid until expiry"})
+        if path == "/accounts/email/bind":
+            # bind/replace the recovery email. Logged-in account OR current code proves control.
+            code = str(data.get("account_code", "")).strip()
+            email = str(data.get("email", "")).strip().lower()
+            if not email or "@" not in email or "." not in email.rsplit("@", 1)[1] or len(email) > 254 or " " in email:
+                return self._json(400, {"error": "valid email required (name@domain.tld)"})
+            ch = hashlib.sha256(code.encode()).hexdigest() if code else None
+            cred = self.headers.get("X-Hub-Token", "")
+            p, _err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred else (None, None)
+            with LOCK:
+                if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
+                    aid = p["sub"]
+                else:
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and hmac.compare_digest(v["code_hash"], ch)), None)
+                if not aid:
+                    return self._json(403, {"error": "login token or valid account_code required"})
+                if not _auth_allow("email"):
+                    return self._json(429, {"error": "email rate limit reached, retry later"})
+                # if another VERIFIED account already holds this email: refuse (no takeover)
+                for a, v in ACCOUNTS.items():
+                    if a != aid and v["email"] == email and v["email_verified"]:
+                        return self._json(409, {"error": "email already bound to another verified account"})
+                vcode = secrets.token_hex(3).upper()   # 6 hex chars
+                ACCOUNTS[aid]["pending_email"] = email
+                ACCOUNTS[aid]["pending_code_hash"] = hashlib.sha256(vcode.encode()).hexdigest()
+                ACCOUNTS[aid]["pending_exp"] = time.time() + 900   # 15 min
+                _persist_locked()
+                try:
+                    delivery = _send_email(email, "EverList email verification",
+                        f"Your EverList verification code: {vcode}\nValid 15 minutes. If you did not request this, ignore it.")
+                except Exception as ex:
+                    return self._json(502, {"error": f"email delivery failed: {ex}"})
+            return self._json(200, {"ok": True, "account_id": aid, "email": email,
+                "delivery": delivery, "note": "verification code sent - confirm with POST /accounts/email/verify {email, code}"})
+        if path == "/accounts/email/verify":
+            email = str(data.get("email", "")).strip().lower()
+            vcode = str(data.get("code", "")).strip().upper()
+            ch = hashlib.sha256(vcode.encode()).hexdigest() if vcode else None
+            with LOCK:
+                if not _auth_allow("verify"):
+                    return self._json(429, {"error": "verify rate limit reached, retry later"})
+                aid = next((a for a, v in ACCOUNTS.items()
+                            if v.get("pending_email") == email and v.get("pending_code_hash")
+                            and hmac.compare_digest(v["pending_code_hash"], ch or "x")
+                            and time.time() < v["pending_exp"]), None)
+                if not aid:
+                    return self._json(403, {"error": "invalid or expired verification code"})
+                ACCOUNTS[aid]["email"] = email
+                ACCOUNTS[aid]["email_verified"] = True
+                ACCOUNTS[aid]["pending_email"] = None
+                ACCOUNTS[aid]["pending_code_hash"] = None
+                ACCOUNTS[aid]["pending_exp"] = 0
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid, "email": email, "email_verified": True,
+                "note": "recovery enabled: POST /accounts/email/recover {email} if you ever lose the account code"})
+        if path == "/accounts/email/recover":
+            # request: ALWAYS answer the same way (no account enumeration)
+            email = str(data.get("email", "")).strip().lower()
+            if not email:
+                return self._json(400, {"error": "email required"})
+            with LOCK:
+                if not _auth_allow("recover"):
+                    return self._json(200, {"ok": True, "delivery": "suppressed",
+                        "note": "if that email is bound to an account, a recovery code was sent"})
+                aid = next((a for a, v in ACCOUNTS.items() if v.get("email") == email and v.get("email_verified")), None)
+                if not aid:
+                    return self._json(200, {"ok": True, "delivery": "suppressed",
+                        "note": "if that email is bound to an account, a recovery code was sent"})
+                rcode = secrets.token_hex(3).upper()
+                ACCOUNTS[aid]["recovery_code_hash"] = hashlib.sha256(rcode.encode()).hexdigest()
+                ACCOUNTS[aid]["recovery_exp"] = time.time() + 900
+                _persist_locked()
+                try:
+                    delivery = _send_email(email, "EverList account recovery",
+                        f"Your EverList recovery code: {rcode}\nValid 15 minutes.\nConfirm with email + code + a new code at /accounts/email/recover/confirm.")
+                except Exception as ex:
+                    return self._json(502, {"error": f"email delivery failed: {ex}"})
+            return self._json(200, {"ok": True, "delivery": delivery,
+                "note": "if that email is bound to an account, a recovery code was sent"})
+        if path == "/accounts/email/recover/confirm":
+            email = str(data.get("email", "")).strip().lower()
+            rcode = str(data.get("code", "")).strip().upper()
+            new_code = "acct-" + secrets.token_hex(8)
+            ch = hashlib.sha256(rcode.encode()).hexdigest() if rcode else None
+            nch = hashlib.sha256(new_code.encode()).hexdigest()
+            with LOCK:
+                if not _auth_allow("recover"):
+                    return self._json(429, {"error": "recover rate limit reached, retry later"})
+                aid = next((a for a, v in ACCOUNTS.items()
+                            if v.get("email") == email and v.get("email_verified") and v.get("recovery_code_hash")
+                            and hmac.compare_digest(v["recovery_code_hash"], ch or "x")
+                            and time.time() < v["recovery_exp"]), None)
+                if not aid:
+                    return self._json(403, {"error": "invalid or expired recovery code"})
+                ACCOUNTS[aid]["code_hash"] = nch          # recovery == rotation: old code dies
+                ACCOUNTS[aid]["recovery_code_hash"] = None
+                ACCOUNTS[aid]["recovery_exp"] = 0
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
+                "code_note": "shown ONCE — store it; OLD CODE INVALID; existing 24h login tokens remain valid until expiry"})
         if path == "/listings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: list token required
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
@@ -653,7 +798,15 @@ class Handler(BaseHTTPRequestHandler):
             allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns
             with LOCK:
-                lid = f"{v[:4]}-{len(LISTINGS)+1}"
+                _pref = v[:4]
+                _n = ID_COUNTERS.get(_pref, 0)
+                if not _n:  # seed once from legacy state (pre-counter listings)
+                    _nums = [int(l["id"].rsplit("-", 1)[1]) for l in LISTINGS
+                             if l["id"].startswith(_pref + "-") and l["id"].rsplit("-", 1)[1].isdigit()]
+                    _n = max(_nums) if _nums else 0
+                _n += 1
+                ID_COUNTERS[_pref] = _n
+                lid = f"{_pref}-{_n}"  # monotonic: never reused, even after deletes
                 data["id"] = lid
                 data["owner"] = p["sub"]   # SERVER-OWNED: authenticated principal, never client-set (anti-spoof for /orders)
                 manage_code = "mgr-" + secrets.token_hex(6)   # ownership secret: shown ONCE, stored as sha256 only
@@ -671,8 +824,8 @@ class Handler(BaseHTTPRequestHandler):
             lid = path[len("/listings/"):-len("/manage")]
             code = str(data.get("manage_code", "")).strip()
             action = str(data.get("action", "")).strip().lower()
-            if action not in ("edit", "delete"):
-                return self._json(400, {"error": "action must be 'edit' or 'delete'"})
+            if action not in ("edit", "delete", "archive", "unarchive"):
+                return self._json(400, {"error": "action must be 'edit', 'delete', 'archive' or 'unarchive'"})
             cred = self.headers.get("X-Hub-Token", "")
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
@@ -697,6 +850,12 @@ class Handler(BaseHTTPRequestHandler):
                     LISTINGS.remove(listing)
                     _persist_locked()
                     return self._json(200, {"ok": True, "deleted": lid})
+                if action in ("archive", "unarchive"):
+                    listing["archived"] = (action == "archive")
+                    _persist_locked()
+                    note = ("hidden from search; existing bookings stay fulfillable"
+                            if listing["archived"] else "visible again")
+                    return self._json(200, {"ok": True, "id": lid, "archived": listing["archived"], "note": note})
                 editable = {"title", "description", "price", "location", "date",
                             "capacity", "category", "tags", "url"}
                 changes = {k: data[k] for k in editable if k in data}
@@ -790,6 +949,8 @@ class Handler(BaseHTTPRequestHandler):
             lid = data.get("listing_id")
             with LOCK: listing = next((l for l in LISTINGS if l["id"] == lid), None)
             if not listing: return self._json(404, {"error": f"no listing {lid}"})
+            if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
+                return self._json(409, {"error": "listing archived - not bookable"})
             v = listing["vertical"]
             missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
@@ -825,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:  # I3: single reservation section — check + increment atomic under one LOCK
                 listing = next((l for l in LISTINGS if l["id"] == lid), None)
                 if not listing: return self._json(404, {"error": f"no listing {lid}"})
+                if listing.get("archived"):
+                    return self._json(409, {"error": "listing archived - not bookable"})
                 if listing["vertical"] == "events":
                     if listing["registered"] + qty > listing["capacity"]:
                         return self._json(409, {"error": "event full"})
