@@ -82,6 +82,9 @@ jobs:
       - name: "Chain secret hygiene (M10 - no seed material in state/logs/git)"
         run: venv/bin/python test_m10_secrets.py
 
+      - name: "Search upgrades (C2 - date/price range, tags, sort, chat parse)"
+        run: venv/bin/python test_c2_search.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

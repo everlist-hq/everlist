@@ -683,7 +683,7 @@ def _my_listings(hub_url: str, sender: str) -> str:
     return (f"Your listings ({len(mine)}):\n" + "\n".join(lines) + tail)
 
 
-_FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us",
+_FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", "under", "over",
                  "something", "anything", "want", "looking", "i", "we", "to", "do",
                  "in", "on", "at", "my", "under", "around"}
 
@@ -693,16 +693,40 @@ def _smart_search(hub_url: str, text: str) -> str:
     Multi-word queries union per-word matches (hub q is substring-AND by design)."""
     low = text.strip().lower()
     free = "free" in low.split()
+    # C2 structured qualifiers, parsed OUT of the keyword text (regex spans so
+    # dates/prices survive intact; qualifiers AND-combine in the hub):
+    qual: dict[str, str] = {}
+
+    def _take(pattern: str, key: str, group: int = 1) -> None:
+        nonlocal low
+        m = re.search(pattern, low)
+        if m:
+            qual[key] = m.group(group).replace(",", ".") if key.endswith("_price") else m.group(group)
+            low = (low[:m.start()] + " " + low[m.end():]).strip()
+
+    _take(r"\bunder\s+(\d+(?:[.,]\d+)?)", "max_price")
+    _take(r"\bover\s+(\d+(?:[.,]\d+)?)", "min_price")
+    _take(r"\bfrom\s+(\d{4}-\d{2}-\d{2})", "from")
+    _take(r"\b(?:until|till|by)\s+(\d{4}-\d{2}-\d{2})", "to")
+    if re.search(r"\bcheapest\b", low):
+        qual["sort"] = "price"
+        low = re.sub(r"\bcheapest\b", " ", low)
+    if re.search(r"\b(soonest|earliest)\b", low):
+        qual["sort"] = "date"
+        low = re.sub(r"\b(?:soonest|earliest)\b", " ", low)
+    params = ([] + (["max_price=0"] if free else []))
+    for k in ("max_price", "min_price", "from", "to", "sort"):
+        if k in qual:
+            params.append(k + "=" + urllib.parse.quote(qual[k]))
     words = [w for w in low.replace(",", " ").split()
              if w not in _FILLER_WORDS and w != "free" and w not in ("search", "find", "listings", "events", "show")]
-    # strip a trailing "free" qualifier like 'free yoga' handled above; drop price words
     try:
-        data = _hub_get(hub_url, "/search" + ("?max_price=0" if free else ""))
+        data = _hub_get(hub_url, "/search" + (("?" + "&".join(params)) if params else ""))
         base = data.get("listings") or []
         if words:
             seen: dict[str, dict] = {}
             for w in words[:3]:
-                d2 = _hub_get(hub_url, f"/search?{'max_price=0&' if free else ''}q=" + urllib.parse.quote(w))
+                d2 = _hub_get(hub_url, "/search?" + "&".join(params + ["q=" + urllib.parse.quote(w)]))
                 for l in (d2.get("listings") or []):
                     seen.setdefault(l.get("id"), l)
             listings = list(seen.values())
@@ -718,7 +742,20 @@ def _smart_search(hub_url: str, text: str) -> str:
         return f"Search rejected: {err or ('HTTP ' + str(ex.code))}"
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
-    qualifier = " (free only)" if free else ""
+    parts = ([] + (["free only"] if free else []))
+    if "max_price" in qual:
+        parts.append("under " + qual["max_price"])
+    if "min_price" in qual:
+        parts.append("over " + qual["min_price"])
+    if "from" in qual:
+        parts.append("from " + qual["from"])
+    if "to" in qual:
+        parts.append("until " + qual["to"])
+    if qual.get("sort") == "price":
+        parts.append("cheapest first")
+    if qual.get("sort") == "date":
+        parts.append("soonest first")
+    qualifier = (" (" + ", ".join(parts) + ")") if parts else ""
     if not listings:
         return (f"No listings matched{qualifier}. Try: 'search' (all), 'search jazz', "
                 "or 'find me a free yoga class'.")
@@ -731,6 +768,7 @@ _HELP = (
     "Hi! I'm EverList Booking — an open, escrow-protected marketplace "
     "where AI agents book real things.\n\nCommands:\n"
     "• search — all listings; 'search jazz' — filtered; 'find me a free yoga class' — natural language\n"
+    "• filters: under/over <price> · from/until <YYYY-MM-DD> · soonest · cheapest (combine freely)\n"
     "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
     "• list\n title: … description: … tags: … url: … — rich listing (description, tags, link)\n"
     "• signup — create a keypair organizer account (seed shown ONCE; cap 25, no per-listing codes)\n"

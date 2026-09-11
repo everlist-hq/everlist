@@ -521,7 +521,9 @@ def _openapi_spec():
             "/listings/{id}": {"get": op("One listing, full rich record", "listings",
                                         note="404 unknown / 410 archived")},
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/delete a listing", "listings", sec=tok)},
-            "/search": {"get": op("Search listings (q, category, max_price, ...)", "listings")},
+            "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, ...)", "listings",
+                                  note="from/to = YYYY-MM-DD on the listing date (dateless listings excluded); "
+                                       "tags=comma,any-of; sort=date|price|newest (newest = creation order reversed)")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
                                         note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
@@ -833,6 +835,27 @@ class Handler(BaseHTTPRequestHandler):
             ftag = q.get("tag", [""])[0].strip().lower()
             floc = q.get("location", [""])[0].strip().lower()
             fmax = q.get("max_price", [""])[0]
+            fmin = q.get("min_price", [""])[0]
+            ffrom = q.get("from", [""])[0].strip()
+            fto = q.get("to", [""])[0].strip()
+            fsort = q.get("sort", [""])[0].strip().lower()
+            ftags_raw = q.get("tags", [""])[0].strip().lower()
+            ftags = [t.strip() for t in ftags_raw.split(",") if t.strip()] if ftags_raw else []
+            if fsort and fsort not in ("date", "price", "newest"):
+                return self._json(400, {"error": "sort must be one of: date, price, newest"})
+            DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+            if ffrom and not DATE_SHAPE.match(ffrom):
+                return self._json(400, {"error": "from must be YYYY-MM-DD"})
+            if fto and not DATE_SHAPE.match(fto):
+                return self._json(400, {"error": "to must be YYYY-MM-DD"})
+            try:
+                fmaxv = float(fmax) if fmax else None
+            except ValueError:
+                return self._json(400, {"error": "max_price must be a number"})
+            try:
+                fminv = float(fmin) if fmin else None
+            except ValueError:
+                return self._json(400, {"error": "min_price must be a number"})
             with LOCK:
                 res = [l for l in LISTINGS
                        if not l.get("archived")
@@ -840,19 +863,29 @@ class Handler(BaseHTTPRequestHandler):
                        and (not fvert or l["vertical"] == fvert)
                        and (not fcat or l.get("category") == fcat)
                        and (not ftag or ftag in (l.get("tags") or []))
-                       and (not floc or floc in str(l.get("location", "")).lower())]
-                if fmax:
-                    try:
-                        lim = float(fmax)
-                        res = [l for l in res if float(l.get("price", 0)) <= lim]
-                    except ValueError:
-                        return self._json(400, {"error": "max_price must be a number"})
+                       and (not ftags or any(t in (l.get("tags") or []) for t in ftags))
+                       and (not floc or floc in str(l.get("location", "")).lower())
+                       # C2 date range: a listing without a date cannot satisfy it
+                       and (not ffrom or str(l.get("date", "")) >= ffrom)
+                       and (not fto or bool(l.get("date")) and str(l.get("date")) <= fto)]
+                if fmaxv is not None:
+                    res = [l for l in res if float(l.get("price", 0)) <= fmaxv]
+                if fminv is not None:
+                    res = [l for l in res if float(l.get("price", 0)) >= fminv]
+                if fsort == "price":
+                    res.sort(key=lambda l: float(l.get("price", 0)))
+                elif fsort == "date":
+                    res.sort(key=lambda l: (not l.get("date"), str(l.get("date", ""))))
+                elif fsort == "newest":
+                    res.reverse()  # LISTINGS is append-ordered; ids are monotonic
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
                 "returned": len(res), "filters": {
                 "q": term, "vertical": fvert, "category": fcat, "tag": ftag,
-                "location": floc, "max_price": fmax or None}, "listings": [_pub_listing(x) for x in res]})
+                "tags": ftags or None, "location": floc, "min_price": fmin or None,
+                "max_price": fmax or None, "from": ffrom or None, "to": fto or None,
+                "sort": fsort or None}, "listings": [_pub_listing(x) for x in res]})
         if u.path == "/bookings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: token required, principal-scoped
             payload, err = None, "missing X-Hub-Token"
