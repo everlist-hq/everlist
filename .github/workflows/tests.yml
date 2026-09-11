@@ -64,6 +64,9 @@ jobs:
       - name: "Chat help honesty (B10)"
         run: venv/bin/python test_chat_help.py
 
+      - name: "Escrow_ref chain pointer (M5)"
+        run: venv/bin/python test_m5_escrow_ref.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

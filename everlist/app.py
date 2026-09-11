@@ -1,4 +1,4 @@
-"""agent-hub-v2 - open, fair agent commerce hub (stdlib only, Apache-2.0).
+"""agent-hub-v2 - open, fair agent commerce hub (stdlib only, MIT).
 
 Universal booking core: any vertical (events, food, ...) is just a schema.
 Fairness is enforced in the protocol:
@@ -528,7 +528,7 @@ def _openapi_spec():
             "/book/{id}": {"get": op("Private booking details", "bookings", sec=tok,
                                     note="credential = booking secret (shown once at creation), via X-Hub-Token header")},
             "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0)", "bookings", sec=tok,
-                                 note="Idempotency-Key supported; verified-human gate applies")},
+                                 note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
@@ -607,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
-                "protocol": "agent-hub/0.2", "open_source": "Apache-2.0",
+                "protocol": "agent-hub/0.2", "open_source": "MIT",
                 "api_contract": "/openapi.json",
                 "hub": "agent-hub-v2",
                 "description": "Open, community-driven commerce hub for AI agents. Universal booking core, per-vertical schemas.",
@@ -911,7 +911,7 @@ class Handler(BaseHTTPRequestHandler):
                 _idf = tuple(sorted({s["booking"]["identity"] for s in VERTICAL_SCHEMAS.values()}))
                 pubfields = ("id", "listing_id", "vertical", "escrow", "amount",
                              "hub_fee", "owner_payout", "quantity", "created",
-                             "booked_by") + _idf
+                             "booked_by", "escrow_ref") + _idf
                 orders = [{k: b[k] for k in pubfields if k in b}
                           for b in BOOKINGS if b.get("listing_id") in my_listings]
             return self._json(200, {"orders": orders, "merchant": me, "count": len(orders)})
@@ -1585,7 +1585,7 @@ class Handler(BaseHTTPRequestHandler):
             reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
             if reserved_seen:
                 return self._json(400, {"error": f"reserved fields rejected: {reserved_seen}"})
-            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified"}
+            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref"}
             unknown = [k for k in data if k not in allowed]
             if unknown:
                 return self._json(400, {"error": f"unknown fields rejected: {unknown}",
@@ -1607,6 +1607,23 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(qty_raw, bool) or not isinstance(qty_raw, int) or not (1 <= qty_raw <= 100):
                 return self._json(400, {"error": "quantity must be an integer in [1, 100]"})
             qty = qty_raw
+            # M5: optional on-chain escrow reference — shape-validated pointer
+            # (contract address + escrow id + tx hash). The chain is the source
+            # of truth; the hub only stores and mirrors it (M7), never invents it.
+            er = data.get("escrow_ref")
+            if er is not None:
+                if not isinstance(er, dict) or set(er.keys()) != {"contract", "escrow_id", "tx"}:
+                    return self._json(400, {"error": "escrow_ref must be an object with exactly: contract, escrow_id, tx"})
+                _erc = er.get("contract")
+                if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
+                    return self._json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
+                _eri = er.get("escrow_id")
+                if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1:
+                    return self._json(400, {"error": "escrow_ref.escrow_id must be a positive integer"})
+                _ert = er.get("tx")
+                if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
+                    return self._json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
+                er = {"contract": _erc.strip(), "escrow_id": _eri, "tx": _ert.strip()}
             # I4: idempotency — same key + identical payload replays the same booking;
             # same key + different payload -> 409 conflict. Bound to the token principal:
             # agent B can never replay agent A's stored response (it contains secrets).
@@ -1640,6 +1657,10 @@ class Handler(BaseHTTPRequestHandler):
                 # B3c-waiver: free listings need no payment rail — escrow state WAIVED
                 # (verified-human gate still applies; ledger stays complete)
                 escrow_state = "WAIVED" if price_c == 0 else "HELD"
+                # M5: an on-chain escrow ref on a free booking is a contradiction —
+                # free listings waive the payment rail entirely
+                if er is not None and escrow_state == "WAIVED":
+                    return self._json(409, {"error": "escrow_ref requires a paid booking (free listings waive the escrow rail)"})
                 # H2: unguessable booking IDs (no sequential enumeration)
                 bid = "bk-" + secrets.token_hex(12)
                 secret = secrets.token_hex(16)
@@ -1652,6 +1673,8 @@ class Handler(BaseHTTPRequestHandler):
                     "escrow": escrow_state, "amount": price, "hub_fee": fee,
                     "owner_payout": payout, "quantity": qty, "created": time.time(),
                     "booked_by": principal, **pub}
+                if er is not None:
+                    booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
                 # real identity stored ONLY here, retrievable only with the secret
                 SECRETS[bid] = {"secret": secret, "private": priv_fields}
                 BOOKINGS.append(booking)
