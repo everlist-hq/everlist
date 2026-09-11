@@ -96,6 +96,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== M6 indexer client ==='; $(PYTHON) test_m6_indexer.py || exit 1; \
 		echo '=== M7 mirror sync ==='; $(PYTHON) test_m7_sync.py || exit 1; \
 		echo '=== M8 E2E chain booking ==='; $(PYTHON) test_m8_e2e_chain.py || exit 1; \
+		echo '=== M9 payout key ==='; $(PYTHON) test_m9_payout.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \

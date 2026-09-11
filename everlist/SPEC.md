@@ -14,7 +14,7 @@ This document is normative for hub implementations and clients. **MUST/SHOULD/MA
 ## 2. Manifest (discovery)
 
 - Location: `/.well-known/agent-hub.json` (canonical), `/manifest.json` (pointer to canonical). Agents SHOULD probe the well-known path.
-- Fields: `protocol` ("agent-hub/0.2"), `open_source` ("Apache-2.0"), `hub` (name), `description`,
+- Fields: `protocol` ("agent-hub/0.2"), `open_source` ("MIT"), `hub` (name), `description`,
   `fairness` {`fee_policy.actual_fee_pct`, `ledger`, `escrow`, `open_registry`},
   `identity` {`booking_requires`, `adapters[]` (scheme+status), `disputes`},
   `payments` {`protocol`, `pricing.unit`, `pricing.rule`, `accepted_assets[]` (asset, role, rail), `deferred[]`, `rails`, `principle`},
@@ -237,3 +237,7 @@ Every mutating POST route carries a per-source fixed-window backstop (`_auth_all
 | --- | --- | --- |
 | PYSEC-2026-3002 (CVE-2025-69277) | pynacl 1.6.0 (transitive via cosmpy) | Vulnerability is in bundled libsodium's `crypto_core_ed25519_is_valid_point` with untrusted data ("atypical use cases"); that API is not reachable through our stack, and cosmpy 0.12.2 pins `pynacl==1.6.0` exactly — the fixed 1.6.2 would break the declared tree. EverList's own crypto is Ed25519 via `cryptography` 50.0.1, not PyNaCl. Re-audit when cosmpy lifts the pin. |
 | PYSEC-2026-1325 | ecdsa 0.19.2 (transitive via cosmpy, uagents-core) | Minerva timing attack on P-256 ECDSA *signing*; no fixed version exists upstream. Our own code never uses ecdsa (Ed25519 via `cryptography`); ecdsa signing occurs only inside Fetch agent identity registration — rare, local, non-adversarial. Monitor upstream. |
+
+### 18. Organizer payout keys (M9)
+
+`POST /accounts/payout {payout_pk}` (login token OR account_code proves control): registers the organizer's Midnight **coin PUBLIC key** (64-hex, 32 bytes) on the account. The hub stores **public keys only** — secret keys and seeds are structurally rejected (format wall) and never needed: escrow release/refund pays the coin key fixed at contract creation; the payout key tells agents/the hub where future escrows should point. Replace anytime (previous key dies); chat: `set-payout <64-hex>`. Legacy accounts migrate via the load-time field migration.

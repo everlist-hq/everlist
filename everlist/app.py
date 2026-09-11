@@ -7,7 +7,7 @@ Fairness is enforced in the protocol:
 - escrow by default: money is held until fulfillment is confirmed
 - open participation: no auth gate on the protocol level (identity/staking is a pluggable layer)
 """
-import json, os, sys, shutil, threading, time, hmac, hashlib, secrets, base64, binascii
+import json, os, re, sys, shutil, threading, time, hmac, hashlib, secrets, base64, binascii
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EdPriv, Ed25519PublicKey as _EdPub
 from cryptography.hazmat.primitives import serialization as _ser
 from cryptography.exceptions import InvalidSignature as _InvalidSig
@@ -304,7 +304,8 @@ def _load_state():
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
-                    "recovery_code_hash": None, "recovery_exp": 0, "gen": 0}
+                    "recovery_code_hash": None, "recovery_exp": 0, "gen": 0,
+                    "payout_pk": None}
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
                 _v.setdefault(_k, _d)
@@ -544,6 +545,7 @@ def _openapi_spec():
             "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
+            "/accounts/payout": {"post": op("Register organizer payout coin PUBLIC key (64-hex; secrets never accepted)", "accounts")},
             "/accounts/me": {"delete": op("Account self-deletion (GDPR-style; ledger survives pseudonymously)", "accounts", sec=tok)},
             "/premium/events": {"get": op("Premium data (x402 payment)", "payments",
                                          note="402 + payment instructions without a valid payment header")},
@@ -1033,7 +1035,8 @@ class Handler(BaseHTTPRequestHandler):
                         "verified_by": None, "created": time.time(),
                         "email": None, "email_verified": False,
                         "pending_email": None, "pending_code_hash": None,
-                        "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0}
+                        "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0,
+                        "payout_pk": None}
                 if pubkey_hex:
                     acct["kind"] = "keypair"
                     acct["pubkey"] = pubkey_hex
@@ -1096,8 +1099,38 @@ class Handler(BaseHTTPRequestHandler):
                                          extra={"gen": gen}) for a in acts}
             return self._json(200, {"account_id": aid, "agent": agent,
                 "human_verified": ACCOUNTS[aid]["human_verified"],
+                "payout_pk": ACCOUNTS[aid].get("payout_pk"),
                 "tokens": toks, "ttl": 24*3600,
                 "note": "tokens act AS the account (sub=acct-<id>) for 24h; edit/delete need no per-listing codes"})
+        if path == "/accounts/payout":
+            # M9: organizer payout key - a COIN PUBLIC key (64-hex, 32 bytes),
+            # NEVER a secret. Escrow releases pay the key fixed at creation;
+            # this field is where organizers tell the hub/agents where payouts
+            # go. The hub stores public keys only - secrets stay in wallets.
+            code = str(data.get("account_code", "")).strip()
+            pk = str(data.get("payout_pk", "")).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", pk or ""):
+                return self._json(400, {"error": "payout_pk must be a 64-hex coin PUBLIC key (32 bytes); never send secret keys or seeds"})
+            ch = hashlib.sha256(code.encode()).hexdigest() if code else None
+            cred = self.headers.get("X-Hub-Token", "")
+            p, _err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred else (None, None)
+            if p:
+                p, _err = _gen_check(p)  # stale tokens never prove identity
+            with LOCK:
+                if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
+                    aid = p["sub"]
+                else:
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
+                if not aid:
+                    return self._json(403, {"error": "login token or valid account_code required"})
+                if not _auth_allow("email", _source_of(self)):
+                    return self._json(429, {"error": "rate limit reached for your source, retry later"})
+                replaced = ACCOUNTS[aid].get("payout_pk") not in (None, "", pk)
+                ACCOUNTS[aid]["payout_pk"] = pk
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid, "payout_pk": pk,
+                "note": "coin PUBLIC key stored - escrow payouts target this key; keep its secret ONLY in your wallet" +
+                        (" (previous key replaced)" if replaced else "")})
         if path == "/accounts/vouch":
             # H5: admin-key brute-force backstop — failed attempts count
             with LOCK:

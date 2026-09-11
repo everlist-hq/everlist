@@ -76,6 +76,9 @@ jobs:
       - name: "E2E chain booking (M8 - recorded fixture; live sim needs contract build)"
         run: venv/bin/python test_m8_e2e_chain.py
 
+      - name: "Organizer payout key (M9)"
+        run: venv/bin/python test_m9_payout.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

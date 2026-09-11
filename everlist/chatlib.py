@@ -249,7 +249,8 @@ def _sign_login(hub_url: str, seed_hex: str, agent: str):
 
 def _set_session(sender: str, res: dict) -> None:
     _SESSIONS[sender] = {"account_id": res.get("account_id"), "tokens": res.get("tokens", {}),
-                         "verified": bool(res.get("human_verified")), "ts": time.time()}
+                         "verified": bool(res.get("human_verified")), "ts": time.time(),
+                         "payout_pk": res.get("payout_pk")}
 
 def _welcome(res: dict) -> str:
     v = ("\n✅ You are verified as human — bookings need no extra credential."
@@ -413,8 +414,29 @@ def _whoami(hub_url: str, sender: str) -> str:
     if not s:
         return ("You're chatting anonymously (per-listing codes, cap 3). "
                 "'signup' creates an account; 'login-seed <seed>' or 'login <code>' restores yours.")
+    payout = s.get("payout_pk")
+    pline = (" · payout key set ✅" if payout else
+             " · no payout key yet ('set-payout <64-hex coin PUBLIC key>' — escrow payouts target it)")
     return (f"Logged in as {s['account_id']} · human_verified: {'yes' if s['verified'] else 'no'} · "
-            f"listing cap {_ACCOUNT_CAP}. 'logout' to end the session here.")
+            f"listing cap {_ACCOUNT_CAP}.{pline} 'logout' to end the session here.")
+
+
+def _set_payout(hub_url: str, sender: str, pk: str) -> str:
+    s = _session(sender)
+    if not s:
+        return "Login first ('login <code>' / 'login-seed <seed>'), then set-payout."
+    pk = pk.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", pk or ""):
+        return ("Usage: set-payout <64-hex coin PUBLIC key>\n"
+                "⚠️ PUBLIC key only — never send a secret key or seed; the hub stores public keys and never needs secrets.")
+    code, res = _hub_post(hub_url, "/accounts/payout", {"payout_pk": pk}, s["tokens"].get("list"))
+    if code is None:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code != 200:
+        return f"❌ {res.get('error', 'payout registration failed')}"
+    s["payout_pk"] = pk
+    return (f"✅ Payout key registered ({pk[:12]}…). Midnight escrow releases target this coin key.\n"
+            "Keep the matching secret ONLY in your wallet — no one else will ever need it.")
 
 
 def _logout(sender: str) -> str:
@@ -712,6 +734,7 @@ _HELP = (
     "• login <account_code> — legacy code accounts (24h)\n"
     "• email-bind <email> / email-code <code> — enable email recovery\n"
     "• recover <email> / recover-confirm <email> <code> — recover a lost account code\n"
+    "• set-payout <64-hex coin PUBLIC key> — where Midnight escrow pays you (PUBLIC key only!)\n"
     "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
     "• delete-account — erase your account (typed confirmation; listings archived, ledger refs kept)\n"
     "• my-listings — your listings\n"
@@ -762,6 +785,12 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _recover_confirm(hub_url, email, code)
     if low.startswith("recover "):
         return _recover(hub_url, text.strip()[8:].strip())
+
+    # --- payout key (M9)
+    if low.startswith("set-payout "):
+        return _set_payout(hub_url, sender, text.strip()[11:].strip())
+    if low == "set-payout":
+        return _set_payout(hub_url, sender, "")
 
     # --- ownership commands (B3c-ownership)
     if low == "my-listings" or low == "my listings":
