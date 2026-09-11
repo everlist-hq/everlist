@@ -62,7 +62,11 @@ def check_hub(base_url):
         led = fetch_json(base_url.rstrip("/") + led_path)
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
         return "INSUFFICIENT-EVIDENCE", findings + [f"ledger unreachable: {ex}"]
-    entries = [e for e in led.get("ledger", []) if e.get("kind") != "x402_settlement"]
+    # separate-kind ledger events carry their own shape (no escrow key): the
+    # x402 settlements since E-phase, and the M7 escrow_sync mirror entries
+    # (from/to/chain_tx) - excluded from booking-escrow state accounting
+    entries = [e for e in led.get("ledger", [])
+               if e.get("kind") not in ("x402_settlement", "escrow_sync")]
     if not entries:
         return "INSUFFICIENT-EVIDENCE", findings + [
             "ledger has no booking entries - nothing to verify yet"]
@@ -137,6 +141,39 @@ def check_hub(base_url):
     else:
         findings.append("C6 skipped: no accounts advertised (auth optional)")
 
+    # C7 (M7): escrow mirror declared + endpoint real + gated. The checker is
+    # unauthenticated by design, so full hub-vs-chain state consistency is NOT
+    # independently verifiable here (needs admin credentials) - recorded as a
+    # limitation, matching the HONESTY note below.
+    mirror = (man.get("fairness") or {}).get("mirror") or {}
+    sync_path = mirror.get("sync")
+    if not isinstance(sync_path, str) or not sync_path.startswith("/"):
+        findings.append("C7 FAIL: manifest declares no fairness.mirror.sync endpoint")
+        verdict = "NON-CONFORMANT"
+    else:
+        policy = str(mirror.get("policy", ""))
+        if "source of truth" not in policy or "downward" not in policy:
+            findings.append("C7 FAIL: mirror policy must declare chain-as-source-of-truth + never-overwrite-downward")
+            verdict = "NON-CONFORMANT"
+        else:
+            findings.append(f"C7: mirror declared ({mirror.get('rail', '?')}), policy OK")
+        try:
+            req = urllib.request.Request(base_url.rstrip("/") + sync_path, method="POST",
+                data=json.dumps({}).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                findings.append(f"C7 FAIL: {sync_path} answered {resp.status} WITHOUT admin key (must be gated)")
+                verdict = "NON-CONFORMANT"
+        except urllib.error.HTTPError as ex:
+            if ex.code == 403:
+                findings.append("C7: sync endpoint gated (403 without admin key) - OK")
+            else:
+                findings.append(f"C7 FAIL: {sync_path} answered {ex.code} without admin key (expected 403)")
+                verdict = "NON-CONFORMANT"
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as ex:
+            findings.append(f"C7 WARN: sync endpoint unreachable: {ex}")
+    findings.append("C7 NOTE: hub-vs-chain state consistency is admin-verifiable only "
+                    "(POST /admin/sync-escrow with X-Admin-Key); anonymous checkers "
+                    "verify declaration + gating, not live parity")
     findings.append("HONESTY: self-reported consistency != fairness proof; "
                     "independent settlement evidence does not exist at this stage (SPEC)")
     return verdict, findings

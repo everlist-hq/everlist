@@ -531,6 +531,8 @@ def _openapi_spec():
                                  note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
+            "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
+                                              note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
                                   note="acct- principals refused; accounts use /accounts/login")},
             "/accounts/signup": {"post": op("Create account (PoW-gated; keypair or legacy code)", "accounts")},
@@ -620,7 +622,10 @@ class Handler(BaseHTTPRequestHandler):
         "fairness": {"fee_policy": {"actual_fee_pct": FEE_PCT,
                                 "note": "fully declared by hub; no protocol cap. Agents verify declared vs ledger and choose"},
                               "ledger": "/ledger", "escrow": True,
-                              "open_registry": "/registry"},
+                              "open_registry": "/registry",
+                              "mirror": {"sync": "/admin/sync-escrow",
+                                         "rail": "midnight-shielded-escrow",
+                                         "policy": "chain is source of truth; sync never overwrites downward (C7)"}},
                 "identity": {"booking_requires": "verified-human credential (ZK: real human, private by default)",
                               "adapters": [
                                   {"scheme": "midnight-zk-personhood", "status": "flagship (ZK: real human, identity stays private)"},
@@ -1755,6 +1760,82 @@ class Handler(BaseHTTPRequestHandler):
             if not sub: return self._json(400, {"error": "booking_id required"})
             tok = hublib.mint_token(ADMIN_KEY, "confirm", sub, ttl=int(data.get("ttl", 3600)))
             return self._json(201, {"ok": True, "token": tok, "act": "confirm", "booking_id": sub})
+        if path == "/admin/sync-escrow":
+            # M7: mirror sync - the CHAIN is the source of truth for escrow
+            # state. Pulls public escrow state from a Midnight indexer for every
+            # booking carrying an escrow_ref and mirrors it 1:1 into the hub:
+            #   chain RELEASED/REFUNDED + hub HELD  -> hub updated (forward)
+            #   chain HELD + hub RELEASED/REFUNDED  -> REFUSED (never downward)
+            #   conflicting final states            -> REFUSED (needs operator)
+            # WAIVED bookings are untouched (no escrow rail). Ledger entries
+            # carry NO amount key (must not double-count volume totals).
+            from midnight_indexer import EscrowIndexerClient, IndexerError
+            with LOCK:
+                if not _auth_allow("admin", _source_of(self)):
+                    return self._json(429, {"error": "admin rate limit reached for your source, retry later"})
+            admin = self.headers.get("X-Admin-Key", "")
+            if not admin or not hmac.compare_digest(admin, ADMIN_KEY):
+                return self._json(403, {"error": "admin key required (X-Admin-Key)"})
+            indexer_url = str(data.get("indexer_url", "")).strip()
+            if not indexer_url.startswith(("http://", "https://")):
+                return self._json(400, {"error": "indexer_url required (http(s)://)"})
+            want = data.get("booking_ids")
+            if want is not None and (not isinstance(want, list)
+                                     or not all(isinstance(x, str) for x in want)):
+                return self._json(400, {"error": "booking_ids must be a list of booking ids"})
+            with LOCK:
+                targets = [dict(b) for b in BOOKINGS
+                           if b.get("escrow_ref")
+                           and b.get("escrow") in ("HELD", "RELEASED", "REFUNDED")
+                           and (want is None or b["id"] in want)]
+                if want is not None:
+                    found = {b["id"] for b in targets}
+                    missing = [x for x in want if x not in found]
+                else:
+                    missing = []
+            results = []
+            for snap in targets:  # chain reads happen OUTSIDE the lock
+                ref = snap["escrow_ref"]
+                client = EscrowIndexerClient(indexer_url, ref["contract"])
+                try:
+                    chain = client.escrow(ref["escrow_id"])
+                except IndexerError as ex:
+                    results.append({"booking_id": snap["id"], "action": "error",
+                                    "error": str(ex), "hub_state": snap["escrow"]})
+                    continue
+                hub_state, chain_state = snap["escrow"], chain["state_name"]
+                if chain_state == hub_state:
+                    results.append({"booking_id": snap["id"], "action": "in-sync",
+                                    "hub_state": hub_state, "chain_state": chain_state})
+                    continue
+                # C7 safety rule: never overwrite downward or across final states
+                downward = ((chain_state == "HELD" and hub_state != "HELD")
+                            or (chain_state == "RELEASED" and hub_state == "REFUNDED")
+                            or (chain_state == "REFUNDED" and hub_state == "RELEASED"))
+                if downward:
+                    results.append({"booking_id": snap["id"], "action": "refused",
+                                    "hub_state": hub_state, "chain_state": chain_state,
+                                    "reason": "downward/conflicting overwrite refused - divergence needs operator investigation (C7)"})
+                    continue
+                with LOCK:  # forward transition: chain wins
+                    b = next((x for x in BOOKINGS if x["id"] == snap["id"]), None)
+                    if b is None or b["escrow"] != hub_state:
+                        results.append({"booking_id": snap["id"], "action": "error",
+                                        "error": "booking changed during sync"})
+                        continue
+                    b["escrow"] = chain_state
+                    LEDGER.append({"ts": time.time(), "kind": "escrow_sync",
+                                   "booking": b["id"], "from": hub_state,
+                                   "to": chain_state, "chain_tx": chain["tx"]})
+                    _persist_locked()
+                results.append({"booking_id": snap["id"], "action": "updated",
+                                "hub_state": hub_state, "chain_state": chain_state,
+                                "chain_tx": chain["tx"]})
+            for x in missing:
+                results.append({"booking_id": x, "action": "not-found"})
+            return self._json(200, {"synced": sum(1 for r in results if r["action"] == "updated"),
+                                    "indexer": indexer_url, "results": results,
+                                    "note": "chain is source of truth; downward overwrites refused (C7)"})
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):

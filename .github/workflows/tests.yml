@@ -70,6 +70,9 @@ jobs:
       - name: "Midnight indexer client (M6)"
         run: venv/bin/python test_m6_indexer.py
 
+      - name: "Escrow mirror sync (M7)"
+        run: venv/bin/python test_m7_sync.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

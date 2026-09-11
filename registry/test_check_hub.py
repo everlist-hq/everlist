@@ -25,8 +25,8 @@ import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.join(HERE, "..", "everlist")
-PY = sys.executable  # run under the same interpreter as this test (venv-portable)
+HUB_DIR = os.path.join(HERE, "..", "agent-hub-v2")
+PY = os.path.join(HUB_DIR, "venv", "bin", "python")
 CHECK = os.path.join(HERE, "check_hub.py")
 RESULTS = []
 
@@ -97,7 +97,9 @@ def start_real_hub(with_traffic):
 # ---- stub hub serving manipulated fixtures ----
 
 MANIFEST = {"hub": "stub", "protocol": "agent-hub/0.2",
-            "fairness": {"fee_policy": {"actual_fee_pct": 1.0}, "ledger": "/ledger"},
+            "fairness": {"fee_policy": {"actual_fee_pct": 1.0}, "ledger": "/ledger",
+                         "mirror": {"sync": "/admin/sync-escrow", "rail": "midnight-shielded-escrow",
+                                    "policy": "chain is source of truth; sync never overwrites downward (C7)"}},
             "payments": {}, "capabilities": {}}
 
 
@@ -129,6 +131,19 @@ def make_stub(ledger, manifest=None, extra_get=None):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def do_POST(self):
+            # C7 (M7): a manifest that declares the mirror must GATE it
+            if self.path == "/admin/sync-escrow":
+                self.send_response(403)
+                payload = json.dumps({"error": "admin key required (X-Admin-Key)"}).encode()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            self.send_response(404)
+            self.end_headers()
 
     srv = __import__("http.server", fromlist=["ThreadingHTTPServer"]).ThreadingHTTPServer(
         ("127.0.0.1", port), H)
