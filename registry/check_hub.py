@@ -17,6 +17,13 @@ consistency (honesty note: consistency is NOT a fairness proof - see SPEC):
       contract (GET <auth.challenge>?kind=signup -> algo/challenge/
       difficulty/ttl); hubs not advertising accounts skip this check
 
+Registry document verification (C6):
+  check_hub.py --registry <registry_url> [--expect-hub <hub_url>]
+               [--pubkey <pinned_hex>]
+  verifies the Ed25519 signature over the canonical payload of
+  GET <registry_url>/registry.json; --pubkey enforces out-of-band
+  key pinning (NON-CONFORMANT on mismatch).
+
 Output verdicts:
   CONFORMANT            all checks pass
   NON-CONFORMANT        any inconsistency found (exit 1)
@@ -33,6 +40,82 @@ import urllib.request
 
 TIMEOUT = 10.0
 TOL = 0.011  # rounding tolerance (cents)
+
+
+def canonical_payload_bytes(payload) -> bytes:
+    """C6: THE canonical form - must match registry.py exactly (sort_keys +
+    tight separators). Signer and verifier share this one expression."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def verify_envelope(doc: dict) -> tuple:
+    """C6: verify a signed registry document. Returns (ok, payload, reason).
+    Signature: ed25519 over the canonical payload bytes, made with the key
+    embedded in the envelope (out-of-band pinning is the production upgrade;
+    the format field documents this honestly)."""
+    if not isinstance(doc, dict):
+        return False, None, "document not an object"
+    if doc.get("format") != "everlist-registry/1-signed":
+        return False, None, f"unknown format: {doc.get('format')!r}"
+    payload = doc.get("payload")
+    sig = doc.get("signature")
+    if not isinstance(payload, dict) or not isinstance(sig, dict):
+        return False, None, "payload/signature missing or malformed"
+    if sig.get("algo") != "ed25519":
+        return False, None, f"unknown signature algo: {sig.get('algo')!r}"
+    pk_hex, sig_hex = sig.get("public_key", ""), sig.get("sig", "")
+    if not (isinstance(pk_hex, str) and len(pk_hex) == 64
+            and all(c in "0123456789abcdef" for c in pk_hex)):
+        return False, None, "public_key must be 64 hex chars"
+    if not (isinstance(sig_hex, str) and 120 <= len(sig_hex) <= 130
+            and all(c in "0123456789abcdef" for c in sig_hex)):
+        return False, None, "sig must be hex"
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
+        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex))
+        pub.verify(bytes.fromhex(sig_hex), canonical_payload_bytes(payload))
+    except InvalidSignature:
+        return False, None, "signature INVALID (payload tampered or wrong key)"
+    except Exception as ex:
+        return False, None, f"verification error: {ex}"
+    if payload.get("format") != "everlist-registry/1" or not isinstance(payload.get("hubs"), list):
+        return False, None, "payload shape invalid"
+    return True, payload, ""
+
+
+def check_registry(registry_url: str, expect_hub: str | None = None,
+                   pinned_pubkey: str | None = None) -> tuple:
+    """C6: fetch + verify a registry document; optionally require a hub URL to
+    be listed and/or a PINNED public key (out-of-band trust). Returns
+    (verdict, findings)."""
+    findings = []
+    try:
+        doc = fetch_json(registry_url.rstrip("/") + "/registry.json")
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
+        return "INSUFFICIENT-EVIDENCE", [f"registry.json unreachable: {ex}"]
+    ok, payload, why = verify_envelope(doc)
+    if not ok:
+        return "NON-CONFORMANT", [f"C6-REG FAIL: signature verification failed: {why}"]
+    findings.append(f"C6-REG: signature VALID (ed25519, key {doc['signature']['public_key'][:16]}...) - "
+                    f"{payload.get('hub_count')} hub(s), generated_unix={payload.get('generated_unix')}")
+    if pinned_pubkey:
+        if doc["signature"]["public_key"] != pinned_pubkey.strip().lower():
+            return "NON-CONFORMANT", findings + [
+                "C6-REG FAIL: document signed with a DIFFERENT key than the pinned one "
+                "(possible key substitution)"]
+        findings.append("C6-REG: embedded key MATCHES the pinned public key")
+    if expect_hub:
+        want = expect_hub.rstrip("/")
+        hit = next((h for h in payload["hubs"] if h.get("url", "").rstrip("/") == want), None)
+        if not hit:
+            return "NON-CONFORMANT", findings + [
+                f"C6-REG FAIL: {want} not listed in the signed document"]
+        findings.append(f"C6-REG: hub {want} listed (tier={hit.get('tier')}, "
+                        f"protocol={hit.get('protocol')})")
+    findings.append("C6-REG NOTE: key is embedded in the envelope; production pinning "
+                    "= compare against /registry.pub fetched out-of-band")
+    return "CONFORMANT", findings
 
 
 def fetch_json(url):
@@ -180,11 +263,36 @@ def check_hub(base_url):
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    if not args:
         print(__doc__)
         sys.exit(2)
-    verdict, findings = check_hub(sys.argv[1])
-    print(f"Hub: {sys.argv[1]}")
+    if args[0] == "--registry":
+        # C6: verify the signed registry document instead of checking a hub
+        if len(args) < 2:
+            print(__doc__)
+            sys.exit(2)
+        reg_url = args[1]
+        expect_hub = pinned = None
+        i = 2
+        while i < len(args):
+            if args[i] == "--expect-hub" and i + 1 < len(args):
+                expect_hub = args[i + 1]
+                i += 2
+            elif args[i] == "--pubkey" and i + 1 < len(args):
+                pinned = args[i + 1]
+                i += 2
+            else:
+                print(f"unknown option: {args[i]}")
+                sys.exit(2)
+        verdict, findings = check_registry(reg_url, expect_hub, pinned)
+        print(f"Registry: {reg_url}")
+    else:
+        if len(args) != 1:
+            print(__doc__)
+            sys.exit(2)
+        verdict, findings = check_hub(args[0])
+        print(f"Hub: {args[0]}")
     for f in findings:
         print(f"  - {f}")
     print(f"VERDICT: {verdict}")

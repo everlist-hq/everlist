@@ -6,6 +6,11 @@ Authoritative hub-of-hubs index per the master plan. app.py's built-in
 
 Endpoints:
   GET  /hubs            -> {open: [...], verified: [...]}
+  GET  /registry.json   -> C6 SIGNED bootstrap document {format, payload,
+                           signature}: ed25519 over the canonical payload
+                           bytes (sort_keys + tight separators); payload
+                           carries hubs + per-hub protocol/api_contract
+  GET  /registry.pub    -> signing public key (out-of-band pinning)
   GET  /hubs/{hub_id}   -> record + (if hub exposes ledger) self-reported totals
   POST /register        -> {url}; ownership proof: hub must echo a fresh nonce
                            at /challenge?nonce=... (challenge_response field),
@@ -14,6 +19,8 @@ Endpoints:
                            tier=verified.
 
 Persistence: registry.json (atomic tmp + os.replace), survives restarts.
+Signing key: registry-signing.key (0600, gitignored, persistent; override
+via REGISTRY_SIGNING_KEY). Verify with: check_hub.py --registry <url>
 
 SSRF-safe fetch policy (plan D2):
   - https-only outside dev mode (REGISTRY_DEV=1 relaxes to http for localhost)
@@ -48,6 +55,66 @@ MAX_REDIRECTS = 3
 
 _LOCK = threading.Lock()
 REGISTRY = {"open": [], "verified": []}
+
+# C6: signed registry document - Ed25519 keypair (persistent, 0600, gitignored
+# via *.key). /registry.json serves {format, payload, signature}; the signature
+# covers the EXACT canonical JSON bytes of payload (sort_keys + tight
+# separators) so verifiers need no canonicalization logic beyond json.dumps.
+KEY_FILE = os.environ.get("REGISTRY_SIGNING_KEY",
+                          os.path.join(HERE, "registry-signing.key"))
+_SIGN_SK = None
+_SIGN_PUB_HEX = None
+
+
+def _load_or_create_signing_key():
+    global _SIGN_SK, _SIGN_PUB_HEX
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE) as f:
+            _SIGN_SK = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(f.read().strip()))
+        print(f"C6: signing key loaded from {KEY_FILE}")
+    else:
+        _SIGN_SK = Ed25519PrivateKey.generate()
+        raw = _SIGN_SK.private_bytes(serialization.Encoding.Raw,
+                                     serialization.PrivateFormat.Raw,
+                                     serialization.NoEncryption())
+        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(raw.hex())
+        print(f"C6: new signing key generated at {KEY_FILE}")
+    _SIGN_PUB_HEX = _SIGN_SK.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+
+def canonical_payload_bytes(payload) -> bytes:
+    """THE canonical form: sort_keys + tight separators. Signer and every
+    verifier use exactly this - no drift possible."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def registry_document() -> dict:
+    """C6: the signed, agent-readable bootstrap document (hubs + versions)."""
+    from cryptography.hazmat.primitives import serialization
+    hubs = []
+    with _LOCK:
+        for tier in ("open", "verified"):
+            for r in REGISTRY[tier]:
+                man = r.get("manifest", {}) or {}
+                hubs.append({"hub_id": r["hub_id"], "url": r["url"], "tier": r["tier"],
+                             "registered": r.get("registered"),
+                             "protocol": man.get("protocol"),
+                             "api_contract": man.get("api_contract"),
+                             "content_policy": man.get("content_policy")})
+    payload = {"format": "everlist-registry/1",
+               "generated_unix": int(time.time()),
+               "hub_count": len(hubs),
+               "hubs": hubs,
+               "doc": "signature: ed25519 over canonical payload bytes; verify with check_hub.py --registry"}
+    sig = _SIGN_SK.sign(canonical_payload_bytes(payload)).hex()
+    return {"format": "everlist-registry/1-signed",
+            "payload": payload,
+            "signature": {"algo": "ed25519", "public_key": _SIGN_PUB_HEX, "sig": sig}}
 
 
 def _load():
@@ -188,6 +255,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/registry.json":
+            # C6: the signed, agent-readable bootstrap document
+            return self._json(200, registry_document())
+        if u.path == "/registry.pub":
+            # C6: signing public key (hex) for out-of-band pinning
+            return self._json(200, {"algo": "ed25519", "public_key": _SIGN_PUB_HEX,
+                "note": "pin this out-of-band for production; /registry.json also embeds it"})
         if u.path == "/hubs":
             with _LOCK:
                 return self._json(200, {"open": list(REGISTRY["open"]),
@@ -249,6 +323,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    _load_or_create_signing_key()  # C6: before serving - key exists by first request
     _load()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"D2 registry v0 on http://127.0.0.1:{PORT} (dev={DEV})")

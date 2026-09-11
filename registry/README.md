@@ -8,8 +8,20 @@ endpoint is DEMO-ONLY). Stdlib-only Python, zero dependencies.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /hubs` | open + verified hub lists (self-registration can never claim `verified`) |
+| `GET /registry.json` | **signed agent bootstrap document** (C6, see below) |
+| `GET /registry.pub` | signing public key for out-of-band pinning |
 | `POST /register` `{url}` | ownership proof: hub must echo a fresh nonce at `/challenge?nonce=...`, then its `/.well-known/agent-hub.json` is schema-validated |
 | `GET /hubs/{id}` | record + hub's self-reported ledger totals (cross-checked by D3) |
+
+## Signed registry document (C6)
+
+`GET /registry.json` returns `{format: "everlist-registry/1-signed", payload, signature}`:
+
+- **payload**: `{format, generated_unix, hub_count, hubs[]}` — each hub carries `url`, `tier`, `registered`, plus `protocol` / `api_contract` / `content_policy` carried from its registered manifest (schema versions, so agents can bootstrap from one well-known URL)
+- **signature**: `ed25519` over the **canonical payload bytes** — `json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")` — so verifiers need no canonicalization logic beyond that one expression
+- signing key: persistent, `0600`, gitignored (`registry-signing.key`, override `REGISTRY_SIGNING_KEY`)
+- verify: `python3 check_hub.py --registry <registry_url> [--expect-hub <hub_url>] [--pubkey <pinned_hex>]` — bad/tampered signature or a wrong pinned key → `NON-CONFORMANT` (exit 1)
+- trust note: the key is embedded in the envelope (agents can verify integrity + tamper-evidence immediately); production hardening = pin `/registry.pub` out-of-band and pass `--pubkey`
 
 ## Conformance checker
 

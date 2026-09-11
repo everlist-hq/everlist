@@ -25,8 +25,10 @@ import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.join(HERE, "..", "agent-hub-v2")
-PY = os.path.join(HUB_DIR, "venv", "bin", "python")
+# layout-portable: works in experiments/ (agent-hub-v2) AND the published repo (everlist)
+_CANDIDATES = [os.path.join(HERE, "..", "everlist"), os.path.join(HERE, "..", "agent-hub-v2")]
+HUB_DIR = next((c for c in _CANDIDATES if os.path.exists(os.path.join(c, "app.py"))), _CANDIDATES[0])
+PY = sys.executable  # same interpreter as this test (venv-portable)
 CHECK = os.path.join(HERE, "check_hub.py")
 RESULTS = []
 

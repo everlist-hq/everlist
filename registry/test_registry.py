@@ -12,6 +12,11 @@ then proves the plan acceptance:
   R6  ownership proof fails for a url the operator doesn't control (wrong echo)
   R7  invalid manifest -> 400, not stored
   R8  non-dev mode rejects http registration (https-only policy)
+  C6  R9  /registry.json signature verifies + hub listed w/ protocol version
+      R9c /registry.pub key matches envelope key
+      R10 tampered payload -> INVALID
+      R11 check_hub --registry --expect-hub -> CONFORMANT exit 0
+      R12 wrong pinned key -> NON-CONFORMANT exit 1; correct key accepted
 
 Run with the experiment venv: experiments/registry/test_registry.py
 """
@@ -29,8 +34,10 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.join(HERE, "..", "everlist")
-PY = sys.executable  # run under the same interpreter as this test (venv-portable)
+# layout-portable: works in experiments/ (agent-hub-v2) AND the published repo (everlist)
+_CANDIDATES = [os.path.join(HERE, "..", "everlist"), os.path.join(HERE, "..", "agent-hub-v2")]
+HUB_DIR = next((c for c in _CANDIDATES if os.path.exists(os.path.join(c, "app.py"))), _CANDIDATES[0])
+PY = sys.executable  # same interpreter as this test (venv-portable)
 REG_STATE = os.path.join("/tmp", f"registry_test_{uuid.uuid4().hex[:8]}.json")
 RESULTS = []
 
@@ -75,7 +82,9 @@ def start_hub():
 
 def start_registry(dev=1):
     env = {**os.environ, "REGISTRY_STATE": REG_STATE, "HUB_REGISTRY_PORT": str(REG_PORT),
-           "REGISTRY_DEV": str(dev)}
+           "REGISTRY_DEV": str(dev),
+           # C6: per-run signing key - tests never touch a live operator key
+           "REGISTRY_SIGNING_KEY": os.path.join("/tmp", f"regsign_{uuid.uuid4().hex[:8]}.key")}
     p = subprocess.Popen([PY, os.path.join(HERE, "registry.py")],
                          stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, env=env)
     assert wait_ready(REG_PORT)
@@ -195,6 +204,52 @@ def main():
         check("R7b: invalid hub not in list", all(
             h["url"] != f"http://127.0.0.1:{stub_port}" for h in hubs.get("open", [])))
         stub_srv.shutdown()
+
+        # ---- C6: signed /registry.json ---------------------------------
+        import check_hub  # verify with the REAL verifier (same dir)
+
+        # R9: document exists, signature verifies, registered hub listed
+        # with protocol version carried from its manifest
+        st, doc = req(f"{REG_URL}/registry.json")
+        ok, payload, why = check_hub.verify_envelope(doc)
+        check("R9: /registry.json signature verifies", st == 200 and ok, why)
+        r9hub = next((h for h in payload["hubs"] if h["url"] == HUB_URL), None) if payload else None
+        check("R9b: registered hub in signed payload with protocol version",
+              r9hub is not None and r9hub.get("protocol") == "agent-hub/0.2",
+              str(r9hub))
+        st, pub = req(f"{REG_URL}/registry.pub")
+        check("R9c: /registry.pub key matches envelope key",
+              st == 200 and pub.get("public_key") == doc["signature"]["public_key"])
+
+        # R10: tampered payload -> INVALID
+        import copy
+        bad = copy.deepcopy(doc)
+        bad["payload"]["hub_count"] = 999
+        ok, _, why = check_hub.verify_envelope(bad)
+        check("R10: tampered payload rejected", not ok and "INVALID" in why, why)
+
+        # R11: CLI verification mode (real end-to-end: fetch + verify + membership)
+        cli = subprocess.run(
+            [PY, os.path.join(HERE, "check_hub.py"), "--registry", REG_URL,
+             "--expect-hub", HUB_URL], capture_output=True, text=True, timeout=60)
+        check("R11: check_hub --registry CONFORMANT (exit 0)",
+              cli.returncode == 0 and "VERDICT: CONFORMANT" in cli.stdout,
+              cli.stdout[-300:] + cli.stderr[-200:])
+
+        # R12: out-of-band key pinning - wrong key refused, right key accepted
+        wrong = "ab" * 32
+        cli_bad = subprocess.run(
+            [PY, os.path.join(HERE, "check_hub.py"), "--registry", REG_URL,
+             "--pubkey", wrong], capture_output=True, text=True, timeout=60)
+        check("R12: wrong pinned key -> NON-CONFORMANT (exit 1)",
+              cli_bad.returncode == 1 and "DIFFERENT key" in cli_bad.stdout,
+              cli_bad.stdout[-300:])
+        cli_ok = subprocess.run(
+            [PY, os.path.join(HERE, "check_hub.py"), "--registry", REG_URL,
+             "--pubkey", pub.get("public_key", "")], capture_output=True, text=True, timeout=60)
+        check("R12b: correct pinned key accepted",
+              cli_ok.returncode == 0 and "MATCHES the pinned" in cli_ok.stdout,
+              cli_ok.stdout[-300:])
 
     finally:
         for p in (hub, reg):
