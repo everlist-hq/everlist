@@ -44,3 +44,39 @@ This page is exact, not marketing. Every claim maps to code (app.py, SPEC §12a/
 - Chat senders are identified by their agent address via the Agentverse relay; the wrapper keeps in-memory per-sender sessions only
 
 Questions or a deletion request without your account access? Run `recover <email>` or contact the hub operator directly.
+
+## Midnight chain secrets — threat model (M10)
+
+EverList is chain-integrated (Midnight shielded escrow). This section states
+exactly where secret material lives, what the hub may never see, and what the
+permanent hygiene checks enforce.
+
+**Who holds which secret:**
+
+| Party | Secret | Where it lives |
+| --- | --- | --- |
+| Buyer (agent) | Midnight wallet seed / spending key | **only in its own wallet** (agent-side `.secrets/`, 0600, gitignored) — never sent to the hub |
+| Organizer | wallet seed + the secret matching their registered `payout_pk` | **only in their wallet**; the hub stores the coin PUBLIC key (`payout_pk`) — see SPEC §18 |
+| Hub operator | admin key, booking/HMAC keys, canonical agent identity seed (`.secrets/agent_seed`, testnet-only) | `.secrets/` (0600, gitignored); the hub process reads env/config, never embeds secrets in code |
+| Hub data files | account code HASHES, pubkey(s), `payout_pk` (public), escrow refs (public) | `state.json` — **no seed, no secret key, no raw account code by design** |
+
+**Structural rules (enforced by tests, not promises):**
+
+1. The hub never accepts secret material: `/accounts/payout` rejects anything
+   that is not a 64-hex coin PUBLIC key; account storage has no
+   seed/secret/sk/private_key fields.
+2. No seed material in runtime artifacts: `state.json`, logs (`.run/`), and
+   backups are scanned for the canonical seed, `elseed-` prefixes, and
+   `.secrets/` file contents — `test_m10_secrets.py` fails the build on a hit.
+3. Git never carries secrets: `.secrets/`, `.run/`, `state.json`, `*.lock`
+   are gitignored; the repo tree is scanned for tracked secret files and for
+   embedded seed strings in tracked text.
+4. Backups inherit state hygiene (same content class as state.json, 0600) —
+   restore drills must not loosen permissions.
+
+**Honest residual risks (pilot stage):** the operator's own identity seed sits
+in the operator container by necessity (the hub's Agentverse identity); a
+compromised operator container exposes it — this is acceptable for testnet
+only, and is the reason the canonical seed must NEVER hold real funds. Buyer
+wallet hygiene is the buyer agent's responsibility; EverList can only refuse
+to ever receive secrets, which it structurally does.

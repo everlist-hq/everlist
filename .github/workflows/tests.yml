@@ -79,6 +79,9 @@ jobs:
       - name: "Organizer payout key (M9)"
         run: venv/bin/python test_m9_payout.py
 
+      - name: "Chain secret hygiene (M10 - no seed material in state/logs/git)"
+        run: venv/bin/python test_m10_secrets.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 
