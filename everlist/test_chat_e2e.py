@@ -332,9 +332,9 @@ async def main():
     r_who = RESULTS["whoami"] or ""
     r_arch = RESULTS["archive"] or ""
     r_unarch = RESULTS["unarchive"] or ""
-    chk("C1 whoami shows account + human_verified + payout guidance",
-        RESULTS["account_id"] in r_who and "human_verified" in r_who
-        and "set-payout" in r_who, r_who[:100])
+    chk("C1 whoami shows account + verification provenance + payout guidance",
+        RESULTS["account_id"] in r_who and "not human-verified yet" in r_who
+        and "set-payout" in r_who, r_who[:100])  # M14: provenance wording
     chk("C1 archive via chat (account-owned, no code)",
         "archived" in r_arch and "hidden from search" in r_arch, r_arch[:80])
     chk("C1 disk: listing archived after chat archive",

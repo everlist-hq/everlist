@@ -250,7 +250,9 @@ def _sign_login(hub_url: str, seed_hex: str, agent: str):
 def _set_session(sender: str, res: dict) -> None:
     _SESSIONS[sender] = {"account_id": res.get("account_id"), "tokens": res.get("tokens", {}),
                          "verified": bool(res.get("human_verified")), "ts": time.time(),
-                         "payout_pk": res.get("payout_pk")}
+                         "payout_pk": res.get("payout_pk"),
+                         "verified_by": res.get("verified_by"),
+                         "midnight_credential": res.get("midnight_credential")}
 
 def _welcome(res: dict) -> str:
     v = ("\n✅ You are verified as human — bookings need no extra credential."
@@ -417,8 +419,45 @@ def _whoami(hub_url: str, sender: str) -> str:
     payout = s.get("payout_pk")
     pline = ("payout key set ✅" if payout else
              "no payout key yet ('set-payout <64-hex coin PUBLIC key>' — escrow payouts target it)")
-    return (f"Logged in as {s['account_id']} · human_verified: {'yes' if s['verified'] else 'no'} · "
+    vby = s.get("verified_by")
+    vline = {"midnight-zk": "✅ verified: Midnight ZK credential (Tier-2)",
+             "midnight-zk-revoked": "⚠️ your Midnight credential was REVOKED — verification lost",
+             "admin-vouch": "✅ verified: operator vouch (pilot)"}.get(
+        vby, "⏳ not human-verified yet ('verify-midnight <credential_id>' or ask the operator)")
+    return (f"Logged in as {s['account_id']} · {vline} · "
             f"listing cap {_ACCOUNT_CAP} · {pline}. 'logout' to end the session here.")
+
+
+def _verify_midnight(hub_url: str, sender: str, cid: str) -> str:
+    """M14 Tier-2 sign-in: present a Midnight credential id; the hub checks the
+    credential contract (admitted + not revoked) and marks the account
+    verified_by: midnight-zk server-side."""
+    s = _session(sender)
+    if not s:
+        return "Login first ('login <code>' / 'login-seed <seed>'), then verify-midnight."
+    cid = (cid or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,11}", cid):
+        return ("Usage: verify-midnight <credential_id>\n"
+                "The credential id comes from your wallet's Midnight personhood registration (M15 walkthrough).")
+    code, res = _hub_post(hub_url, "/accounts/verify-midnight",
+                          {"credential_id": cid}, s["tokens"].get("list"))
+    if code is None:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code == 200:
+        s["verified"] = True
+        s["verified_by"] = res.get("verified_by")
+        s["midnight_credential"] = int(cid)
+        return (f"✅ Midnight credential {cid} verified ({res.get('mode')} mode, tx …{str(res.get('evidence_tx'))[-8:]})\n"
+                "You are now human-verified via Tier-2 — bookings need no extra credential.")
+    if code == 409:
+        return f"❌ {res.get('error', 'credential binding conflict')}"
+    if code == 502:
+        return f"⚠️ {res.get('error', 'verifier unavailable')} ({res.get('mode', '?')} mode) — fail-closed, nothing changed."
+    if res.get("revoked"):
+        s["verified"] = False
+        s["verified_by"] = "midnight-zk-revoked"
+        return f"❌ credential {cid} is REVOKED on-chain — verification lost (fail-closed)."
+    return f"❌ {res.get('error', 'credential not verified')} ({res.get('mode', '?')} mode)"
 
 
 def _set_payout(hub_url: str, sender: str, pk: str) -> str:
@@ -884,6 +923,7 @@ _HELP = (
     "• email-bind <email> / email-code <code> — enable email recovery\n"
     "• recover <email> / recover-confirm <email> <code> — recover a lost account code\n"
     "• set-payout <64-hex coin PUBLIC key> — where Midnight escrow pays you (PUBLIC key only!)\n"
+    "• verify-midnight <credential_id> — Tier-2 sign-in with your Midnight personhood credential\n"
     "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
     "• delete-account — erase your account (typed confirmation; listings archived, ledger refs kept)\n"
     "• my-listings — your listings\n"
@@ -942,6 +982,12 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _set_payout(hub_url, sender, text.strip()[11:].strip())
     if low == "set-payout":
         return _set_payout(hub_url, sender, "")
+
+    # --- Midnight Tier-2 sign-in (M14)
+    if low.startswith("verify-midnight "):
+        return _verify_midnight(hub_url, sender, text.strip()[16:].strip())
+    if low == "verify-midnight":
+        return _verify_midnight(hub_url, sender, "")
 
     # --- ownership commands (B3c-ownership)
     if low == "my-bookings" or low == "my bookings":

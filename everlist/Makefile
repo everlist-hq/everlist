@@ -32,7 +32,7 @@ up: ## start hub+wrapper, record PIDs in .run/
 	@ok=""; for i in $$(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$(HUB_PORT)) 2>/dev/null && { exec 3>&- 3<&-; ok=1; break; }; sleep 0.2; done; \
 	[ -n "$$ok" ] || { echo "[up] hub FAILED to start; last log lines:"; tail -n 20 $(RUNDIR)/hub.log; exit 1; }
 	@echo "[up] wrapper -> $(RUNDIR)/wrapper.log"
-	@HUB_AGENT_SEED=$$(cat "$(SEEDFILE)") nohup $(VPY) wrapper.py > $(RUNDIR)/wrapper.log 2>&1 & echo $$! > $(RUNDIR)/wrapper.pid
+	@HUB_AGENT_SEED=$$(cat "$(SEEDFILE)") HUB_URL=http://localhost:$(HUB_PORT) nohup $(VPY) wrapper.py > $(RUNDIR)/wrapper.log 2>&1 & echo $$! > $(RUNDIR)/wrapper.pid
 	@sleep 2
 	@echo "[up] done. hub pid=$$(cat $(RUNDIR)/hub.pid), wrapper pid=$$(cat $(RUNDIR)/wrapper.pid). stop with: make down"
 
@@ -98,6 +98,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== M8 E2E chain booking ==='; $(PYTHON) test_m8_e2e_chain.py || exit 1; \
 		echo '=== M9 payout key ==='; $(PYTHON) test_m9_payout.py || exit 1; \
 		echo '=== M10 secret hygiene ==='; $(PYTHON) test_m10_secrets.py || exit 1; \
+		echo '=== M14 Tier-2 sign-in ==='; $(PYTHON) test_m14_tier2.py || exit 1; \
 		echo '=== C2 search upgrades ==='; $(PYTHON) test_c2_search.py || exit 1; \
 		echo '=== C3 my-bookings ==='; $(PYTHON) test_c3_bookings.py || exit 1; \
 		echo '=== C4 reputation ==='; $(PYTHON) test_c4_rating.py || exit 1; \

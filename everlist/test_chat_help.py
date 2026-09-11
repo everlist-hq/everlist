@@ -60,7 +60,7 @@ def is_fallback(reply):
 # ---- required command coverage (backlog B10 list) ----
 REQUIRED = ["search", "list", "signup", "login-seed", "login", "email-bind", "email-code",
             "recover", "recover-confirm", "logout-all", "my-listings", "edit", "delete",
-            "archive", "unarchive", "whoami", "fee", "set-payout"]
+            "archive", "unarchive", "whoami", "fee", "set-payout", "verify-midnight"]
 missing = [c for c in REQUIRED if c not in chatlib._HELP]
 check("B10 help covers every required command", not missing, f"missing: {missing}")
 check("B10 help mentions seed-shown-once for signup", "shown ONCE" in chatlib._HELP)
@@ -82,6 +82,7 @@ PROBE = [
     ("unarchive", "even-999 mgr-abc"),
     ("whoami", ""),
     ("set-payout", "" + "ab" * 32),
+    ("verify-midnight", "3"),
     ("logout", ""),
     ("book", "even-999"),
     ("fee", ""),
@@ -107,6 +108,7 @@ SIGS = {
     "fee": "declare their fee openly",
     "book": "Bookings need two things",
     "set-payout": "Login first",             # probe order: logout-all ran earlier -> gate is correct
+    "verify-midnight": "Login first",        # same probe order: session revoked before the probe
 }
 for cmd, sig in SIGS.items():
     check(f"B10 '{cmd}' hits its real intent", sig.lower() in REPLIES[cmd].lower(),

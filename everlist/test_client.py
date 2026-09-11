@@ -19,6 +19,9 @@ else:  # embedded mode: import wrapper module without running its __main__
     import importlib.util
     os.environ.setdefault("HUB_AGENT_SEED", "test-suite-seed-public-never-funds")  # B4: public test seed, holds no funds
     os.environ.setdefault("HUB_LOG_FILE", "/tmp/wrapper_test.log")  # keep test logs out of repo dir
+    # gate isolation: the embedded wrapper must target the gate hub (HUB_PORT),
+    # never the default live-stack port - make up propagates the same var
+    os.environ.setdefault("HUB_URL", "http://localhost:%s" % os.environ.get("HUB_PORT", "8802"))
     spec = importlib.util.spec_from_file_location(
         "wrapper", os.path.join(os.path.dirname(os.path.abspath(__file__)), "wrapper.py"))
     w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)

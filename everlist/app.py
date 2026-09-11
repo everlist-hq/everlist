@@ -305,7 +305,7 @@ def _load_state():
         _EFIELDS = {"email": None, "email_verified": False, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
                     "recovery_code_hash": None, "recovery_exp": 0, "gen": 0,
-                    "payout_pk": None}
+                    "payout_pk": None, "midnight_credential": None}
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
                 _v.setdefault(_k, _d)
@@ -328,6 +328,13 @@ def _load_state():
 # G5: fail-closed in production — a missing key must never silently fall back to dev defaults
 BOOKING_KEY = os.environ.get("HUB_BOOKING_KEY", "dev-booking-key-change-me")
 ADMIN_KEY = os.environ.get("HUB_ADMIN_KEY", "dev-admin-key-change-me")
+# M14 Tier-2 sign-in: where the credential contract lives. No env set = the
+# recorded offline-sim fixture is the honest fallback (mode: simulated);
+# HUB_CRED_INDEXER set = live chain reads (mode: chain). Fail-closed always.
+CRED_ADDRESS = os.environ.get("HUB_CRED_ADDRESS", "midnight-credential-sim")
+CRED_INDEXER = os.environ.get("HUB_CRED_INDEXER", "")
+from midnight_credential import FIXTURE_PATH as _CRED_FIXTURE  # default evidence source
+FIXTURE_DEFAULT = _CRED_FIXTURE
 RUN_ENV = os.environ.get("HUB_ENV", "development")
 if RUN_ENV == "production" and (BOOKING_KEY.startswith("dev-") or ADMIN_KEY.startswith("dev-")):
     sys.stderr.write("FATAL: HUB_ENV=production requires HUB_BOOKING_KEY and HUB_ADMIN_KEY (no dev defaults)\n")
@@ -447,7 +454,8 @@ VERTICAL_SCHEMAS = {
 
 # I1: field ownership. Server-owned fields may never come from clients.
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
-    "owner_payout", "created", "booking_secret", "rail", "confirmation"}
+    "owner_payout", "created", "booking_secret", "rail", "confirmation",
+    "verified_by"}  # M14: verification provenance is server-derived only
 
 # EverList taxonomy: category = controlled vocab per vertical (validated at
 # listing time); tags = free-form, normalized (lowercase, trimmed, deduped,
@@ -638,6 +646,8 @@ def _openapi_spec():
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
             "/accounts/payout": {"post": op("Register organizer payout coin PUBLIC key (64-hex; secrets never accepted)", "accounts")},
+            "/accounts/verify-midnight": {"post": op("Tier-2 sign-in: verify a Midnight credential (admitted + not revoked) and mark the account verified_by: midnight-zk", "accounts",
+                                         note="fail-closed; mode (chain|simulated) labels the verification source")},
             "/accounts/me": {"delete": op("Account self-deletion (GDPR-style; ledger survives pseudonymously)", "accounts", sec=tok)},
             "/premium/events": {"get": op("Premium data (x402 payment)", "payments",
                                          note="402 + payment instructions without a valid payment header")},
@@ -1159,7 +1169,7 @@ class Handler(BaseHTTPRequestHandler):
                         "email": None, "email_verified": False,
                         "pending_email": None, "pending_code_hash": None,
                         "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0,
-                        "payout_pk": None}
+                        "payout_pk": None, "midnight_credential": None}
                 if pubkey_hex:
                     acct["kind"] = "keypair"
                     acct["pubkey"] = pubkey_hex
@@ -1222,7 +1232,9 @@ class Handler(BaseHTTPRequestHandler):
                                          extra={"gen": gen}) for a in acts}
             return self._json(200, {"account_id": aid, "agent": agent,
                 "human_verified": ACCOUNTS[aid]["human_verified"],
+                "verified_by": ACCOUNTS[aid].get("verified_by"),
                 "payout_pk": ACCOUNTS[aid].get("payout_pk"),
+                "midnight_credential": ACCOUNTS[aid].get("midnight_credential"),
                 "tokens": toks, "ttl": 24*3600,
                 "note": "tokens act AS the account (sub=acct-<id>) for 24h; edit/delete need no per-listing codes"})
         if path == "/accounts/payout":
@@ -1254,6 +1266,73 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "account_id": aid, "payout_pk": pk,
                 "note": "coin PUBLIC key stored - escrow payouts target this key; keep its secret ONLY in your wallet" +
                         (" (previous key replaced)" if replaced else "")})
+        if path == "/accounts/verify-midnight":
+            # M14 Tier-2 sign-in: the account presents its Midnight credential
+            # (credential.compact, M13). The hub READS the credential contract's
+            # public state — admitted + not revoked — and only then sets
+            # verified_by: midnight-zk SERVER-SIDE. Fail-closed on every error;
+            # the mode (chain|simulated) labels every outcome honestly. A
+            # missing verifier is BLOCKED, never a silent success (capability
+            # modes). Revocation propagates: a revoked credential DOWNGRADES
+            # the account (verified_by -> midnight-zk-revoked) — identity that
+            # can be revoked must lose its benefit when revoked.
+            code = str(data.get("account_code", "")).strip()
+            ch = hashlib.sha256(code.encode()).hexdigest() if code else None
+            cred_hdr = self.headers.get("X-Hub-Token", "")
+            p, _err = hublib.verify_token(BOOKING_KEY, cred_hdr, "list", single_use=False) if cred_hdr else (None, None)
+            if p:
+                p, _err = _gen_check(p)  # stale tokens never prove identity
+            with LOCK:
+                if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
+                    aid = p["sub"]
+                else:
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
+                if not aid:
+                    return self._json(403, {"error": "login token or valid account_code required"})
+                if not _auth_allow("verify", _source_of(self)):
+                    return self._json(429, {"error": "rate limit reached for your source, retry later"})
+            cid_raw = str(data.get("credential_id", "")).strip()
+            if not re.fullmatch(r"[1-9][0-9]{0,11}", cid_raw or ""):
+                return self._json(400, {"error": "credential_id must be a positive integer (max 12 digits)"})
+            hc = str(data.get("holder_commitment", "")).strip().lower()
+            if hc and not re.fullmatch(r"[0-9a-f]{64}", hc):
+                return self._json(400, {"error": "holder_commitment must be 64-hex (the PUBLIC commitment; never a secret)"})
+            from midnight_credential import CredentialVerifier, CredentialError
+            verifier = CredentialVerifier(CRED_ADDRESS, url=CRED_INDEXER or None,
+                fixture_path=os.environ.get("HUB_CRED_FIXTURE", FIXTURE_DEFAULT))
+            try:
+                verdict = verifier.verify(int(cid_raw), holder_commitment_hex=hc or None)
+            except CredentialError as e:
+                return self._json(502, {"error": "credential verifier unavailable: %s" % e,
+                    "mode": verifier.mode(), "verified_by": None})
+            with LOCK:
+                bound = ACCOUNTS[aid].get("midnight_credential")
+                if verdict["admitted"] and not verdict["revoked"]:
+                    if bound is not None and str(bound) != cid_raw:
+                        return self._json(409, {"error": "account already bound to credential %s" % bound,
+                            "note": "one credential per account (anti-sybil); ask the operator to rebind"})
+                    # anti-sybil other direction: credential already bound to a different account?
+                    taken = next((a for a, v in ACCOUNTS.items()
+                                  if a != aid and str(v.get("midnight_credential")) == cid_raw), None)
+                    if taken:
+                        return self._json(409, {"error": "credential %s already bound to another account" % cid_raw})
+                    ACCOUNTS[aid]["midnight_credential"] = int(cid_raw)
+                    ACCOUNTS[aid]["human_verified"] = True
+                    ACCOUNTS[aid]["verified_by"] = "midnight-zk"
+                    _persist_locked()
+                elif verdict["admitted"] and verdict["revoked"]:
+                    if bound is not None and str(bound) == cid_raw:
+                        # downgrade: revocation must remove the benefit
+                        ACCOUNTS[aid]["human_verified"] = False
+                        ACCOUNTS[aid]["verified_by"] = "midnight-zk-revoked"
+                        _persist_locked()
+            return self._json((200 if verdict["admitted"] and not verdict["revoked"] else 403),
+                {"ok": bool(verdict["admitted"] and not verdict["revoked"]),
+                 "account_id": aid, "mode": verdict["mode"],
+                 "credential_id": cid_raw, "admitted": verdict["admitted"],
+                 "revoked": verdict["revoked"], "verified_by": verdict["verified_by"],
+                 "evidence_tx": verdict["evidence_tx"],
+                 "note": "verification source: Midnight credential contract state (%s mode)" % verdict["mode"]})
         if path == "/accounts/vouch":
             # H5: admin-key brute-force backstop — failed attempts count
             with LOCK:
@@ -1834,6 +1913,12 @@ class Handler(BaseHTTPRequestHandler):
                     "escrow": escrow_state, "amount": price, "hub_fee": fee,
                     "owner_payout": payout, "quantity": qty, "created": time.time(),
                     "booked_by": principal, **pub}
+                # M14: bookings carry verification provenance SERVER-SIDE only
+                # (verified_by is reserved - clients can never claim it)
+                if principal.startswith("acct-"):
+                    _acct = ACCOUNTS.get(principal)
+                    if _acct and _acct.get("human_verified"):
+                        booking["verified_by"] = _acct.get("verified_by") or "midnight-zk"
                 if er is not None:
                     booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
                 # real identity stored ONLY here, retrievable only with the secret
