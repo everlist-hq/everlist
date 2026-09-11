@@ -165,9 +165,14 @@ description: Small repairs around the house"""
               ex.status == 400 and "unknown fields" in str(getattr(ex, "body", {}).get("error", "")),
               f"{getattr(ex, 'status', '?')} {getattr(ex, 'body', {})}")
     st, dup = req("GET", "/verticals")
-    check("events + food schemas unchanged (additive only)",
-          set(dup.get("verticals", {}).keys()) == {"events", "food", "services"},
-          str(list(dup.get("verticals", {}).keys())))
+    _vs = dup.get("verticals", {})
+    # C5: community verticals are ADDITIVE by design (classes ships by default
+    # now) - the contract is: built-ins all present with identical content,
+    # nothing removed, extras allowed.
+    check("built-in schemas unchanged (additive-only contract, C5)",
+          all(v in _vs for v in ("events", "food", "services"))
+          and _vs.get("events", {}).get("required") == ["title", "date", "location", "price", "capacity"],
+          str(list(_vs.keys())))
 
 finally:
     proc.terminate()

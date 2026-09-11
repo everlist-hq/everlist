@@ -164,7 +164,7 @@ def _parse_rich(body: str) -> dict | None:
         if ":" in ln:
             k, _, v = ln.partition(":")
             k = k.strip().lower()
-            if k in _RICH_KEYS:
+            if k in _RICH_KEYS or re.fullmatch(r"[a-z_]{1,24}", k):  # C5: community verticals add their own keys
                 fields[k] = v.strip()
                 continue
         if "title" not in fields and "|" not in ln:
@@ -547,11 +547,42 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     # H15: vertical is DATA - chat supports events (default) and services; the
     # hub schema (GET /verticals) decides required fields, not chat code.
     vert = str(extra.get("vertical", "events")).strip().lower()
-    if vert not in ("events", "services"):
-        return (f"Unknown vertical '{vert}'. Chat supports: events (default), services.\n"
+    if vert not in ("events", "services", "classes"):
+        # C5: community verticals - ask the hub's live registry instead of hardcoding
+        try:
+            _known = sorted(_hub_get(hub_url, "/verticals")["verticals"].keys())
+            _extra = [v for v in _known if v not in ("events", "food", "services")]  # built-ins only; food has no chat branch yet
+        except Exception:
+            _extra = []
+        _hint = (", plus community verticals: " + ", ".join(_extra)) if _extra else ","
+        return (f"Unknown vertical '{vert}'. Chat supports: events (default), services{_hint}\n"
                 "Example:\nlist\nvertical: services\ntitle: Mobile Massage\n"
                 "provider: Serenity Spa\nprice: 30\ncategory: wellness")
-    if vert == "services":
+    if vert == "classes":
+        # C5 reference community vertical - payload per ITS hub schema (live)
+        try:
+            sch = _hub_get(hub_url, "/verticals")["verticals"]["classes"]
+        except Exception:
+            return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+        payload = {"vertical": "classes", "title": title, "price": float(price),
+                   "date": date, "location": location, "source": "chat-agent"}
+        if category:
+            payload["category"] = category
+        payload["capacity"] = cap  # classes tracks capacity like events
+        for k in ("instructor", "skill_level", "duration_minutes"):
+            v = str(extra.get(k, "")).strip()
+            if v:
+                try:
+                    payload[k] = int(v)  # positive_int fields; hub re-validates
+                except ValueError:
+                    payload[k] = v
+        missing = [f for f in sch["required"] if f not in payload]
+        if missing:
+            return (f"Classes listings need: {', '.join(missing)}. Example:\n"
+                    "list\nvertical: classes\ntitle: Morning Vinyasa\nprice: 12\n"
+                    "date: 2026-09-25\nlocation: Vienna\ncapacity: 12\n"
+                    "instructor: Ana\nskill_level: beginner\ncategory: yoga")
+    elif vert == "services":  # C5: chained - classes branch above already built its payload
         provider = str(extra.get("provider", "")).strip()
         if not provider:
             return ("Services listings need a provider. Example:\n"
@@ -568,12 +599,14 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             payload["duration_minutes"] = int(str(extra.get("duration_minutes", "")).strip())
         except (TypeError, ValueError):
             pass
-    else:
+    elif vert == "events":
         payload = {
             "vertical": "events", "title": title, "category": category,
             "date": date, "price": float(price), "location": location,
             "capacity": cap, "source": "chat-agent",
         }
+    else:  # unreachable while the whitelist gate above holds - stay honest if it ever drifts
+        return "Internal routing error: no listing builder for this vertical. Please report it."
     if extra.get("description"):
         payload["description"] = extra["description"][:500]
     if extra.get("url"):

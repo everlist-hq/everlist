@@ -471,11 +471,99 @@ def normalize_tags(raw):
         if len(tags) >= TAXONOMY["tag_max"]:
             break
     return tags
+RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash"}  # owner = authenticated principal; manage_code_hash = server-only (anti-spoof)
+
+# C5: community vertical schemas — drop-in extension point (verticals are DATA).
+# Organizers contribute schemas/<name>.json (process: docs/community-schemas.md);
+# the hub validates each file FAIL-CLOSED at boot: a bad community file is
+# rejected + logged, never crashes the hub and never weakens a built-in.
+# Built-ins always win: files cannot override events/food/services.
+
+def _load_community_schemas():
+    sdir = os.environ.get("HUB_SCHEMAS_DIR",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas"))
+    if not os.path.isdir(sdir):
+        return
+    _types = {"positive_int", "nonempty"}  # the only validators the hub implements
+    _top = {"name", "required", "optional", "categories", "tracks_capacity",
+            "field_types", "booking", "description"}
+    # price/capacity are NOT in this wall: they are structurally governed
+    # ('price' must be required; 'capacity' required iff tracks_capacity; the
+    # req/opt-overlap check blocks dual listing). The wall keeps out the
+    # SERVER-OWNED fields only (identity/escrow/owner/counter fields).
+    _server = RESERVED_LISTING_FIELDS | RESERVED_BOOKING_FIELDS
+    for fn in sorted(os.listdir(sdir)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(sdir, fn)) as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                raise ValueError("top level must be an object")
+            unk = [k for k in raw if k not in _top]
+            if unk:
+                raise ValueError(f"unknown top-level keys: {sorted(unk)}")
+            name = str(raw.get("name", "")).strip().lower()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{2,15}", name):
+                raise ValueError("name must match [a-z][a-z0-9_]{3,16}")
+            if name in VERTICAL_SCHEMAS:
+                print(f"[schemas] {fn}: ignored - built-in vertical '{name}' cannot be overridden", flush=True)
+                continue
+            req = [str(x) for x in (raw.get("required") or [])]
+            opt = [str(x) for x in (raw.get("optional") or [])]
+            if not req:
+                raise ValueError("required must be a non-empty list")
+            if set(req) & set(opt):
+                raise ValueError("fields cannot be both required and optional")
+            bad = [f for f in req + opt if f in _server]
+            if bad:
+                raise ValueError(f"server-owned fields are not community-settable: {sorted(bad)}")
+            if "price" not in req:
+                raise ValueError("'price' must be required (escrow accounting depends on it)")
+            cats = [str(c).strip().lower() for c in (raw.get("categories") or [])]
+            if not cats or len(set(cats)) != len(cats):
+                raise ValueError("categories must be a non-empty duplicate-free list")
+            ft = raw.get("field_types") or {}
+            if not isinstance(ft, dict) or any(t not in _types for t in map(str, ft.values())):
+                raise ValueError(f"field_types values must be in {sorted(_types)}")
+            ft = {str(k): str(v) for k, v in ft.items()}
+            if set(ft) - (set(req) | set(opt)):
+                raise ValueError("field_types keys must be declared required/optional fields")
+            tracks = bool(raw.get("tracks_capacity", False))
+            if tracks and "capacity" not in req:
+                raise ValueError("tracks_capacity=true requires 'capacity' in required")
+            bk = raw.get("booking") or {}
+            b_req = [str(x) for x in (bk.get("required") or [])]
+            b_fields = [str(x) for x in (bk.get("fields") or [])]
+            ident = str(bk.get("identity", "")).strip()
+            action = str(bk.get("action", "")).strip()
+            if not b_req or not b_fields or not ident:
+                raise ValueError("booking.required, booking.fields and booking.identity are all required")
+            if not set(b_req) <= set(b_fields):
+                raise ValueError("booking.required must be a subset of booking.fields")
+            if ident not in b_req:
+                raise ValueError("booking.identity must be a required booking field")
+            bad_b = [f for f in b_fields if f in RESERVED_BOOKING_FIELDS]
+            if bad_b:
+                raise ValueError(f"booking fields may not use reserved names: {sorted(bad_b)}")
+            if not re.fullmatch(r"[a-z]+(\+[a-z]+)*", action):
+                raise ValueError("booking.action must look like 'book+pay'")
+            VERTICAL_SCHEMAS[name] = {
+                "required": req, "optional": opt, "categories": cats,
+                "tracks_capacity": tracks, "field_types": ft,
+                "booking": {"required": b_req, "fields": b_fields,
+                            "identity": ident, "action": action}}
+            print(f"[schemas] community vertical '{name}' loaded from {fn}", flush=True)
+        except Exception as ex:
+            print(f"[schemas] REJECTED {fn}: {ex}", flush=True)
+
+
+_load_community_schemas()
+
 # H15: client-settable booking fields DERIVED from the vertical schemas —
-# adding a vertical extends this automatically (no code edit).
+# adding a vertical (built-in or community) extends this automatically (no code edit).
 CLIENT_BOOKING_FIELDS = {v: set(s["booking"]["fields"])
                          for v, s in VERTICAL_SCHEMAS.items()}
-RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash"}  # owner = authenticated principal; manage_code_hash = server-only (anti-spoof)
 
 def hub_fee_c(price_c):
     """Hub-declared fee (G3: HUB_FEE_PCT env, default 1%). Integer minor units internally."""
