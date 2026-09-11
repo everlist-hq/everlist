@@ -683,6 +683,41 @@ def _my_listings(hub_url: str, sender: str) -> str:
     return (f"Your listings ({len(mine)}):\n" + "\n".join(lines) + tail)
 
 
+def _rate_booking(hub_url: str, sender: str, arg: str) -> str:
+    """C4: buyer rates a SETTLED booking 1-5, once. Logged-in: session token.
+    Anonymous: re-mint /access for this chat's agent address (the same
+    deterministic principal that made the booking)."""
+    bits = (arg or "").split()
+    if len(bits) != 2 or not bits[1].isdigit() or not (1 <= int(bits[1]) <= 5):
+        return "Usage: rate <booking_id> <1-5> — e.g. 'rate bk-abc123 5' (possible after the organizer confirms, or on free bookings)"
+    bid, val = bits[0], int(bits[1])
+    s = _session(sender)
+    token = (s or {}).get("tokens", {}).get("book") or (s or {}).get("tokens", {}).get("list")
+    if not token:
+        try:
+            acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["book"]})
+            token = (acc[1] or {}).get("tokens", {}).get("book")
+        except Exception:
+            return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if not token:
+        return "Could not authenticate you — try 'login <account_code>'."
+    status, res = _hub_post(hub_url, f"/book/{urllib.parse.quote(bid)}/rate", {"rating": val}, token=token)
+    if status == 200:
+        agg = res.get("aggregate") or ""
+        return f"⭐ Thanks! You rated {bid}: {val}/5." + (f" {agg}" if agg else "")
+    if status == 401:
+        return "Session expired — 'login <account_code>' again."
+    if status == 403:
+        return "❌ Only the booking's buyer can rate it."
+    if status == 409:
+        return f"Rejected: {res.get('error', 'not possible for this booking')}"
+    if status == 404:
+        return f"No booking '{bid}' is visible to you."
+    if status == 400:
+        return f"Rejected: {res.get('error', 'rating must be 1-5')}"
+    return f"Could not rate (HTTP {status})."
+
+
 def _my_bookings(hub_url: str, sender: str) -> str:
     """C3: principal-scoped booking list (hub GET /bookings). Logged-in:
     session token. Anonymous: re-mint /access for this chat's agent address
@@ -825,6 +860,7 @@ _HELP = (
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
     "• show <id> — full listing details (description, url, availability)\n"
     "• booking <id> — check your booking's escrow status (buyer or owner)\n"
+    "• rate <booking_id> <1-5> — rate a settled booking (after confirm, or free listings)\n"
     "• book <id> <name> — book a FREE listing instantly with your account (paid = guidance)\n"
     "• fee — how our fee model stays fair"
 )
@@ -900,6 +936,9 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     # H10: booking status poll — BEFORE the booking-intent (startswith('book') would swallow it)
     if low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
+    # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)
+    if low == "rate" or low.startswith("rate "):
+        return _rate_booking(hub_url, sender, text.strip()[4:].strip())
 
     # --- booking intent (H15: FREE listings book IN CHAT for logged-in accounts;
     # paid listings stay honest guidance - payment is a real gate)

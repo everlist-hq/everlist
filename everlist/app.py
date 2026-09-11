@@ -534,6 +534,8 @@ def _openapi_spec():
                                  note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
+            "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
+                                note="buyer's own book token; escrow must be RELEASED or WAIVED; listing aggregates update publicly; ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
@@ -1810,6 +1812,41 @@ class Handler(BaseHTTPRequestHandler):
                     if t["booking"] == bid: t["escrow"] = "REFUNDED"; t["refunded_to"] = "buyer"
                 _persist_locked()
             return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED"})
+        if path.startswith("/book/") and path.endswith("/rate"):
+            bid = path.split("/")[2]
+            cred = self.headers.get("X-Hub-Token", "")  # I2: buyer token required
+            if not cred:
+                return self._json(401, {"error": "missing X-Hub-Token",
+                    "hint": "send your book token (POST /access acts=['book'], or account login) as X-Hub-Token"})
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False)
+            if p:
+                p, err = _gen_check(p)  # B1: revoked accounts cannot rate
+            if not p:
+                return self._json(403, {"error": err or "token not valid for rating"})
+            me = p["sub"]
+            val = data.get("rating")
+            if isinstance(val, bool) or not isinstance(val, int) or not (1 <= val <= 5):
+                return self._json(400, {"error": "rating must be an integer in [1, 5]"})
+            with LOCK:
+                b = next((x for x in BOOKINGS if x["id"] == bid), None)
+                if not b: return self._json(404, {"error": "no booking"})
+                if b.get("booked_by") != me:  # owner-immutable: only the buyer can rate
+                    return self._json(403, {"error": "only the booking's buyer may rate it"})
+                if b["escrow"] not in ("RELEASED", "WAIVED"):
+                    return self._json(409, {"error": f"rating opens after settlement (escrow is {b['escrow']})"})
+                if "rating" in b:  # once per booking, forever
+                    return self._json(409, {"error": "already rated"})
+                b["rating"] = val
+                lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
+                if lst:
+                    lst["rating_sum"] = lst.get("rating_sum", 0) + val
+                    lst["rating_count"] = lst.get("rating_count", 0) + 1
+                _persist_locked()
+            agg = ""
+            if lst is not None and lst.get("rating_count"):
+                agg = f"Listing now {lst['rating_sum'] / lst['rating_count']:.1f} stars ({lst['rating_count']} rating(s))."
+            return self._json(200, {"ok": True, "id": bid, "rating": val, "aggregate": agg,
+                "note": "public ledger untouched - ratings carry no ledger entries and no new identity data"})
         if path == "/admin/tokens":
             # H5: admin-key brute-force backstop (shared 'admin' kind with vouch)
             with LOCK:

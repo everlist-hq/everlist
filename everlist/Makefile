@@ -100,6 +100,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== M10 secret hygiene ==='; $(PYTHON) test_m10_secrets.py || exit 1; \
 		echo '=== C2 search upgrades ==='; $(PYTHON) test_c2_search.py || exit 1; \
 		echo '=== C3 my-bookings ==='; $(PYTHON) test_c3_bookings.py || exit 1; \
+		echo '=== C4 reputation ==='; $(PYTHON) test_c4_rating.py || exit 1; \
 		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
 		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
 		$(VPY) -u test_client.py || exit 1; \
