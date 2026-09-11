@@ -85,6 +85,9 @@ jobs:
       - name: "Search upgrades (C2 - date/price range, tags, sort, chat parse)"
         run: venv/bin/python test_c2_search.py
 
+      - name: "My-bookings principal isolation (C3)"
+        run: venv/bin/python test_c3_bookings.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

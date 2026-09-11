@@ -683,6 +683,45 @@ def _my_listings(hub_url: str, sender: str) -> str:
     return (f"Your listings ({len(mine)}):\n" + "\n".join(lines) + tail)
 
 
+def _my_bookings(hub_url: str, sender: str) -> str:
+    """C3: principal-scoped booking list (hub GET /bookings). Logged-in:
+    session token. Anonymous: re-mint /access for this chat's agent address
+    (deterministic principal — same pattern as 'booking <id>')."""
+    s = _session(sender)
+    token = (s or {}).get("tokens", {}).get("book") or (s or {}).get("tokens", {}).get("list")
+    note = ""
+    if not token:
+        try:
+            acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["book"]})
+            token = (acc[1] or {}).get("tokens", {}).get("book")
+            note = " (as this chat's agent identity)"
+        except Exception:
+            return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if not token:
+        return "Could not authenticate you — try 'login <account_code>'."
+    try:
+        data = _hub_get(hub_url, "/bookings", token=token)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return "Session expired — 'login <account_code>' again."
+        return f"Could not fetch bookings (HTTP {e.code})."
+    except Exception:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    mine = data.get("bookings") or []
+    if not mine:
+        return ("You have no bookings yet. Browse with 'search' and book with "
+                "'book <id> <name>' — free listings book instantly.")
+    lines = []
+    for b in mine[:10]:
+        qty = b.get("quantity", 1)
+        qty_s = f" x{qty}" if qty > 1 else ""
+        lines.append(f"• {b.get('id')} — {b.get('listing_id')} | {b.get('escrow', '?')} | "
+                     f"{b.get('amount', 0)} USD{qty_s}")
+    more = f"\n(+{len(mine) - 10} more)" if len(mine) > 10 else ""
+    return (f"Your bookings ({len(mine)}){note}:\n" + "\n".join(lines) + more
+            + "\n\nPoll one: 'booking <id>' — shows escrow status.")
+
+
 _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", "under", "over",
                  "something", "anything", "want", "looking", "i", "we", "to", "do",
                  "in", "on", "at", "my", "under", "around"}
@@ -780,6 +819,7 @@ _HELP = (
     "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
     "• delete-account — erase your account (typed confirmation; listings archived, ledger refs kept)\n"
     "• my-listings — your listings\n"
+    "• my-bookings — your bookings with escrow status (poll one: 'booking <id>')\n"
     "• edit <id> [code] price: 5 — change your listing (code only when anonymous)\n"
     "• delete <id> [code] — remove your listing\n"
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
@@ -835,6 +875,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _set_payout(hub_url, sender, "")
 
     # --- ownership commands (B3c-ownership)
+    if low == "my-bookings" or low == "my bookings":
+        return _my_bookings(hub_url, sender)
     if low == "my-listings" or low == "my listings":
         return _my_listings(hub_url, sender)
     if low.startswith("edit ") or low.startswith("edit\n"):
