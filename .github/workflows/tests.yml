@@ -67,6 +67,9 @@ jobs:
       - name: "Escrow_ref chain pointer (M5)"
         run: venv/bin/python test_m5_escrow_ref.py
 
+      - name: "Midnight indexer client (M6)"
+        run: venv/bin/python test_m6_indexer.py
+
       - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
         run: make test PYTHON=venv/bin/python
 

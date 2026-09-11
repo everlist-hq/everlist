@@ -1,0 +1,22 @@
+{
+  "recorded": "2026-09-11T12:46:46.250Z",
+  "generator": "midnight-escrow/contract/dump-fixtures.mjs (offline sim, compact 0.34.0 / ledger-v9)",
+  "contract": "0000000000000000000000000000000000000000000000000000000000000000",
+  "escrow_id": 1,
+  "held": {
+    "tx": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "entry_point": "createEscrow",
+    "state": 1,
+    "amount": "250",
+    "booking_ref": "626b2d6d362d6669787475726500000000000000000000000000000000000000",
+    "deadline": "99999999999"
+  },
+  "released": {
+    "tx": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "entry_point": "releaseEscrow",
+    "state": 2,
+    "amount": "250",
+    "booking_ref": "626b2d6d362d6669787475726500000000000000000000000000000000000000",
+    "deadline": "99999999999"
+  }
+}
