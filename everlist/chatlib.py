@@ -415,10 +415,10 @@ def _whoami(hub_url: str, sender: str) -> str:
         return ("You're chatting anonymously (per-listing codes, cap 3). "
                 "'signup' creates an account; 'login-seed <seed>' or 'login <code>' restores yours.")
     payout = s.get("payout_pk")
-    pline = (" · payout key set ✅" if payout else
-             " · no payout key yet ('set-payout <64-hex coin PUBLIC key>' — escrow payouts target it)")
+    pline = ("payout key set ✅" if payout else
+             "no payout key yet ('set-payout <64-hex coin PUBLIC key>' — escrow payouts target it)")
     return (f"Logged in as {s['account_id']} · human_verified: {'yes' if s['verified'] else 'no'} · "
-            f"listing cap {_ACCOUNT_CAP}.{pline} 'logout' to end the session here.")
+            f"listing cap {_ACCOUNT_CAP} · {pline}. 'logout' to end the session here.")
 
 
 def _set_payout(hub_url: str, sender: str, pk: str) -> str:
@@ -659,6 +659,10 @@ def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
     if action == "delete":
         _list_counts[sender] = max(0, _list_counts.get(sender, 1) - 1)
         return f"🗑️ Listing {lid} deleted. Slot freed ({_list_counts[sender]}/{_ACCOUNT_CAP if sess else _LIST_CAP} used)."
+    if action == "archive":
+        return f"📁 Listing {lid} archived — hidden from search; existing bookings stay fulfillable. 'unarchive {lid}' restores it."
+    if action == "unarchive":
+        return f"📂 Listing {lid} unarchived — visible again."
     return f"✅ Updated {lid}: changed {', '.join(res.get('fields', []))}."
 
 

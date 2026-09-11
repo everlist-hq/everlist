@@ -61,7 +61,7 @@ def wait_ready(port, timeout=15):
 log_fh = open(LOGF, "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_EMAIL_MODE": "log",
        "HUB_POW_SIGNUP_BITS": "8", "PYTHONUNBUFFERED": "1"}
-proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log_fh, stderr=subprocess.STDOUT, env=env)
 _ACTIVE.append(proc)
 assert wait_ready(PORT), "hub did not start"
@@ -132,10 +132,12 @@ from uagents_core.contrib.protocols.chat import (  # noqa: E402
     chat_protocol_spec,
 )
 
-RESULTS = {"seed": None, "listing_id": None, "account_id": None,
-           "signup": None, "list": None, "login_seed": None, "edit": None}
+RESULTS = {"seed": None, "listing_id": None, "account_id": None, "signup": None,
+           "list": None, "login_seed": None, "edit": None, "whoami": None,
+           "archive": None, "unarchive": None}
 PROBES = {}
-SENT = {"signup": False, "login_seed": False, "edit": False}
+SENT = {"signup": False, "login_seed": False, "edit": False,
+        "whoami": False, "archive": False, "unarchive": False}
 DONE = asyncio.Event()
 
 
@@ -226,6 +228,43 @@ async def on_reply_b(ctx: Context, sender: str, msg: ChatMessage):
             DONE.set()
     elif RESULTS["edit"] is None:
         RESULTS["edit"] = reply
+        if not SENT["whoami"]:
+            SENT["whoami"] = True
+            await ctx.send(sender, make_text("whoami"))
+        else:
+            DONE.set()
+    elif RESULTS["whoami"] is None:
+        RESULTS["whoami"] = reply
+        if RESULTS["listing_id"] and not SENT["archive"]:
+            SENT["archive"] = True
+            await ctx.send(sender, make_text(f"archive {RESULTS['listing_id']}"))
+        else:
+            DONE.set()
+    elif RESULTS["archive"] is None:
+        RESULTS["archive"] = reply
+        try:
+            lst = next(x for x in json.loads(open(STATE).read())["listings"]
+                       if x["id"] == RESULTS["listing_id"])
+            PROBES["after-archive"] = {"archived": bool(lst.get("archived"))}
+        except Exception as ex:
+            PROBES["after-archive"] = {"err": str(ex)[:60]}
+        print(f"[PROBE after-archive] {PROBES['after-archive']}")
+        sys.stdout.flush()
+        if not SENT["unarchive"]:
+            SENT["unarchive"] = True
+            await ctx.send(sender, make_text(f"unarchive {RESULTS['listing_id']}"))
+        else:
+            DONE.set()
+    elif RESULTS["unarchive"] is None:
+        RESULTS["unarchive"] = reply
+        try:
+            lst = next(x for x in json.loads(open(STATE).read())["listings"]
+                       if x["id"] == RESULTS["listing_id"])
+            PROBES["after-unarchive"] = {"archived": bool(lst.get("archived"))}
+        except Exception as ex:
+            PROBES["after-unarchive"] = {"err": str(ex)[:60]}
+        print(f"[PROBE after-unarchive] {PROBES['after-unarchive']}")
+        sys.stdout.flush()
         DONE.set()
 
 
@@ -289,6 +328,21 @@ async def main():
     chk("B6 login-seed welcome from SECOND sender", "Welcome back" in r_login and RESULTS["account_id"], r_login[:80])
     chk("B6 codeless edit accepted via account", f"Updated {RESULTS['listing_id']}" in r_edit and "price" in r_edit, r_edit[:80])
 
+    # C1: chat parity — whoami / archive / unarchive through the real wrapper
+    r_who = RESULTS["whoami"] or ""
+    r_arch = RESULTS["archive"] or ""
+    r_unarch = RESULTS["unarchive"] or ""
+    chk("C1 whoami shows account + human_verified + payout guidance",
+        RESULTS["account_id"] in r_who and "human_verified" in r_who
+        and "set-payout" in r_who, r_who[:100])
+    chk("C1 archive via chat (account-owned, no code)",
+        "archived" in r_arch and "hidden from search" in r_arch, r_arch[:80])
+    chk("C1 disk: listing archived after chat archive",
+        PROBES.get("after-archive", {}).get("archived") is True, str(PROBES.get("after-archive")))
+    chk("C1 unarchive via chat", "visible again" in r_unarch, r_unarch[:80])
+    chk("C1 disk: listing visible again after chat unarchive",
+        PROBES.get("after-unarchive", {}).get("archived") is False, str(PROBES.get("after-unarchive")))
+
     ok_state = False
     detail = "state unreadable"
     try:
@@ -302,7 +356,7 @@ async def main():
     chk("B6 state.json: listing owned by account, price edited", ok_state, detail)
 
     print("\n=== FULL REPLIES ===")
-    for k in ("signup", "list", "login_seed", "edit"):
+    for k in ("signup", "list", "login_seed", "edit", "whoami", "archive", "unarchive"):
         print(f"--- {k}:\n{RESULTS[k]}")
     print("=== SESSION KEYS:", [k[:20] + "..." for k in getattr(w.chatlib, "_SESSIONS", {})])
     sys.stdout.flush()
