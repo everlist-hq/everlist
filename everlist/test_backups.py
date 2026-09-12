@@ -3,6 +3,7 @@ With HUB_BACKUP_MIN_BYTES forced tiny, every persist backs up the pre-persist
 state. 8 persists -> exactly BACKUP_KEEP(5) backups; newest == pre-final state.
 Run: python test_backups.py
 """
+import sys
 import hashlib, json, os, socket, subprocess, sys, tempfile, time
 import urllib.request
 
@@ -40,7 +41,7 @@ def wait_ready(port, timeout=15):
 logf = open(os.path.join(TMP, "hub.log"), "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_POW_SIGNUP_BITS": "8",
        "HUB_BACKUP_MIN_BYTES": "10", "HUB_BACKUP_KEEP": "5", "PYTHONUNBUFFERED": "1"}
-proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=logf, stderr=subprocess.STDOUT, env=env)
 assert wait_ready(PORT)
 BASE = f"http://127.0.0.1:{PORT}"
