@@ -8,9 +8,15 @@ SHELL := /bin/bash
 PYTHON   ?= /opt/venv/bin/python
 VPY      ?= venv/bin/python
 HUB_PORT ?= 8802
-RUNDIR   := .run
+RUNDIR   ?= .run
+# C12 review lesson: the test gate must NEVER share state, PIDs, or seeds with
+# a live stack. make test runs a fully isolated stack (own rundir, port, seed,
+# no standalone wrapper) so it cannot kill or collide with `make up` again.
+GATE_RUNDIR   ?= .run/gate
+GATE_PORT     ?= 8803
+GATE_SEEDFILE ?= .secrets/gate_seed
 
-.PHONY: up down status test clean selfcheck demo-seed demo-reset
+.PHONY: up down status test clean selfcheck demo-seed demo-reset gate-up gate-down
 
 # canonical wrapper identity seed (gitignored, TESTNET ONLY)
 SEEDFILE := .secrets/agent_seed
@@ -48,18 +54,40 @@ down: ## graceful TERM then KILL after timeout — ONLY recorded PIDs
 		else echo "[down] $$f: none"; fi; done
 	@echo "[down] complete (only recorded PIDs were touched)"
 
+# C12 review lesson: the gate stack is FULLY isolated from the live stack —
+# own rundir (state + lock + pids), own port, no wrapper (test_client embeds
+# one with a throwaway seed). make test can never kill or collide with `make up`.
+gate-up: ## start the ISOLATED gate hub (used by make test only)
+	@mkdir -p $(GATE_RUNDIR)
+	@if (exec 3<>/dev/tcp/127.0.0.1/$(GATE_PORT)) 2>/dev/null; then \
+		exec 3>&- 3<&-; \
+		echo "FATAL: gate port $(GATE_PORT) already in use."; exit 1; fi
+	@HUB_STATE_FILE=$$PWD/$(GATE_RUNDIR)/state.json nohup $(PYTHON) app.py $(GATE_PORT) > $(GATE_RUNDIR)/hub.log 2>&1 & echo $$! > $(GATE_RUNDIR)/hub.pid
+	@ok=""; for i in $$(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$(GATE_PORT)) 2>/dev/null && { exec 3>&- 3<&-; ok=1; break; }; sleep 0.2; done; \
+	[ -n "$$ok" ] || { echo "[gate-up] hub FAILED to start; last log lines:"; tail -n 20 $(GATE_RUNDIR)/hub.log; exit 1; }
+	@echo "[gate-up] isolated hub on :$(GATE_PORT) pid=$$(cat $(GATE_RUNDIR)/hub.pid)"
+
+gate-down: ## stop ONLY the gate hub (never touches live pids)
+	@if [ -f $(GATE_RUNDIR)/hub.pid ]; then pid=$$(cat $(GATE_RUNDIR)/hub.pid); \
+		if kill -0 $$pid 2>/dev/null; then \
+			kill -TERM $$pid 2>/dev/null || true; \
+			for i in $$(seq 1 20); do kill -0 $$pid 2>/dev/null || break; sleep 0.2; done; \
+			if kill -0 $$pid 2>/dev/null; then kill -KILL $$pid 2>/dev/null || true; fi; \
+		fi; rm -f $(GATE_RUNDIR)/hub.pid; fi
+	@echo "[gate-down] complete"
+
 status: ## show recorded process states
 	@for f in $(RUNDIR)/hub.pid $(RUNDIR)/wrapper.pid; do \
 		if [ -f "$$f" ]; then pid=$$(cat "$$f"); \
 			kill -0 "$$pid" 2>/dev/null && echo "$$f: $$pid RUNNING" || echo "$$f: $$pid DEAD"; \
 		else echo "$$f: none"; fi; done
 
-test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bounded
-	@mkdir -p $(RUNDIR)
+test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
+	@mkdir -p $(GATE_RUNDIR)
 	@$(PYTHON) -c 'import cryptography, httpx' 2>/dev/null || { echo 'deps missing for $(PYTHON): pip install -r requirements.txt'; exit 1; }; \
 	$(VPY) -c 'import cryptography, uagents' 2>/dev/null || { echo 'deps missing for $(VPY): python -m venv venv && venv/bin/pip install -r requirements.txt'; exit 1; }; \
-	@$(MAKE) --no-print-directory down >/dev/null 2>&1 || true
-	@trap '$(MAKE) --no-print-directory down >/dev/null 2>&1' EXIT; \
+	@$(MAKE) --no-print-directory gate-down >/dev/null 2>&1 || true
+	@trap '$(MAKE) --no-print-directory gate-down >/dev/null 2>&1' EXIT; \
 		echo "=== G2 suite ==="; \
 		$(PYTHON) test_suite.py || exit 1; \
 		echo "=== Storage adapter (1.1 file+sqlite) ==="; \
@@ -108,9 +136,10 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== C3 my-bookings ==='; $(PYTHON) test_c3_bookings.py || exit 1; \
 		echo '=== C4 reputation ==='; $(PYTHON) test_c4_rating.py || exit 1; \
 		echo '=== C5 community schemas ==='; $(PYTHON) test_c5_schemas.py || exit 1; \
-		echo "=== A2A E2E (hub :$(HUB_PORT) via make up) ==="; \
-		$(MAKE) --no-print-directory up HUB_PORT=$(HUB_PORT) >/dev/null || exit 1; \
-		$(VPY) -u test_client.py || exit 1; \
+		echo '=== C12 payment terms ==='; $(PYTHON) test_c12_payment_terms.py || exit 1; \
+		echo "=== A2A E2E (isolated gate hub :$(GATE_PORT)) ==="; \
+		$(MAKE) --no-print-directory gate-up >/dev/null || exit 1; \
+		HUB_PORT=$(GATE_PORT) $(VPY) -u test_client.py || exit 1; \
 		echo "=== make test: ALL PASSED ==="
 
 clean: ## remove .run/ (harness-owned ONLY; never touches other files)

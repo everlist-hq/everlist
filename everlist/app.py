@@ -297,6 +297,11 @@ def _load_state():
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
                 _v.setdefault(_k, _d)
+        # C12: legacy listings predate payment_terms (SPEC §19) — inject the
+        # vertical default at load so every listing always shows real terms
+        for _l in LISTINGS:
+            if not isinstance(_l.get("payment_terms"), dict):
+                _l["payment_terms"] = _default_payment_terms(_l.get("vertical", "events"))
         hublib._NONCES.update(snap.get("nonces", {}))
         if PAY_MODE == "testnet":
             x402verify.load_used_nonces(snap.get("x402_nonces", {}))
@@ -448,7 +453,7 @@ VERTICAL_SCHEMAS = {
 # I1: field ownership. Server-owned fields may never come from clients.
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
     "owner_payout", "created", "booking_secret", "rail", "confirmation",
-    "verified_by"}  # M14: verification provenance is server-derived only
+    "verified_by", "payment_terms"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms)
 
 # EverList taxonomy: category = controlled vocab per vertical (validated at
 # listing time); tags = free-form, normalized (lowercase, trimmed, deduped,
@@ -473,6 +478,66 @@ def normalize_tags(raw):
             break
     return tags
 RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash"}  # owner = authenticated principal; manage_code_hash = server-only (anti-spoof)
+
+# C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
+# the LISTING; booking = acceptance (paid bookings echo custom terms via
+# accepted_payment_terms); changes post-booking need both parties. Escrow is
+# the default rail whenever real money attaches; x402 instant is the merchant's
+# per-listing opt-in (no refund window — that is the trade-off). Defaults per
+# SPEC §19c: events/services 72h, food (marketplace-style) 7 days.
+PAYMENT_TERMS_RAILS = ("escrow", "instant")
+_PAYMENT_WINDOW_MIN, _PAYMENT_WINDOW_MAX = 1, 720  # hours
+_DEFAULT_REFUND_WINDOW_HOURS = {"events": 72, "services": 72, "food": 168}
+
+
+def _default_payment_terms(vertical):
+    return {"rail": "escrow", "refund_window_hours": _DEFAULT_REFUND_WINDOW_HOURS.get(vertical, 72),
+            "deposit_required": 0.0}
+
+
+def _normalize_payment_terms(raw, price, vertical):
+    """Validate/normalize client-supplied payment_terms. Returns
+    (terms_dict_or_None, error_or_None). Unknown keys rejected (I1 style);
+    window integer-bounded; deposit bounded to [0, price]; instant + window is
+    a contradiction (instant means settled-at-booking)."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, "payment_terms must be an object"
+    unk = [k for k in raw if k not in ("rail", "refund_window_hours", "deposit_required")]
+    if unk:
+        return None, f"payment_terms unknown keys rejected: {sorted(unk)}"
+    rail = raw.get("rail", "escrow")
+    if rail not in PAYMENT_TERMS_RAILS:
+        return None, f"payment_terms.rail must be one of {list(PAYMENT_TERMS_RAILS)}"
+    dep = raw.get("deposit_required")
+    if dep is None:
+        dep_out = 0.0
+    else:
+        try:
+            dep_out = float(dep)
+        except (TypeError, ValueError):
+            return None, "payment_terms.deposit_required must be a number"
+        if dep_out != dep_out or dep_out < 0 or (price is not None and dep_out > price):
+            return None, "payment_terms.deposit_required must be a number between 0 and the listing price"
+    if rail == "instant":
+        if raw.get("refund_window_hours") not in (None, 0):
+            return None, "instant rail has no refund window (that is the trade-off); omit refund_window_hours or use the escrow rail"
+        return {"rail": "instant", "refund_window_hours": 0, "deposit_required": dep_out}, None
+    w = raw.get("refund_window_hours")
+    if w is None:
+        w = _DEFAULT_REFUND_WINDOW_HOURS.get(vertical, 72)
+    if isinstance(w, bool) or not isinstance(w, int) or not (_PAYMENT_WINDOW_MIN <= w <= _PAYMENT_WINDOW_MAX):
+        return None, f"payment_terms.refund_window_hours must be an integer in [{_PAYMENT_WINDOW_MIN}, {_PAYMENT_WINDOW_MAX}]"
+    return {"rail": "escrow", "refund_window_hours": w, "deposit_required": dep_out}, None
+
+
+def _listing_is_custom_terms(listing):
+    t = listing.get("payment_terms")
+    if not t:
+        return False
+    return t != _default_payment_terms(listing.get("vertical", "events"))
+
 
 # C5: community vertical schemas — drop-in extension point (verticals are DATA).
 # Organizers contribute schemas/<name>.json (process: docs/community-schemas.md);
@@ -606,7 +671,8 @@ def _openapi_spec():
             "/listings": {
                 "get": op("Public listings (query: vertical, archived)", "listings",
                           note="?archived=1 is OWNER-ONLY (auth required)"),
-                "post": op("Create listing (returns manage_code ONCE)", "listings", sec=tok)},
+                "post": op("Create listing (returns manage_code ONCE)", "listings", sec=tok,
+                           note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food)")},
             "/listings/{id}": {"get": op("One listing, full rich record", "listings",
                                         note="404 unknown / 410 archived")},
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/delete a listing", "listings", sec=tok)},
@@ -619,12 +685,12 @@ def _openapi_spec():
             "/orders": {"get": op("Incoming orders for listings you own", "bookings", sec=tok)},
             "/book/{id}": {"get": op("Private booking details", "bookings", sec=tok,
                                     note="credential = booking secret (shown once at creation), via X-Hub-Token header")},
-            "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0)", "bookings", sec=tok,
-                                 note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow")},
+            "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0 / DIRECT on the instant rail)", "bookings", sec=tok,
+                                 note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms)")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
-                                note="buyer's own book token; escrow must be RELEASED or WAIVED; listing aggregates update publicly; ledger untouched")},
+                                note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); listing aggregates update publicly; ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
@@ -1622,6 +1688,14 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(400, {"error": f"{_f} required for {v}"})
             except (TypeError, ValueError) as ex:
                 return self._json(400, {"error": f"invalid field: {ex}"})
+            # C12: payment terms (SPEC §19) — validated object or per-vertical
+            # default; stored on the listing so EVERY public payload shows the
+            # real terms buyers will accept at booking time.
+            pt_raw = data.pop("payment_terms", None)
+            _terms, pterr = _normalize_payment_terms(pt_raw, price, v)
+            if pterr:
+                return self._json(400, {"error": pterr})
+            data["payment_terms"] = _terms if _terms is not None else _default_payment_terms(v)
             # EverList taxonomy: category from controlled vocab (optional but
             # must be valid if given); tags free-form but normalized+bounded.
             if "category" in data and data["category"] is not None:
@@ -1654,8 +1728,8 @@ class Handler(BaseHTTPRequestHandler):
                 data["description"] = desc
             else:
                 data.pop("description", None)
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical"}
-            data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms"}
+            data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             with LOCK:
                 _pref = v[:4]
                 _n = ID_COUNTERS.get(_pref, 0)
@@ -1710,7 +1784,7 @@ class Handler(BaseHTTPRequestHandler):
                                                            str(listing.get("manage_code_hash", ""))):
                         return self._json(403, {"error": "invalid manage_code for this listing (or login as the owning account)"})
                 active = [b for b in BOOKINGS
-                          if b.get("listing_id") == lid and b.get("escrow") in ("HELD", "WAIVED")]
+                          if b.get("listing_id") == lid and b.get("escrow") in ("HELD", "WAIVED", "DIRECT")]
                 if action == "delete":
                     if active:
                         return self._json(409, {"error": f"listing has {len(active)} active booking(s); resolve (confirm/cancel) first"})
@@ -1734,7 +1808,8 @@ class Handler(BaseHTTPRequestHandler):
                               "provider", "merchant"}
                              | set(_sch.get("optional", []))) & _allowed_fields)
                 changes = {k: data[k] for k in editable if k in data}
-                if not changes:
+                _pt_edit = "payment_terms" in data  # C12: terms are owner-editable pre-booking; booked bookings keep their snapshot
+                if not changes and not _pt_edit:
                     return self._json(400, {"error": "no editable fields given",
                                             "editable": sorted(editable)})
                 if "price" in changes:
@@ -1765,6 +1840,12 @@ class Handler(BaseHTTPRequestHandler):
                         changes["tags"] = normalize_tags(changes["tags"])
                     except ValueError as ex:
                         return self._json(400, {"error": str(ex)})
+                if _pt_edit:  # C12: owner-editable terms (pre-booking); null resets to the vertical default
+                    _new_price = changes.get("price", listing.get("price", 0))
+                    _nt, _nterr = _normalize_payment_terms(data["payment_terms"], _new_price, listing["vertical"])
+                    if _nterr:
+                        return self._json(400, {"error": _nterr})
+                    changes["payment_terms"] = _nt if _nt is not None else _default_payment_terms(listing["vertical"])
                 if "url" in changes:
                     u3 = str(changes["url"]).strip()
                     if not (u3.startswith("http://") or u3.startswith("https://")) or len(u3) > 300:
@@ -1867,7 +1948,7 @@ class Handler(BaseHTTPRequestHandler):
             reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
             if reserved_seen:
                 return self._json(400, {"error": f"reserved fields rejected: {reserved_seen}"})
-            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref"}
+            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref", "accepted_payment_terms"}
             unknown = [k for k in data if k not in allowed]
             if unknown:
                 return self._json(400, {"error": f"unknown fields rejected: {unknown}",
@@ -1936,13 +2017,28 @@ class Handler(BaseHTTPRequestHandler):
                 price_c = int(round(listing["price"] * 100)) * qty
                 fee_c = hub_fee_c(price_c); payout_c = price_c - fee_c
                 price = price_c / 100.0; fee = fee_c / 100.0; payout = payout_c / 100.0
+                # C12 (SPEC §19a): booking = acceptance of the listing's payment
+                # terms. Default-terms bookings stay friction-free; custom terms
+                # (instant rail / custom window / deposit) require the buyer to
+                # echo the terms object exactly — API-enforced consent.
+                _pt = listing.get("payment_terms") or _default_payment_terms(v)
+                if price_c > 0 and _listing_is_custom_terms(listing):
+                    _echo = data.get("accepted_payment_terms")
+                    if _echo != _pt:
+                        return self._json(409, {"error": "this listing uses custom payment terms - confirm by echoing them exactly",
+                            "payment_terms": _pt,
+                            "how": "re-send the booking with accepted_payment_terms set to exactly the payment_terms object shown here"})
                 # B3c-waiver: free listings need no payment rail — escrow state WAIVED
-                # (verified-human gate still applies; ledger stays complete)
-                escrow_state = "WAIVED" if price_c == 0 else "HELD"
+                # (verified-human gate still applies; ledger stays complete).
+                # C12: instant rail = settled at booking -> DIRECT (no escrow,
+                # no refund window, no confirm/cancel money step).
+                escrow_state = "WAIVED" if price_c == 0 else (
+                    "DIRECT" if _pt.get("rail") == "instant" else "HELD")
                 # M5: an on-chain escrow ref on a free booking is a contradiction —
-                # free listings waive the payment rail entirely
-                if er is not None and escrow_state == "WAIVED":
-                    return self._json(409, {"error": "escrow_ref requires a paid booking (free listings waive the escrow rail)"})
+                # free listings waive the payment rail entirely. Same for instant:
+                # DIRECT means no escrow exists for this booking.
+                if er is not None and escrow_state in ("WAIVED", "DIRECT"):
+                    return self._json(409, {"error": "escrow_ref requires an escrow-rail paid booking (free listings waive the rail; instant bookings settle directly without escrow)"})
                 # S1 red-team 3: duplicate (contract, escrow_id) would let two
                 # bookings claim the same on-chain escrow (double-claim / squat
                 # before the real buyer books) - wall lives inside the LOCK
@@ -1963,7 +2059,9 @@ class Handler(BaseHTTPRequestHandler):
                 booking = {"id": bid, "listing_id": lid, "vertical": v,
                     "escrow": escrow_state, "amount": price, "hub_fee": fee,
                     "owner_payout": payout, "quantity": qty, "created": time.time(),
-                    "booked_by": principal, **pub}
+                    "booked_by": principal,
+                    "payment_terms": _pt,  # C12: server-copied snapshot of the terms IN FORCE at booking time; later listing edits never rewrite a done deal
+                    **pub}
                 # M14: bookings carry verification provenance SERVER-SIDE only
                 # (verified_by is reserved - clients can never claim it)
                 if principal.startswith("acct-"):
@@ -1980,13 +2078,21 @@ class Handler(BaseHTTPRequestHandler):
                 if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
                     listing["registered"] = listing.get("registered", 0) + qty
                 _persist_locked()
+            # C12: per-rail flow lines (plain list building — no starred unpacks)
+            if escrow_state == "DIRECT":
+                _flow = ["instant rail — payment settled at booking (DIRECT, no refund window)"]
+            elif escrow_state == "WAIVED":
+                _flow = ["free listing — payment WAIVED (no escrow rail)",
+                         "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
+                         f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
+            else:
+                _flow = ["escrow HELD (funds locked)",
+                         "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
+                         f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
             resp = {**booking,
                 "booking_secret": secret, "secret_note": "shown ONCE; required to view private details",
                 "cancel_token": hublib.mint_token(BOOKING_KEY, "cancel", bid, ttl=7*24*3600),
-                "flow": [
-                ("free listing — payment WAIVED (no escrow rail)" if escrow_state == "WAIVED" else "escrow HELD (funds locked)"),
-                f"confirm: owner POST /book/{{id}}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
-                f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]}
+                "flow": _flow}
             if idem_key:
                 with LOCK:
                     IDEMPOTENCY[idem_key] = {"hash": hashlib.sha256(canon.encode()).hexdigest(),
@@ -2005,6 +2111,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
+                if b["escrow"] == "DIRECT":  # C12: instant rail — settled at booking, nothing to confirm
+                    return self._json(409, {"error": "instant rail: payment settled at booking - nothing to confirm"})
                 if b["escrow"] not in ("HELD", "WAIVED"):  # H15: free (WAIVED) bookings confirm too — no money moves
                     return self._json(409, {"error": f"escrow is {b['escrow']}"})
                 b["escrow"] = "RELEASED"
@@ -2025,6 +2133,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
+                if b["escrow"] == "DIRECT":  # C12: instant rail settles at booking — there is no refund window to cancel inside
+                    return self._json(409, {"error": "instant rail: payment settled at booking - no refund window (listing terms)"})
                 if b["escrow"] not in ("HELD", "WAIVED"):  # H15: WAIVED (free) bookings are cancellable too
                     return self._json(409, {"error": f"escrow is {b['escrow']}"})
                 b["escrow"] = "REFUNDED"
@@ -2060,7 +2170,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not b: return self._json(404, {"error": "no booking"})
                 if b.get("booked_by") != me:  # owner-immutable: only the buyer can rate
                     return self._json(403, {"error": "only the booking's buyer may rate it"})
-                if b["escrow"] not in ("RELEASED", "WAIVED"):
+                if b["escrow"] not in ("RELEASED", "WAIVED", "DIRECT"):
                     return self._json(409, {"error": f"rating opens after settlement (escrow is {b['escrow']})"})
                 if "rating" in b:  # once per booking, forever
                     return self._json(409, {"error": "already rated"})

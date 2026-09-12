@@ -144,6 +144,13 @@ def _fmt_listing(l: dict) -> str:
         extra.append("  " + (d[:100] + "…" if len(d) > 100 else d))
     if l.get("url"):
         extra.append(f"  🔗 {l['url']}")
+    pt = l.get("payment_terms")  # C12: terms are part of the public listing face
+    if isinstance(pt, dict):
+        if pt.get("rail") == "instant":
+            extra.append("  ⚡ instant rail — settled at booking, no refund window")
+        else:
+            _dep = f" · deposit {pt.get('deposit_required')}" if pt.get("deposit_required") else ""
+            extra.append(f"  🛡 escrow · refund window {pt.get('refund_window_hours', '?')}h{_dep}")
     return line + ("\n" + "\n".join(extra) if extra else "")
 
 
@@ -652,6 +659,22 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         payload["url"] = extra["url"][:300]
     if extra.get("tags"):
         payload["tags"] = extra["tags"]
+    # C12: chat merchants can set payment terms in rich format
+    # (rail: escrow|instant, refund_window: hours, deposit: amount)
+    if any(extra.get(k) for k in ("rail", "refund_window", "deposit")):
+        _rail = str(extra.get("rail") or "escrow").strip().lower()
+        _ptc = {"rail": _rail}
+        if extra.get("refund_window"):
+            try:
+                _ptc["refund_window_hours"] = int(str(extra["refund_window"]).strip())
+            except ValueError:
+                return "refund_window must be a whole number of hours (1-720), e.g. 'refund_window: 72'"
+        if extra.get("deposit"):
+            try:
+                _ptc["deposit_required"] = float(str(extra["deposit"]).strip())
+            except ValueError:
+                return "deposit must be a number, e.g. 'deposit: 5'"
+        payload["payment_terms"] = _ptc
     try:
         if sess:
             token = sess["tokens"]["list"]   # sub=acct-<id>: listing owned by the ACCOUNT
@@ -1042,10 +1065,19 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
                 + "A booking agent with credentials can complete it end-to-end."
             )
         if float(target.get("price", 1)) > 0:
+            pt = target.get("payment_terms")
+            pt_line = ""
+            if isinstance(pt, dict):
+                pt_line = ("\n⚡ Terms: instant rail — settled at booking, no refund window."
+                           if pt.get("rail") == "instant" else
+                           f"\n🛡 Terms: escrow · refund window {pt.get('refund_window_hours', '?')}h"
+                           + (f" · deposit {pt.get('deposit_required')}" if pt.get("deposit_required") else "")
+                           + "\nCustom terms: the SDK booking must echo accepted_payment_terms exactly.")
             return (
                 f"'{target.get('title')}' is a PAID listing ({target.get('price')}).\n"
                 "Payment goes through x402 — use the EverList SDK (agenthub client) "
                 f"with listing id '{lid}'. Free listings book right here in chat."
+                + pt_line
             )
         sess = _session(sender)
         if not sess:
