@@ -1,6 +1,6 @@
 # agent-hub-v2 — open agent commerce hub
 
-Open-source (Apache-2.0), community-driven hub core proving the universal booking pattern:
+Open-source (MIT), community-driven hub core proving the universal booking pattern:
 
 discover → search → register & pay (escrow) → confirm/cancel → transparent ledger
 

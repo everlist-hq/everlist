@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hublib  # I2/G5: versioned, domain-separated HMAC action tokens
+from storage import configure, read_snapshot, write_snapshot
 
 # fee is fully hub-declared; no protocol cap. Agents judge via the public ledger.
 
@@ -74,7 +75,7 @@ BACKUP_KEEP = int(os.environ.get("HUB_BACKUP_KEEP", "5"))
 # Default ON; HUB_FSYNC=0 disables (benchmarking only).
 FSYNC_ENABLED = os.environ.get("HUB_FSYNC", "1") != "0"
 AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
-                 "email": (5, 3600), "verify": (20, 3600), "recover": (10, 3600),
+                 "email": (5, 3600), "verify": (int(os.environ.get("HUB_LIMIT_VERIFY", "30")), 3600), "recover": (10, 3600),
                  "read": (READ_LIMIT, 60),
                  # H5: write-path backstops (per source) on every mutating route;
                  # env-tunable like READ_LIMIT (tests shrink them; ops can tune)
@@ -83,7 +84,11 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "book": (int(os.environ.get("HUB_LIMIT_BOOK", "60")), 60),
                  "manage": (int(os.environ.get("HUB_LIMIT_MANAGE", "60")), 60),
                  "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60),
-                 "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60)}
+                 "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60),
+                 # S2 sweep: dedicated per-source kinds for the M9/M14 account
+                 # endpoints - pre-auth, so brute-forceable secrets count
+                 "payout": (int(os.environ.get("HUB_LIMIT_PAYOUT", "20")), 3600),
+                 "rate": (int(os.environ.get("HUB_LIMIT_RATE", "30")), 60)}
 # HARDENING-v2: per-source fairness (was: one global bucket per kind — a single
 # attacker could deny service to ALL signups by filling the shared window).
 AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
@@ -269,32 +274,15 @@ def _persist_locked():
             "nonces": {n: e for n, e in getattr(hublib, "_NONCES", {}).items()},
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {})}
-    tmp = STATE_FILE + ".tmp"
-    # H17: state contains booking secrets - create 0600 from the start
-    # (plain open() produced a world-readable 0644 file on lax umasks)
-    _fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(_fd, "w") as f:
-        json.dump(snap, f)
-        if FSYNC_ENABLED:
-            f.flush()
-            os.fsync(f.fileno())
-    os.replace(tmp, STATE_FILE)  # atomic on POSIX
-    if FSYNC_ENABLED:
-        # H3: make the rename itself durable — fsync the containing directory
-        dfd = os.open(os.path.dirname(os.path.abspath(STATE_FILE)), os.O_RDONLY)
-        try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+    write_snapshot(snap)
 
 
 def _load_state():
-    """Load snapshot at startup. Missing/corrupt file = fresh start (fail-open dev)."""
-    if not os.path.exists(STATE_FILE):
-        return
+    """Load snapshot at startup. Missing state = fresh start; corrupt = fail-closed (exit 78)."""
     try:
-        with open(STATE_FILE) as f:
-            snap = json.load(f)
+        snap = read_snapshot()
+        if snap is None:
+            return
         LISTINGS[:] = snap.get("listings", [])
         BOOKINGS[:] = snap.get("bookings", [])
         LEDGER[:] = snap.get("ledger", [])
@@ -339,6 +327,10 @@ RUN_ENV = os.environ.get("HUB_ENV", "development")
 if RUN_ENV == "production" and (BOOKING_KEY.startswith("dev-") or ADMIN_KEY.startswith("dev-")):
     sys.stderr.write("FATAL: HUB_ENV=production requires HUB_BOOKING_KEY and HUB_ADMIN_KEY (no dev defaults)\n")
     sys.exit(78)
+elif ADMIN_KEY.startswith("dev-"):
+    # S1: a misconfigured exposed deployment (HUB_ENV unset) must not run the
+    # well-known dev admin key SILENTLY - loud on stderr, fatal only in prod
+    sys.stderr.write("WARNING: HUB_ADMIN_KEY is the dev default - localhost only; set it before any network exposure\n")
 # G3: all operational config via env with sane defaults
 PORT = int(os.environ.get("HUB_PORT", "8802"))
 FEE_PCT = float(os.environ.get("HUB_FEE_PCT", "1.0"))
@@ -347,6 +339,7 @@ if not (0 <= FEE_PCT <= 50):
     sys.exit(78)
 DATA_DIR = os.environ.get("HUB_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 STATE_FILE = os.environ.get("HUB_STATE_FILE", os.path.join(DATA_DIR, "state.json"))
+configure(STATE_FILE)
 # H12: bounded rotating request log (ops hygiene; wrapper.py got its own in B4).
 # One structured line per response: method, path (query stripped, truncated),
 # status, latency, source, request-id. Bodies/headers are NEVER logged; log
@@ -1252,14 +1245,17 @@ class Handler(BaseHTTPRequestHandler):
             if p:
                 p, _err = _gen_check(p)  # stale tokens never prove identity
             with LOCK:
+                # S2: limit BEFORE any secret comparison - wrong-code guesses
+                # must count toward the source's bucket (was: post-auth shared
+                # 'email' kind, letting unlimited account_code brute attempts)
+                if not _auth_allow("payout", _source_of(self)):
+                    return self._json(429, {"error": "payout rate limit reached for your source, retry later"})
                 if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
                     aid = p["sub"]
                 else:
                     aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "login token or valid account_code required"})
-                if not _auth_allow("email", _source_of(self)):
-                    return self._json(429, {"error": "rate limit reached for your source, retry later"})
                 replaced = ACCOUNTS[aid].get("payout_pk") not in (None, "", pk)
                 ACCOUNTS[aid]["payout_pk"] = pk
                 _persist_locked()
@@ -1283,14 +1279,16 @@ class Handler(BaseHTTPRequestHandler):
             if p:
                 p, _err = _gen_check(p)  # stale tokens never prove identity
             with LOCK:
+                # S2: limit BEFORE account resolution - unauthenticated
+                # credential-id enumeration counts toward the source bucket
+                if not _auth_allow("verify", _source_of(self)):
+                    return self._json(429, {"error": "verify rate limit reached for your source, retry later"})
                 if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
                     aid = p["sub"]
                 else:
                     aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
                 if not aid:
                     return self._json(403, {"error": "login token or valid account_code required"})
-                if not _auth_allow("verify", _source_of(self)):
-                    return self._json(429, {"error": "rate limit reached for your source, retry later"})
             cid_raw = str(data.get("credential_id", "")).strip()
             if not re.fullmatch(r"[1-9][0-9]{0,11}", cid_raw or ""):
                 return self._json(400, {"error": "credential_id must be a positive integer (max 12 digits)"})
@@ -1858,8 +1856,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
                     return self._json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
                 _eri = er.get("escrow_id")
-                if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1:
-                    return self._json(400, {"error": "escrow_ref.escrow_id must be a positive integer"})
+                if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1 or _eri >= 2 ** 64:
+                    return self._json(400, {"error": "escrow_ref.escrow_id must be a positive integer (< 2^64, contract Uint<64>)"})
                 _ert = er.get("tx")
                 if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
                     return self._json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
@@ -1901,6 +1899,15 @@ class Handler(BaseHTTPRequestHandler):
                 # free listings waive the payment rail entirely
                 if er is not None and escrow_state == "WAIVED":
                     return self._json(409, {"error": "escrow_ref requires a paid booking (free listings waive the escrow rail)"})
+                # S1 red-team 3: duplicate (contract, escrow_id) would let two
+                # bookings claim the same on-chain escrow (double-claim / squat
+                # before the real buyer books) - wall lives inside the LOCK
+                if er is not None:
+                    dup = next((x for x in BOOKINGS if x.get("escrow_ref")
+                                and x["escrow_ref"]["contract"] == er["contract"]
+                                and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
+                    if dup is not None:
+                        return self._json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
                 # H2: unguessable booking IDs (no sequential enumeration)
                 bid = "bk-" + secrets.token_hex(12)
                 secret = secrets.token_hex(16)
@@ -1986,6 +1993,10 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
             return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED"})
         if path.startswith("/book/") and path.endswith("/rate"):
+            # S2: mutating route - per-source backstop before any auth work
+            with LOCK:
+                if not _auth_allow("rate", _source_of(self)):
+                    return self._json(429, {"error": "rating rate limit reached for your source, retry later"})
             bid = path.split("/")[2]
             cred = self.headers.get("X-Hub-Token", "")  # I2: buyer token required
             if not cred:

@@ -1,4 +1,3 @@
-import sys
 """B2 concurrency proof battery (backlog B2).
 Self-managed fresh hub; threads hammer signup + listings; state.json is the judge.
 Run: python test_concurrency.py
@@ -78,7 +77,7 @@ def solve_pow():
 log_fh = open(LOGF, "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_EMAIL_MODE": "log",
        "HUB_TRUST_PROXY": "1", "HUB_POW_SIGNUP_BITS": "8"}
-proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
+proc = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log_fh, stderr=subprocess.STDOUT, env=env)
 _ACTIVE.append(proc)
 assert wait_ready(PORT), "hub did not start"

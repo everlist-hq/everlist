@@ -62,6 +62,8 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 	@trap '$(MAKE) --no-print-directory down >/dev/null 2>&1' EXIT; \
 		echo "=== G2 suite ==="; \
 		$(PYTHON) test_suite.py || exit 1; \
+		echo "=== Storage adapter (1.1 file+sqlite) ==="; \
+		$(PYTHON) test_storage.py || exit 1; \
 		echo "=== Hardening suite (email/archive/ids) ==="; \
 		$(PYTHON) test_hardening.py || exit 1; \
 		echo "=== Concurrency battery (B2) ==="; \
@@ -99,6 +101,7 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		echo '=== M9 payout key ==='; $(PYTHON) test_m9_payout.py || exit 1; \
 		echo '=== M10 secret hygiene ==='; $(PYTHON) test_m10_secrets.py || exit 1; \
 		echo '=== M14 Tier-2 sign-in ==='; $(PYTHON) test_m14_tier2.py || exit 1; \
+		echo '=== S1 red-team pass 3 ==='; $(PYTHON) test_s1_redteam3.py || exit 1; \
 		echo '=== C2 search upgrades ==='; $(PYTHON) test_c2_search.py || exit 1; \
 		echo '=== C3 my-bookings ==='; $(PYTHON) test_c3_bookings.py || exit 1; \
 		echo '=== C4 reputation ==='; $(PYTHON) test_c4_rating.py || exit 1; \

@@ -67,7 +67,7 @@ def spawn(extra_env):
     env = {**os.environ, "HUB_STATE_FILE": os.path.join(tmp, "state.json"),
            "HUB_POW_SIGNUP_BITS": "8", "PYTHONUNBUFFERED": "1", **extra_env}
     logf = open(os.path.join(tmp, "hub.log"), "w")
-    p = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(port)],
+    p = subprocess.Popen(["/opt/venv/bin/python", os.path.join(HERE, "app.py"), str(port)],
                          stdout=logf, stderr=subprocess.STDOUT, env=env)
     _ACTIVE.append(p)
     assert wait_ready(port), "hub did not start"

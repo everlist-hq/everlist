@@ -157,6 +157,7 @@ try:
             print("   [m8] live sim unavailable: %s" % str(ex)[:80])
     if timeline is None:
         timeline = json.load(open(FIXTURE_PATH))
+        timeline.setdefault("generator", "recorded fixture (offline sim dump)")
     print("   chain timeline: %s (%d actions)" % (timeline["generator"], len(timeline["actions"])))
 
     CONTRACT = timeline["contract"]
@@ -226,15 +227,16 @@ try:
     check("chain REFUNDED + hub RELEASED (RB) -> refused (cross-final)",
           res[RB]["action"] == "refused", str(res[RB]))
 
-    # refund leg: booking C links the SAME chain escrow 2 (REFUNDED at stage
-    # 3) while its hub state is HELD -> forward sync updates C to REFUNDED
-    # (chain wins), while RB (same escrow, hub RELEASED) stays refused as a
-    # cross-final divergence. One chain escrow, two hub bookings: one
-    # forward-updated, one flagged - the C7 rule in action.
+    # refund leg: booking C gets its OWN chain escrow 3 (the S1 duplicate-ref
+    # wall rightly forbids two hub bookings on one chain escrow). The scenario
+    # now runs escrow 3 create->refund as actions 5-6 (indices 4-5); advance
+    # the chain stage to 5 BEFORE C's sync so escrow 3 exists on chain and is
+    # REFUNDED while C's hub state is still HELD -> forward update.
+    STAGE[0] = 5
     c, bc = req("POST", "/book", {"listing_id": LID, "attendee": "M8 C",
                "human_verified": True,
-               "escrow_ref": {"contract": CONTRACT, "escrow_id": 2, "tx": ACTIONS[1]["tx"]}}, B)
-    check("booking C created with escrow_ref 2", c == 201, str(c))
+               "escrow_ref": {"contract": CONTRACT, "escrow_id": 3, "tx": ACTIONS[4]["tx"]}}, B)
+    check("booking C created with escrow_ref 3", c == 201, str(c))
     _, led0 = req("GET", "/ledger")
     vol0 = led0["totals"]["total_volume"]
     c, s = sync()

@@ -36,8 +36,7 @@ if not SEED:
         "  NOTE: a seed stored in a repo is PUBLIC - never attach funds/identity to it.\n")
     sys.exit(78)
 
-HUB_PORT_ENV = os.environ.get("HUB_PORT", "8802")
-HUB_URL = os.environ.get("HUB_URL", f"http://localhost:{HUB_PORT_ENV}")
+HUB_URL = os.environ.get("HUB_URL", "http://localhost:8802")
 TIMEOUT = 10.0
 LOG_FILE = os.environ.get("HUB_LOG_FILE", "wrapper.log")
 LOG_MAX = int(os.environ.get("HUB_LOG_MAX_BYTES", "1000000"))
@@ -83,7 +82,7 @@ class HubResponse(Model):
 
 hub_agent = Agent(
     name="agent-hub",
-    port=int(os.environ.get("HUB_WRAPPER_PORT", "8010")),
+    port=8010,
     seed=SEED,
     mailbox=True,  # B3: Agentverse relay — localhost agent becomes reachable via Agentverse
     network="testnet",

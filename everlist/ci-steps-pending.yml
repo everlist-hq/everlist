@@ -1,0 +1,118 @@
+name: tests
+
+# CI for EverList: mirrors `make test` (G2 suite + A2A uAgent E2E)
+# plus the registry, x402 and audit suites. Paths follow the
+# published repo layout: everlist/ and registry/.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      # CI-only THROWAWAY seed for the uAgents wrapper (fail-closed env var).
+      # Never funded, never used outside this run. Never commit real seeds.
+      HUB_AGENT_SEED: "ci-throwaway-seed-do-not-fund-000000000000"
+    defaults:
+      run:
+        working-directory: everlist
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies (into ./venv so Makefile VPY default works)
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install -r requirements.txt
+
+      - name: "G2 security + functional suite"
+        run: venv/bin/python test_suite.py
+
+      - name: "Hardening suite (email recovery / archive auth / id monotonicity)"
+        run: venv/bin/python test_hardening.py
+
+      - name: "Concurrency battery (B2 - parallel signups + listings)"
+        run: venv/bin/python test_concurrency.py
+
+      - name: "SDK Tier-1 accounts (B5 - keypair signup/login/ownership)"
+        run: venv/bin/python test_sdk_accounts.py
+
+      - name: "Chat E2E via real wrapper (B6)"
+        run: venv/bin/python -u test_chat_e2e.py
+
+      - name: "Public read limits (B7)"
+        run: venv/bin/python test_read_limits.py
+
+      - name: "Backup rotation (B8)"
+        run: venv/bin/python test_backups.py
+
+      - name: "Restore drill (H2)"
+        run: venv/bin/python test_restore_drill.py
+
+      - name: "Single-instance guard (H4)"
+        run: venv/bin/python test_single_instance.py
+
+      - name: "Write-path limiter floods (H5)"
+        run: venv/bin/python test_write_limits.py
+
+      - name: "Chat help honesty (B10)"
+        run: venv/bin/python test_chat_help.py
+
+      - name: "Escrow_ref chain pointer (M5)"
+        run: venv/bin/python test_m5_escrow_ref.py
+
+      - name: "Midnight indexer client (M6)"
+        run: venv/bin/python test_m6_indexer.py
+
+      - name: "Escrow mirror sync (M7)"
+        run: venv/bin/python test_m7_sync.py
+
+      - name: "E2E chain booking (M8 - recorded fixture; live sim needs contract build)"
+        run: venv/bin/python test_m8_e2e_chain.py
+
+      - name: "Organizer payout key (M9)"
+        run: venv/bin/python test_m9_payout.py
+
+      - name: "Chain secret hygiene (M10 - no seed material in state/logs/git)"
+        run: venv/bin/python test_m10_secrets.py
+
+      - name: "Search upgrades (C2 - date/price range, tags, sort, chat parse)"
+        run: venv/bin/python test_c2_search.py
+
+      - name: "My-bookings principal isolation (C3)"
+        run: venv/bin/python test_c3_bookings.py
+
+      - name: "Reputation: settled-booking ratings (C4)"
+        run: venv/bin/python test_c4_rating.py
+
+      - name: "Community vertical schemas (C5 - fail-closed loader)"
+        run: venv/bin/python test_c5_schemas.py
+
+      - name: "Full suite incl. A2A E2E (make test with overridable PYTHON)"
+        run: make test PYTHON=venv/bin/python
+
+      - name: "Registry service suite (D2)"
+        working-directory: registry
+        run: ../everlist/venv/bin/python test_registry.py
+
+      - name: "Conformance checker suite (D3)"
+        working-directory: registry
+        run: ../everlist/venv/bin/python test_check_hub.py
+
+      - name: "x402 verification suite (C3a)"
+        run: venv/bin/python test_x402.py
+
+      - name: "x402 settlement suite (C3b)"
+        run: venv/bin/python test_x402_settle.py
+
+      - name: "Dependency audit (H6 - waivers reasoned in SPEC 17)"
+        continue-on-error: true
+        run: |
+          venv/bin/pip install -q pip-audit
+          venv/bin/pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-3002 --ignore-vuln PYSEC-2026-1325

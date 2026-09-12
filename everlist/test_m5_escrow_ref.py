@@ -60,6 +60,10 @@ while time.time() < end:
 assert ready, 'test hub did not start'
 
 REF = {'contract': 'midnight1qescrowcontractaddr', 'escrow_id': 7, 'tx': 'a1b2c3d4e5f6a1b2'}
+# S1 red-team 3 added the duplicate-ref wall (one chain escrow = one hub booking),
+# so the idempotency pair below must use its OWN chain escrow id (REF is already
+# claimed by the first booking above; reusing it now correctly yields 409).
+REF2 = {'contract': 'midnight1qescrowcontractaddr', 'escrow_id': 8, 'tx': 'b2c3d4e5f6a1b2c3'}
 
 try:
     print('== M5 setup ==')
@@ -128,12 +132,12 @@ try:
                 'human_verified': True}, B)
     check('booking without ref unchanged (no key)', c == 201 and 'escrow_ref' not in b2, str(c))
     c, b3 = req('POST', '/book', {'listing_id': PAID, 'attendee': 'M5 Replay',
-                'human_verified': True, 'escrow_ref': REF}, {**B, 'Idempotency-Key': 'm5-key-1'})
+                'human_verified': True, 'escrow_ref': REF2}, {**B, 'Idempotency-Key': 'm5-key-1'})
     check('idempotent create with ref -> 201', c == 201, str(c))
     c, b3r = req('POST', '/book', {'listing_id': PAID, 'attendee': 'M5 Replay',
-                 'human_verified': True, 'escrow_ref': REF}, {**B, 'Idempotency-Key': 'm5-key-1'})
+                 'human_verified': True, 'escrow_ref': REF2}, {**B, 'Idempotency-Key': 'm5-key-1'})
     ref_out = b3r.get('escrow_ref')
-    check('idempotent replay keeps ref', c == 201 and b3r.get('replayed') is True and ref_out == REF,
+    check('idempotent replay keeps ref', c == 201 and b3r.get('replayed') is True and ref_out == REF2,
           '%s %s' % (c, ref_out))
 
     print('== M5: OpenAPI contract mentions escrow_ref ==')

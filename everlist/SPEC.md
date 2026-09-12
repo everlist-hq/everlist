@@ -225,6 +225,7 @@ Every mutating POST route carries a per-source fixed-window backstop (`_auth_all
 
 - All direct dependencies in `requirements.txt` are pinned to exact versions (`uagents`, `httpx`, `eth-account`, `cryptography`) — upgrades are deliberate, audited events.
 - `make audit` runs `pip-audit` over the full resolved dependency tree; CI runs the same audit (non-blocking until the tree is fully clean upstream).
+- **2026-09-11 re-audit (S5):** pip check clean; pip-audit re-confirmed exactly the two waived findings ( §18 table) — pynacl fixed 1.6.2 exists but cosmpy pins ==1.6.0 (empirically upgrade breaks pip check), ecdsa still has no upstream fix. Waivers stand.
 
 ## 18. Privacy & data (H8)
 
