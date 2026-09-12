@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hublib  # I2/G5: versioned, domain-separated HMAC action tokens
-from storage import configure, read_snapshot, write_snapshot
+from storage import configure, read_snapshot, write_snapshot, mode, search_ids
 
 # fee is fully hub-declared; no protocol cap. Agents judge via the public ledger.
 
@@ -915,12 +915,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(410, {"error": f"listing {lid} archived — its owner can unarchive it"})
             return self._json(200, _pub_listing(l))
         if u.path == "/search":
-            """Faceted search: q (substring) + structured filters.
+            """Faceted search: q (FTS5 full-text) + structured filters.
             All filters AND-combined; agents can discover vocab via /verticals."""
             if not _read_gate(self):
                 return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
             q = parse_qs(u.query)
-            term = q.get("q", [""])[0].lower()
+            term = q.get("q", [""])[0].strip().lower()
             if len(term) > READ_Q_MAX:
                 return self._json(400, {"error": f"q too long (max {READ_Q_MAX} chars)"})
             fvert = q.get("vertical", [""])[0]
@@ -934,6 +934,9 @@ class Handler(BaseHTTPRequestHandler):
             fsort = q.get("sort", [""])[0].strip().lower()
             ftags_raw = q.get("tags", [""])[0].strip().lower()
             ftags = [t.strip() for t in ftags_raw.split(",") if t.strip()] if ftags_raw else []
+            frole = q.get("role", [""])[0].strip().lower()
+            if frole and frole not in ("offer", "seek"):
+                return self._json(400, {"error": "role must be offer or seek"})
             if fsort and fsort not in ("date", "price", "newest"):
                 return self._json(400, {"error": "sort must be one of: date, price, newest"})
             DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -950,17 +953,32 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._json(400, {"error": "min_price must be a number"})
             with LOCK:
-                res = [l for l in LISTINGS
-                       if not l.get("archived")
-                       and (not term or term in json.dumps(l).lower())
-                       and (not fvert or l["vertical"] == fvert)
-                       and (not fcat or l.get("category") == fcat)
-                       and (not ftag or ftag in (l.get("tags") or []))
-                       and (not ftags or any(t in (l.get("tags") or []) for t in ftags))
-                       and (not floc or floc in str(l.get("location", "")).lower())
-                       # C2 date range: a listing without a date cannot satisfy it
-                       and (not ffrom or str(l.get("date", "")) >= ffrom)
-                       and (not fto or bool(l.get("date")) and str(l.get("date")) <= fto)]
+                # C6: sqlite mode narrows q via the derived FTS5 index first
+                # (token match, O(matches) instead of a full substring scan).
+                # fts_ids None = index unavailable -> legacy substring scan.
+                fts_ids = search_ids(term) if (term and mode() == "sqlite") else None
+                if fts_ids == []:
+                    res = []
+                else:
+                    pool = LISTINGS
+                    if fts_ids is not None:
+                        _idset = set(fts_ids)
+                        pool = [l for l in LISTINGS
+                                if not l.get("archived") and l["id"] in _idset]
+                    res = [l for l in pool
+                           if not l.get("archived")
+                           and (not term or fts_ids is not None
+                                or term in json.dumps(l).lower())
+                           and (not fvert or l["vertical"] == fvert)
+                           and (not fcat or l.get("category") == fcat)
+                           and (not ftag or ftag in (l.get("tags") or []))
+                           and (not ftags or any(t in (l.get("tags") or []) for t in ftags))
+                           and (not floc or floc in str(l.get("location", "")).lower())
+                           # C2 date range: a listing without a date cannot satisfy it
+                           and (not ffrom or str(l.get("date", "")) >= ffrom)
+                           and (not fto or bool(l.get("date")) and str(l.get("date")) <= fto)]
+                if frole:
+                    res = [l for l in res if l.get("role", "offer") == frole]
                 if fmaxv is not None:
                     res = [l for l in res if float(l.get("price", 0)) <= fmaxv]
                 if fminv is not None:
@@ -975,10 +993,36 @@ class Handler(BaseHTTPRequestHandler):
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
                 "returned": len(res), "filters": {
-                "q": term, "vertical": fvert, "category": fcat, "tag": ftag,
+                "q": term, "vertical": fvert, "role": frole or None,
+                "category": fcat, "tag": ftag,
                 "tags": ftags or None, "location": floc, "min_price": fmin or None,
                 "max_price": fmax or None, "from": ffrom or None, "to": fto or None,
                 "sort": fsort or None}, "listings": [_pub_listing(x) for x in res]})
+        if u.path == "/suggest":
+            """C6-UX discovery helper: live vocabulary matching q.
+            Empty q returns the full tag/category/vertical tree root;
+            agents explore iteratively instead of guessing vocab."""
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests - slow down (retry shortly)"})
+            sq = parse_qs(u.query).get("q", [""])[0].strip().lower()
+            if len(sq) > READ_Q_MAX:
+                return self._json(400, {"error": f"q too long (max {READ_Q_MAX} chars)"})
+            tags, cats, verts = set(), set(), set()
+            with LOCK:
+                for l in LISTINGS:
+                    if l.get("archived"):
+                        continue
+                    for t in (l.get("tags") or []):
+                        if sq in str(t).lower():
+                            tags.add(str(t))
+                    c = l.get("category")
+                    if c and sq in str(c).lower():
+                        cats.add(str(c))
+                    v = l.get("vertical")
+                    if v and sq in str(v).lower():
+                        verts.add(str(v))
+            return self._json(200, {"q": sq, "tags": sorted(tags)[:100],
+                "categories": sorted(cats)[:100], "verticals": sorted(verts)[:100]})
         if u.path == "/bookings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: token required, principal-scoped
             payload, err = None, "missing X-Hub-Token"

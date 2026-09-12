@@ -13,8 +13,13 @@
   in sqlite mode the DB lives alongside it (same operator config).
 - B8 backups stay file-mode in 1.1: in sqlite mode _backup_locked no-ops
   naturally (no STATE_FILE yet) - the WAL'd DB file is the recovery surface.
+- C6 (vertical expansion plan 1.2): sqlite mode additionally maintains a
+  DERIVED, rebuildable listing index - normalized columns (vertical, city,
+  date, tags) + an FTS5 external-content index over title/description/tags -
+  updated in the SAME transaction as meta.snap. meta.snap remains the single
+  source of truth; the index is a pure cache (safe to drop/rebuild anytime).
 """
-import json, os, sqlite3
+import json, os, re, sqlite3
 
 FSYNC = os.environ.get("HUB_FSYNC", "1") != "0"
 _cfg = {"mode": os.environ.get("HUB_STORAGE_MODE", "file").strip().lower(),
@@ -27,6 +32,70 @@ def configure(state_file, db_file=None):
 
 def mode():
     return _cfg["mode"]
+
+# --- C6: derived listing index (sqlite mode only) ---------------------------
+_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS listings (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL DEFAULT 'offer',
+        vertical TEXT NOT NULL DEFAULT '',
+        city TEXT NOT NULL DEFAULT '',
+        date TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_listings_role ON listings(role)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_vertical ON listings(vertical)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_city ON listings(city)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_date ON listings(date)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_tags ON listings(tags)",
+    """CREATE VIRTUAL TABLE IF NOT EXISTS listings_fts USING fts5(
+        title, description, tags, content='listings', content_rowid='rowid')""",
+    "DROP TRIGGER IF EXISTS listings_ai",
+    "DROP TRIGGER IF EXISTS listings_ad",
+    "DROP TRIGGER IF EXISTS listings_au",
+]
+
+def _listing_values(l):
+    role = l.get("role") or "offer"
+    loc = l.get("location")
+    if isinstance(loc, dict):
+        city = loc.get("city") or ""
+    elif isinstance(loc, str):
+        city = loc
+    else:
+        city = ""
+    tags = " ".join(str(t) for t in (l.get("tags") or []))
+    return (role, l.get("vertical") or "", city, l.get("date") or "", tags,
+            l.get("title") or "", l.get("description") or "")
+
+def _sync_index_conn(conn, snap):
+    """Sync listings table + listings_fts full-text index.
+    Explicitly rebuilds listings_fts to ensure rowid alignment (robust against trigger failures).
+    """
+    for stmt in _SCHEMA:
+        conn.execute(stmt)
+    raw = (snap or {}).get("listings") or {}
+    if isinstance(raw, dict):
+        listings_data = [(lid, l) for lid, l in raw.items()]
+    else:
+        listings_data = [(l.get("id"), l) for l in raw]
+    # Clear both tables
+    conn.execute("DELETE FROM listings_fts")
+    conn.execute("DELETE FROM listings")
+    # Insert fresh data with proper alignment
+    for lid, l in listings_data:
+        values = _listing_values(l)
+        row = (lid,) + values
+        cur = conn.execute(
+            "INSERT INTO listings(id, role, vertical, city, date, tags, title, description) "
+            "VALUES(?,?,?,?,?,?,?,?)", row)
+        # explicit FTS row keyed by the REAL rowid (external-content table:
+        # columns are title, description, tags; rowid links back to listings)
+        conn.execute(
+            "INSERT INTO listings_fts(rowid, title, description, tags) VALUES(?,?,?,?)",
+            (cur.lastrowid, values[5], values[6], values[4]))
+# ---------------------------------------------------------------------------
 
 def _db():
     conn = sqlite3.connect(_cfg["db_file"], timeout=30)
@@ -70,6 +139,7 @@ def write_snapshot(snap):
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('snap', ?)",
                          (json.dumps(snap),))
+            _sync_index_conn(conn, snap)  # C6: derived index, SAME transaction
             conn.commit()
         finally:
             conn.close()
@@ -89,3 +159,54 @@ def write_snapshot(snap):
             os.fsync(dfd)
         finally:
             os.close(dfd)
+
+def search_ids(query):
+    """Search listings via FTS5 (sqlite mode). Returns list of listing IDs.
+
+    Sanitizes query (word chars only) to avoid FTS5 syntax errors.
+    Returns None if FTS5 is unavailable (fallback to full scan), [] if no matches.
+    """
+    if not query:
+        return None
+    # Sanitize: word chars only + normalize spaces
+    q = re.sub(r"\W+", " ", query).strip().lower()
+    if not q:
+        return None
+    conn = _db()
+    try:
+        rowids = [r[0] for r in conn.execute(
+            "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ?",
+            (q,)).fetchall()]
+        if not rowids:
+            return []
+        marks = ",".join("?" * len(rowids))
+        rows = conn.execute(
+            f"SELECT id FROM listings WHERE rowid IN ({marks})",
+            rowids).fetchall()
+        return [r[0] for r in rows]
+    except sqlite3.OperationalError:
+        # Index not ready (fresh db: FTS tables exist only after the first
+        # persisted snapshot). None = "index unavailable" -> caller falls
+        # back to the legacy substring scan; [] stays a genuine no-match.
+        return None
+    finally:
+        conn.close()
+
+def search_listings(conn, query):
+    """Search listings via FTS5 (sqlite mode). Returns list of listing IDs.
+
+    Performs a MATCH query against listings_fts, joined back to listings
+    to return the IDs. If FTS5 table doesn't exist (fresh/db issue),
+    returns empty list (caller falls back to JSON filtering if needed).
+    """
+    if not query:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT l.id FROM listings l "
+            "JOIN listings_fts f ON l.rowid = f.rowid "
+            "WHERE f MATCH ?", (query,)).fetchall()
+        return [r[0] for r in rows]
+    except sqlite3.OperationalError:
+        # FTS5 table might not exist yet (e.g. fresh db) -> no matches from FTS
+        return []
