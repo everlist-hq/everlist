@@ -20,3 +20,7 @@
 - `docs/backlog-v3.md` → P1 prep ticked
 - `docs/pilot-plan.md` → wedge definition aligned (2 organizers, 3 bookings)
 - `docs/worklog.md` → updated
+## 2026-09-12 — Deployment guide finalized for actual purchase
+- docs/DEPLOY.md rewritten: provider = cloudserver.net LEB special (2GB/1vCPU/50GB, LA, Ubuntu 24.04, $23.88/yr ordered 2026-09-12 via PayPal, pending provisioning)
+- corrected 2026 price table (Hetzner post-hike €7.79, Godlike fallback €3.49/mo), added HUB_AGENT_SEED + wrapper venv to script description, migration cheat-sheet row
+- Synced to experiments/agent-hub-v2/docs/DEPLOY.md (TREE_SYNCED)
