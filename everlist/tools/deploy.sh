@@ -1,91 +1,104 @@
 #!/bin/bash
-set -e
+# EverList production deployment — Ubuntu 22.04/24.04, run as root.
+# Idempotent: safe to re-run; existing state.json is preserved.
+set -euo pipefail
 
-echo "=== EverList VPS Deployment ==="
+DOMAIN="${DOMAIN:-everlist.network}"
+REPO_URL="${REPO_URL:-https://github.com/everlist-hq/everlist.git}"
+HUB_PORT="${HUB_PORT:-8802}"
+INSTALL_DIR=/home/deploy/everlist
+ENVF=/home/deploy/everlist.env
 
-# Detect architecture
-ARCH=$(uname -m)
-if [ "$ARCH" = "aarch64" ]; then
-    CADDY_URL="https://download.caddyserver.com/caddy-2.8.4-linux-arm64.tar.gz"
-elif [ "$ARCH" = "x86_64" ]; then
-    CADDY_URL="https://download.caddyserver.com/caddy-2.8.4-linux-amd64.tar.gz"
-else
-    echo "[ERROR] Unsupported architecture: $ARCH"
-    exit 1
-fi
+[ "$(id -u)" -eq 0 ] || { echo "ERROR: run as root"; exit 1; }
+echo "=== EverList deployment: $DOMAIN -> :$HUB_PORT ==="
 
-# 1. Update & install dependencies
-echo "[1/6] Installing dependencies..."
+# 1. system deps (incl. Caddy apt repo prerequisites)
 apt-get update
-apt-get install -y python3-pip python3-venv git curl wget ufw
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  python3 git curl ufw debian-keyring debian-archive-keyring \
+  apt-transport-https gnupg
 
-# 2. Install Caddy (Auto-HTTPS)
-echo "[2/6] Installing Caddy..."
-curl -1sS "$CADDY_URL" | tar xz
-cp caddy /usr/local/bin/
-cp /etc/systemd/system/caddy.service /etc/systemd/system/
-systemctl daemon-reload
+# 2. Caddy via official apt repo (arch-independent, ships its own systemd unit)
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
+
+# 3. Caddyfile: auto-HTTPS reverse proxy to the hub
+mkdir -p /etc/caddy
+cat > /etc/caddy/Caddyfile <<EOF
+$DOMAIN {
+encode zstd gzip
+reverse_proxy 127.0.0.1:$HUB_PORT
+}
+EOF
 systemctl enable caddy
+systemctl restart caddy
 
-# 3. Setup deploy user & clone repo
-echo "[3/6] Setting up deploy user..."
-if ! id deploy &>/dev/null; then
-    useradd -m -s /bin/bash deploy
+# 4. deploy user + repo (pull if already cloned — preserves state.json)
+id -u deploy &>/dev/null || useradd -m -s /bin/bash deploy
+if [ -d "$INSTALL_DIR/.git" ]; then
+  git -C "$INSTALL_DIR" pull --ff-only || echo "[warn] git pull failed; keeping existing tree"
+else
+  git clone "$REPO_URL" "$INSTALL_DIR"
 fi
-cd /home/deploy
-mkdir -p everlist
-cd everlist
-git clone https://github.com/everlist-hq/everlist.git .
 
-# 4. Setup Python Environment
-echo "[4/6] Setting up Python env..."
-python3 -m venv venv
-source venv/bin/activate
+# 5. production env file — real admin/booking keys generated HERE (0600).
+# The hub is stdlib-only python; no agent_seed is needed for the hub itself.
+if [ ! -s "$ENVF" ]; then
+  umask 077
+  {
+    echo "HUB_PORT=$HUB_PORT"
+    echo "HUB_ENV=production"
+    echo "HUB_STORAGE_MODE=sqlite"
+    echo "HUB_ADMIN_KEY=$(openssl rand -hex 32)"
+    echo "HUB_BOOKING_KEY=$(openssl rand -hex 32)"
+  } > "$ENVF"
+  echo "[secrets] generated $ENVF (admin + booking keys)"
+else
+  echo "[secrets] keeping existing $ENVF"
+fi
 
-# App is stdlib-only, but cryptography needed for signing
-pip install cryptography
-
-# 5. Create Systemd Service
-echo "[5/6] Creating systemd service..."
-cat > /etc/systemd/system/everlist.service <<'SERVICE'
+# 6. systemd unit (hub runs from repo root, as deploy user)
+cat > /etc/systemd/system/everlist.service <<EOF
 [Unit]
 Description=EverList Hub
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=deploy
-WorkingDirectory=/home/deploy/everlist/experiments/agent-hub-v2
-Environment="HUB_PORT=8802"
-Environment="HUB_STORAGE_MODE=file"
-Environment="HUB_ENV=production"
-ExecStart=/home/deploy/everlist/venv/bin/python app.py
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$ENVF
+ExecStart=/usr/bin/python3 -u $INSTALL_DIR/app.py
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-SERVICE
+EOF
 
+chown -R deploy:deploy "$INSTALL_DIR"
+chown deploy:deploy "$ENVF"
+chmod 600 "$ENVF"
 systemctl daemon-reload
 systemctl enable everlist
+systemctl restart everlist
 
-# 6. Firewall setup
-echo "[6/6] Configuring firewall..."
+# 7. firewall (22 first so SSH survives)
 ufw allow 22/tcp
-ufw allow 80/tcp    # ACME certificate issuance
-ufw allow 443/tcp   # HTTPS
-ufw enable --force
+ufw allow 80/tcp   # ACME http-01
+ufw allow 443/tcp
+ufw --force enable
 
-echo "=== Deployment complete ==="
-echo ""
-echo "Next steps:"
-echo "1. Generate secrets on VPS:"
-echo "   mkdir -p /home/deploy/everlist/experiments/agent-hub-v2/.secrets"
-echo "   openssl rand -hex 32 > /home/deploy/everlist/experiments/agent-hub-v2/.secrets/agent_seed"
-echo "   chmod 600 /home/deploy/everlist/experiments/agent-hub-v2/.secrets/agent_seed"
-echo ""
-echo "2. Set DNS: Point everlist.network A record to this VPS IP"
-echo ""
-echo "3. Verify:"
-echo "   curl -s https://everlist.network/health"
-echo "   systemctl status everlist"
+echo "=== deployment complete ==="
+sleep 2
+systemctl --no-pager -l status everlist | head -6 || true
+echo
+echo "1) Point DNS A record of $DOMAIN at this server's IP"
+echo "   (Oracle ONLY: also open 80/443 in the VCN security list!)"
+echo "2) Verify:  curl -s https://$DOMAIN/.well-known/agent-hub.json"
+echo "3) Logs:    journalctl -u everlist -f"
