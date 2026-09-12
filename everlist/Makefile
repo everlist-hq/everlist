@@ -64,6 +64,8 @@ test: ## G2 suite + A2A E2E against an owned hub; trap guarantees cleanup; bound
 		$(PYTHON) test_suite.py || exit 1; \
 		echo "=== Storage adapter (1.1 file+sqlite) ==="; \
 		$(PYTHON) test_storage.py || exit 1; \
+		echo "=== Storage E2E (restart/idempotency/fail-closed, file+sqlite) ==="; \
+		$(PYTHON) test_storage_e2e.py || exit 1; \
 		echo "=== Hardening suite (email/archive/ids) ==="; \
 		$(PYTHON) test_hardening.py || exit 1; \
 		echo "=== Concurrency battery (B2) ==="; \
