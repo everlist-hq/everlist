@@ -15,7 +15,7 @@ echo "=== EverList deployment: $DOMAIN -> :$HUB_PORT ==="
 # 1. system deps (incl. Caddy apt repo prerequisites)
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  python3 git curl ufw debian-keyring debian-archive-keyring \
+  python3-pip python3-venv git curl ufw debian-keyring debian-archive-keyring \
   apt-transport-https gnupg
 
 # 2. Caddy via official apt repo (arch-independent, ships its own systemd unit)
@@ -45,8 +45,7 @@ else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# 5. production env file — real admin/booking keys generated HERE (0600).
-# The hub is stdlib-only python; no agent_seed is needed for the hub itself.
+# 5. production env file — real admin/booking/seed keys generated HERE (0600).
 if [ ! -s "$ENVF" ]; then
   umask 077
   {
@@ -55,8 +54,9 @@ if [ ! -s "$ENVF" ]; then
     echo "HUB_STORAGE_MODE=sqlite"
     echo "HUB_ADMIN_KEY=$(openssl rand -hex 32)"
     echo "HUB_BOOKING_KEY=$(openssl rand -hex 32)"
+    echo "HUB_AGENT_SEED=$(openssl rand -hex 32)"
   } > "$ENVF"
-  echo "[secrets] generated $ENVF (admin + booking keys)"
+  echo "[secrets] generated $ENVF (admin + booking + agent seed)"
 else
   echo "[secrets] keeping existing $ENVF"
 fi
@@ -81,14 +81,41 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+# 7. wrapper unit (agentverse chat agent, depends on hub)
+cat > /etc/systemd/system/everlist-wrapper.service <<'WRAPPER'
+[Unit]
+Description=EverList Agentverse Wrapper
+After=everlist.service
+Requires=everlist.service
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/everlist
+EnvironmentFile=/home/deploy/everlist.env
+Environment="HUB_URL=http://127.0.0.1:8802"
+ExecStart=/home/deploy/everlist/venv/bin/python wrapper.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+WRAPPER
+
+# 8. install wrapper dependencies (idempotent)
+cd "$INSTALL_DIR"
+source venv/bin/activate
+pip install --quiet uagents httpx || echo "[warn] wrapper venv update failed"
+
+# 9. permissions
 chown -R deploy:deploy "$INSTALL_DIR"
 chown deploy:deploy "$ENVF"
 chmod 600 "$ENVF"
 systemctl daemon-reload
-systemctl enable everlist
-systemctl restart everlist
+systemctl enable everlist everlist-wrapper
+systemctl restart everlist everlist-wrapper
 
-# 7. firewall (22 first so SSH survives)
+# 10. firewall
 ufw allow 22/tcp
 ufw allow 80/tcp   # ACME http-01
 ufw allow 443/tcp
@@ -100,5 +127,6 @@ systemctl --no-pager -l status everlist | head -6 || true
 echo
 echo "1) Point DNS A record of $DOMAIN at this server's IP"
 echo "   (Oracle ONLY: also open 80/443 in the VCN security list!)"
-echo "2) Verify:  curl -s https://$DOMAIN/.well-known/agent-hub.json"
-echo "3) Logs:    journalctl -u everlist -f"
+echo "2) Verify hub:  curl -s https://$DOMAIN/.well-known/agent-hub.json"
+echo "3) Verify wrapper: curl -s https://$DOMAIN/wrapper/health"
+echo "4) Logs:    journalctl -u everlist -f"
