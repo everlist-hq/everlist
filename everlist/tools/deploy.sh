@@ -102,9 +102,11 @@ RestartSec=5
 WantedBy=multi-user.target
 WRAPPER
 
-# 8. install wrapper dependencies (idempotent)
+# 8. install wrapper dependencies (idempotent; venv is required by wrapper ExecStart)
 cd "$INSTALL_DIR"
+[ -x venv/bin/python ] || python3 -m venv venv
 source venv/bin/activate
+pip install --quiet --upgrade pip
 pip install --quiet uagents httpx || echo "[warn] wrapper venv update failed"
 
 # 9. permissions
