@@ -243,3 +243,39 @@ Every mutating POST route carries a per-source fixed-window backstop (`_auth_all
 ### 18. Organizer payout keys (M9)
 
 `POST /accounts/payout {payout_pk}` (login token OR account_code proves control): registers the organizer's Midnight **coin PUBLIC key** (64-hex, 32 bytes) on the account. The hub stores **public keys only** — secret keys and seeds are structurally rejected (format wall) and never needed: escrow release/refund pays the coin key fixed at contract creation; the payout key tells agents/the hub where future escrows should point. Replace anytime (previous key dies); chat: `set-payout <64-hex>`. Legacy accounts migrate via the load-time field migration.
+
+## 19. Payment terms policy (owner-pinned, 2026-09-12)
+
+Binding product policy agreed with the owner. Implementation items: C11, C12, M16, M17 (backlog-v3).
+
+### 19a. Agreement semantics
+
+- The merchant sets **payment terms on the listing**: rail (escrow | instant), refund window, deposit requirement (amount), price.
+- **Booking = agreement.** The API enforces that a booking is created against the terms attached to the listing; agents see terms before booking (manifest + listing payload).
+- **Changes after booking require both parties.** No unilateral rewrite: merchant courtesy refunds are voluntary; terms changes create a new offer the buyer must accept.
+
+### 19b. Rails
+
+| Rail | Default? | Use |
+| --- | --- | --- |
+| **Midnight escrow** | **Default whenever real money attaches** | events, marketplace, jobs, services — anything where wrong-delivery/no-show matters |
+| x402 instant | merchant opt-in per listing | small amounts, trusted repeat customers, digital fulfillment; no refund window (that is the trade-off) |
+
+### 19c. Refund windows (defaults, merchant may override per listing)
+
+| Vertical | Default window |
+| --- | --- |
+| events | event end + 72h |
+| services / gigs | fulfillment + 72h |
+| marketplace | delivery confirmation + 7 days |
+
+Window mechanics are already built (M4 permissionless `timeoutRefund`): before the deadline the buyer can refund themselves; after the deadline the permissionless refund returns funds to the buyer's stored key; the merchant's protection gap (auto-release after a quiet deadline) is backlog M17.
+
+### 19d. Deposits and buyer gating
+
+- **Deposit = the standard merchant lever** (backlog C12 flag): a required deposit is just escrow engaged before fulfillment; merchant sets the amount on the listing.
+- **Tier-2 buyer gating** (`require_verified_buyer`, backlog C11): premium flag for high-value listings. The identity machinery is fully built (M13/M14); only the listing flag + booking-time check remain. Deferred until Tier-2 is live on the production server.
+
+### 19e. Post-settlement undo
+
+Mutual refund after settlement (buyer wants refund, merchant agrees) requires a new `mutualRefund` circuit — both role commitments must prove, funds return to the buyer's stored key; neither party alone can move anything. Backlog M16. Until then, post-settlement refunds are off-contract manual payments.
