@@ -374,3 +374,42 @@ At boot, aggregates are recomputed from booking history (channel split + weighti
 so pre-S6 ratings aggregate under the new rules too. Aggregates stay absent from the
 ledger; ratings carry no identity data. Legacy plain averages are superseded by
 `rating_avg` (weighted).
+
+## 22. Verified-buyer gating (C11, owner-approved 2026-09-13)
+
+Merchants can restrict a listing to Tier-2-verified buyers (the M14 machinery
+wired as a product lever). The gate is the strongest trust lever EverList offers
+and the merchant's explicit choice per listing — never a platform-wide lock.
+
+### 22a. The flag
+
+`require_verified_buyer` is an optional listing field, strict boolean (400 on
+anything else, `null` treated as unset). It is part of the public listing face
+(`_pub_listing` passes it through): buyers see the requirement BEFORE booking.
+
+### 22b. Enforcement is server-side only
+
+`POST /book` on a gated listing checks the ALREADY-computed server-side
+`acct_verified` (account principal + `human_verified` from midnight-zk /
+admin-vouch). The client-asserted `human_verified` stub NEVER satisfies the
+gate. The 403 names the requirement and the fix (`/accounts/verify-midnight`).
+Provenance flows through: the booking stores the server-derived `verified_by`.
+
+### 22c. Owner control
+
+Settable at creation and via manage `edit` pre-booking (strict-boolean wall,
+`require_verified_buyer` listed in the editable-set error). Non-owners cannot
+flip it (403). Gate flip-off then re-arm is tested; post-booking flips never
+rewrite existing bookings.
+
+### 22d. Chat
+
+Rich format key `verified_only: yes|no` (case-insensitive, `true`/`false`
+accepted); junk values refuse with guidance instead of silently flipping the
+gate. `_fmt_listing` shows a verified-buyers-only line for gated listings.
+
+### 22e. Composition with private deals (P2)
+
+Claim code and verification are INDEPENDENT walls on a private gated deal:
+valid claim without verification is still 403; verification without claim is
+still 404. Neither substitutes for the other.

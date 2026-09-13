@@ -167,12 +167,14 @@ def _fmt_listing(l: dict) -> str:
         else:
             _dep = f" · deposit {pt.get('deposit_required')}" if pt.get("deposit_required") else ""
             extra.append(f"  🛡 escrow · refund window {pt.get('refund_window_hours', '?')}h{_dep}")
+    if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
+        extra.append("  ✅ verified buyers only — Tier-2 Midnight sign-in required to book")
     return line + ("\n" + "\n".join(extra) if extra else "")
 
 
 _RICH_KEYS = ("title", "category", "date", "price", "location", "capacity",
               "description", "tags", "url", "merchant", "vertical", "provider",
-              "duration_minutes", "receive")  # S6: receive = instant-rail payout wallet (0x...)
+              "duration_minutes", "receive", "verified_only")  # S6: receive = instant-rail payout wallet (0x...); C11: verified_only = Tier-2 buyer gate
 
 
 def _parse_rich(body: str) -> dict | None:
@@ -663,7 +665,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         tail = [rich.get(k, "") for k in ("category", "date", "price", "location", "capacity")]
         parts += tail
         extra = {k: rich[k] for k in ("description", "tags", "url", "vertical",
-                                      "provider", "duration_minutes", "receive") if rich.get(k)}
+                                      "provider", "duration_minutes", "receive", "verified_only") if rich.get(k)}
     else:
         parts = [p.strip() for p in body.split("|")]
         extra = {}
@@ -780,6 +782,14 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             except ValueError:
                 return "deposit must be a number, e.g. 'deposit: 5'"
         payload["payment_terms"] = _ptc
+    # C11 (SPEC section 22): verified_only: yes|no - strict parse; anything else
+    # refuses rather than silently flipping the Tier-2 buyer gate.
+    _rvb = str(extra.get("verified_only") or "").strip().lower()
+    if _rvb:
+        if _rvb not in ("yes", "no", "true", "false"):
+            return ("verified_only must be yes or no, e.g. 'verified_only: yes' - "
+                    "it restricts booking to Tier-2-verified accounts (verify-midnight)")
+        payload["require_verified_buyer"] = _rvb in ("yes", "true")
     try:
         if sess:
             token = sess["tokens"]["list"]   # sub=acct-<id>: listing owned by the ACCOUNT
@@ -1046,7 +1056,7 @@ _HELP = (
     "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
     "• deal <title> | <price> | <date> | <location> | [category] — PRIVATE escrow deal; you get a one-time claim code to send the other party\n"
     "• book <id> <pvt-claim> <name> — book a private deal (claim code = the key)\n"
-    "• list\n title: … description: … tags: … url: … — rich listing (description, tags, link)\n"
+    "• list\n title: … description: … tags: … url: … verified_only: yes — rich listing (verified_only = Tier-2 buyer gate)\n"
     "• signup — create a keypair organizer account (seed shown ONCE; cap 25, no per-listing codes)\n"
     "• login-seed <seed> — act as your keypair account from any chat (24h)\n"
     "• login <account_code> — legacy code accounts (24h)\n"

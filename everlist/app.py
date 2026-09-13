@@ -762,7 +762,7 @@ def _openapi_spec():
                 "get": op("Public listings (query: vertical, archived)", "listings",
                           note="?archived=1 is OWNER-ONLY (auth required)"),
                 "post": op("Create listing (manage_code ONCE; visibility:private adds a one-time claim_code)", "listings", sec=tok,
-                           note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food)")},
+                           note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food); optional require_verified_buyer: true gates booking to Tier-2-verified accounts (SPEC section 22)")},
             "/listings/{id}": {"get": op("One listing, full rich record (private deals need ?claim= or X-Claim-Code)", "listings",
                                         note="404 unknown / 410 archived")},
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
@@ -776,7 +776,7 @@ def _openapi_spec():
             "/book/{id}": {"get": op("Private booking details", "bookings", sec=tok,
                                     note="credential = booking secret (shown once at creation), via X-Hub-Token header")},
             "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0 / DIRECT on the instant rail; testnet instant bookings accept an optional X-PAYMENT EIP-3009 header -> verified payer wallet bound for S6 review integrity)", "bookings", sec=tok,
-                                 note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms)")},
+                                 note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms). Listings with require_verified_buyer accept ONLY Tier-2-verified accounts (server-side; the human_verified stub never counts, SPEC section 22)")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
@@ -1872,7 +1872,14 @@ class Handler(BaseHTTPRequestHandler):
                 data["receive_addr"] = _rx
             else:
                 data.pop("receive_addr", None)
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr"}
+            # C11: optional verified-buyer gate (SPEC section 22) — booking restricted
+            # to Tier-2-verified accounts (server-side proof). Must be a real boolean.
+            if data.get("require_verified_buyer") is not None:
+                if not isinstance(data["require_verified_buyer"], bool):
+                    return self._json(400, {"error": "require_verified_buyer must be a boolean"})
+            else:
+                data.pop("require_verified_buyer", None)
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # P2: private deals — 'listed but not public'. visibility=private keeps a
             # listing out of search/suggest/browse; access needs the one-time claim
@@ -1986,9 +1993,10 @@ class Handler(BaseHTTPRequestHandler):
                              | set(_sch.get("optional", []))) & _allowed_fields)
                 changes = {k: data[k] for k in editable if k in data}
                 _pt_edit = "payment_terms" in data  # C12: terms are owner-editable pre-booking; booked bookings keep their snapshot
-                if not changes and not _pt_edit:
+                _rvb_edit = "require_verified_buyer" in data  # C11: verified-buyer gate is owner-editable pre-booking
+                if not changes and not _pt_edit and not _rvb_edit:
                     return self._json(400, {"error": "no editable fields given",
-                                            "editable": sorted(editable)})
+                                            "editable": sorted(editable | {"require_verified_buyer"})})
                 if "price" in changes:
                     try:
                         np = float(changes["price"])
@@ -2023,6 +2031,10 @@ class Handler(BaseHTTPRequestHandler):
                     if _nterr:
                         return self._json(400, {"error": _nterr})
                     changes["payment_terms"] = _nt if _nt is not None else _default_payment_terms(listing["vertical"])
+                if _rvb_edit:  # C11: the gate is owner-controlled and must be a real boolean (SPEC section 22)
+                    if not isinstance(data["require_verified_buyer"], bool):
+                        return self._json(400, {"error": "require_verified_buyer must be a boolean"})
+                    changes["require_verified_buyer"] = data["require_verified_buyer"]
                 if "url" in changes:
                     u3 = str(changes["url"]).strip()
                     if not (u3.startswith("http://") or u3.startswith("https://")) or len(u3) > 300:
@@ -2127,6 +2139,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(404, {"error": f"no listing {lid}"})
             if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
                 return self._json(409, {"error": "listing archived - not bookable"})
+            if listing.get("require_verified_buyer") and not acct_verified:
+                # C11 (SPEC section 22): the merchant demanded Tier-2-verified buyers.
+                # The client-asserted human_verified stub NEVER satisfies this gate —
+                # only server-side verification (midnight-zk / admin-vouch) counts.
+                return self._json(403, {"error": "this listing requires a Tier-2-verified buyer",
+                    "note": "sign in to your account and verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
+                    "verified": False})
             v = listing["vertical"]
             missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
