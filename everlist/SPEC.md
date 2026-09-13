@@ -279,3 +279,55 @@ Window mechanics are already built (M4 permissionless `timeoutRefund`): before t
 ### 19e. Post-settlement undo
 
 Mutual refund after settlement (buyer wants refund, merchant agrees) requires a new `mutualRefund` circuit — both role commitments must prove, funds return to the buyer's stored key; neither party alone can move anything. Backlog M16. Until then, post-settlement refunds are off-contract manual payments.
+
+## 20. Private deals (P2, owner-approved 2026-09-13)
+
+**EverList as the middleman for private transactions.** Any two parties (secondhand sale, freelance
+job, ticket resale) get escrow protection without building it themselves: one party creates a
+**private listing** and sends the other a claim code; booking locks the money in escrow; release/
+refund follows the normal contract rules. The hub never sees secrets; settlement needs no operator.
+
+### 20a. Visibility semantics (owner-corrected naming)
+
+- **`public`** — the default: listed and discoverable (search, suggest, browse, direct GET).
+- **`private`** — **listed, not public**: exists and is directly accessible to whoever holds its
+  one-time **claim code**, but never appears in `/search`, `/listings` (public branch), `/suggest`,
+  or any discovery surface. Private is NOT archived (owner can still manage/book it; existing flows
+  keep working; it becomes discoverable again via `make_public`).
+- Unknown values are rejected (400). No other visibility values exist.
+
+### 20b. Claim codes
+
+- Minted server-side (`pvt-` + 16 hex, 64-bit), **shown ONCE** at creation, stored as sha256 only
+  (same anti-spoof pattern as manage_code; `claim_code_hash` is a server-only field and a reserved
+  name community schemas cannot declare).
+- Accepted via `X-Claim-Code` header or `?claim=` on GET, and via the booking field `claim`.
+- **No existence oracle:** GET/booking of a private listing without a valid claim returns the exact
+  unknown-id answer (404 `no listing <id>`) — probing sequential ids learns nothing.
+- Owner auth (token principal == listing owner) always passes. Claim codes are consumed by use,
+  never stored in plaintext, never echoed in any response.
+- Rotation: `manage action=make_private` mints a FRESH claim (the old one dies immediately);
+  `manage action=make_public` deletes the hash and re-lists the deal publicly.
+
+### 20c. p2p vertical
+
+Community schema `schemas/p2p.json` (fail-closed loader): required title/price/date/location;
+categories secondhand/freelance/tickets/custom; booking identity `buyer` (fields buyer, notes,
+quantity). Works on every hub that ships the schema; hubs without it just reject p2p listings
+(chat falls back to public `list`).
+
+### 20d. Chat flow (agent path)
+
+- `deal <title> | <price> | <date> | <location> | [category]` (or rich format, incl. C12 keys
+  rail/refund_window/deposit) -> returns listing id + one-time claim code.
+- Share = id + claim code. Receiver: `book <id> <pvt-claim> <name>` in chat (free deals book
+  in-chat; paid deals get SDK guidance including the claim), or SDK booking with `claim` field.
+- Share page (`/l/<id>` human-clickable) is planned post-VPS (plan B, deferred).
+
+### 20e. Policy
+
+- Escrow rail is the default for private deals; instant (x402) is the explicit opt-in for trusted
+  micro-deals (C12 semantics apply unchanged).
+- The hub escrows **money**, not goods: correctness of the traded item remains the parties'
+  business; escrow removes the who-pays-first problem and enforces the refund window.
+- Real money stays gated behind the existing real-money gate (owner approval / C10 conditions).

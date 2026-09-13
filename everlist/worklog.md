@@ -20,21 +20,17 @@
 - `docs/backlog-v3.md` → P1 prep ticked
 - `docs/pilot-plan.md` → wedge definition aligned (2 organizers, 3 bookings)
 - `docs/worklog.md` → updated
-## 2026-09-12 — Deployment guide finalized for actual purchase
-- docs/DEPLOY.md rewritten: provider = cloudserver.net LEB special (2GB/1vCPU/50GB, LA, Ubuntu 24.04, $23.88/yr ordered 2026-09-12 via PayPal, pending provisioning)
-- corrected 2026 price table (Hetzner post-hike €7.79, Godlike fallback €3.49/mo), added HUB_AGENT_SEED + wrapper venv to script description, migration cheat-sheet row
-- Synced to experiments/agent-hub-v2/docs/DEPLOY.md (TREE_SYNCED)
+## 2026-09-12 — Full tech review (pre-VPS-launch)
+- Live stack verified: hub+wrapper up, /search /suggest /descriptor 200, demo data intact
+- make test re-run green (EXIT=0, 59 PASSED lines) after resolving gate-vs-live-stack port collision (expected behavior)
+- FOUND+FIXED CI regression: 6 test suites spawned children via hardcoded /opt/venv/bin/python (introduced during deploy-script work) — GitHub runners lack that path, CI red since 7f4add2. Restored portable sys.executable (pattern already used by chat_e2e/single_instance/h14); all 6 suites re-passed under venv runtime (CI-equivalent); both trees synced
+- Registry 16/16, x402 11/11+12/12 under venv runtime confirmed
 
-## 2026-09-13 — C12 Payment Terms + Gate Isolation
-
-| Item | Status | Artifacts |
-| --- | --- | --- |
-| C12 payment terms (SPEC §19a–d) | ✅ suite 25/25 | `test_c12_payment_terms.py`, app.py, chatlib.py |
-| Isolated test gate (make test) | ✅ full gate 672 PASS / 0 FAIL incl. A2A E2E | Makefile (`gate-up`/`gate-down`, GATE_RUNDIR/GATE_PORT) |
-
-- Hub: `payment_terms {rail: escrow|instant, refund_window_hours, deposit_required}` — per-vertical defaults injected at create and at load (legacy migration); validation walls (bad rail, window bounds, instant+window, deposit > price, unknown keys).
-- Consent: paid bookings on custom-terms listings must echo `accepted_payment_terms` exactly (409 carries the terms); default-terms bookings stay friction-free; free listings exempt; every booking keeps a server-copied terms snapshot (later edits never rewrite done deals); owner-editable pre-booking via manage (null = reset).
-- Instant rail: books as escrow `DIRECT` (settled at booking) — no confirm/cancel (honest errors), rating opens, `escrow_ref` rejected.
-- Chat: rich `rail:` / `refund_window:` / `deposit:` keys, terms shown in listing display and paid-booking guidance; OpenAPI notes updated; SDK unchanged (echo passes through `book(**fields)`).
-- Gate isolation lesson: `make test` previously shared `.run/` with the live stack — its `down` step TERM'd the live wrapper and `up` hit the H4 state lock. The gate now runs a fully isolated stack (own rundir/port, no standalone wrapper) and can never collide with `make up` again.
-
+## 2026-09-13 — P2: private escrow deals (owner-approved, plan C)
+- New: `visibility: private` (listed, not public — owner-corrected naming, not 'unlisted') + one-time claim codes (pvt-…, sha256-stored, server-only field, reserved from community schemas).
+- No-oracle: GET/booking of private deals without valid claim == unknown id (404, same text shape); claim via X-Claim-Code, ?claim=, or booking field.
+- Discovery walls: /search (FTS + legacy), /listings public branch, /suggest, events quick-routes all exclude private; owner token sees own deals in /listings and can GET without claim.
+- Manage: make_private (mints FRESH claim, old dies) / make_public (re-lists publicly); added to action allowlist + OpenAPI.
+- New community vertical `p2p` (secondhand/freelance/tickets/custom; booking identity buyer).
+- Chat: `deal …` one-liner (quick + rich, C12 rail/refund_window/deposit keys), inline claim in `book <id> <pvt-…> <name>`, claim-aware SDK guidance, help rows; live B10 help-honesty suite still 12/12.
+- SPEC §20 added. Tests: test_p2_private_deals.py 36/36; full isolated gate ALL PASSED (incl. A2A E2E).

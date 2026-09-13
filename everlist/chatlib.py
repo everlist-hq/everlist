@@ -55,6 +55,22 @@ def _hub_post(hub_url: str, path: str, payload: dict, token: str | None = None) 
             return e.code, {"error": f"hub rejected the request (HTTP {e.code})"}
 
 
+def _hub_get_claim(hub_url: str, path: str, claim: str):
+    """P2: GET with a private-deal claim code (X-Claim-Code header)."""
+    req = urllib.request.Request(hub_url.rstrip("/") + path,
+                                 headers={"X-Claim-Code": claim})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode())
+        except Exception:
+            body = {}
+        body["_status"] = e.code
+        return body
+
+
 def _hub_delete(hub_url: str, path: str, payload: dict, token: str | None = None) -> tuple[int, dict]:
     """H7: DELETE with body (token-authed), surfacing real rejection reasons."""
     body = json.dumps(payload).encode()
@@ -542,6 +558,92 @@ def _delete_account(hub_url: str, sender: str, arg: str) -> str:
             f"{n} listing(s) archived. The public ledger keeps its pseudonymous refs for escrow auditability.")
 
 
+def _create_deal(hub_url: str, sender: str, text: str) -> str:
+    """P2: private escrow deal in one message (p2p vertical, visibility:private).
+    Quick:  deal Bike for sale | 120 | 2026-09-20 | Vienna | secondhand
+    Rich:   deal\n title: ... price: ... date: ... location: ... category: ...
+            description: ... tags: a, b rail: escrow|instant refund_window: 72 deposit: 20
+    Returns the listing id + one-time claim code to send the other party."""
+    sender = (sender or "anonymous-chat")[:128]
+    sess = _session(sender)
+    cap = _ACCOUNT_CAP if sess else _LIST_CAP
+    if _list_counts.get(sender, 0) >= cap:
+        return (f"You've reached the pilot limit of {cap} listings "
+                + ("for this account." if sess else "per agent. 'signup' raises it to 25."))
+    t = text.strip()
+    body = t[12:].strip() if t.lower().startswith("private deal") else t[4:].strip()
+    if not body:
+        return ("To open a private escrow deal:\n"
+                "deal Bike for sale | 120 | 2026-09-20 | Vienna | secondhand\n"
+                "or rich:\ndeal\ntitle: Bike sale\nprice: 120\ndate: 2026-09-20\n"
+                "location: Vienna\ncategory: secondhand\ndescription: ...\ntags: bike\n"
+                "rail: escrow  (or instant)\nrefund_window: 72\ndeposit: 20")
+    rich = _parse_rich(body)
+    if rich is not None:
+        f = rich
+    else:
+        parts = [x.strip() for x in body.split("|")]
+        f = {"title": parts[0] if parts else ""}
+        for _k, _i in (("price", 1), ("date", 2), ("location", 3), ("category", 4)):
+            if len(parts) > _i and parts[_i]:
+                f[_k] = parts[_i]
+    title = str(f.get("title", "")).strip()[:80]
+    if not title:
+        return "A deal needs a title. Example: deal Bike for sale | 120 | 2026-09-20 | Vienna | secondhand"
+    try:
+        price = float(str(f.get("price", "0")).strip() or 0)
+    except ValueError:
+        return "Price must be a number. Example: deal Bike for sale | 120 | 2026-09-20 | Vienna | secondhand"
+    payload = {"vertical": "p2p", "visibility": "private", "title": title,
+               "price": price, "source": "chat-agent",
+               "date": (str(f.get("date", "")).strip() or "TBD"),
+               "location": (str(f.get("location", "")).strip() or "TBD")}
+    if f.get("category"):
+        payload["category"] = str(f["category"]).strip().lower()
+    if f.get("description"):
+        payload["description"] = str(f["description"])[:500]
+    if f.get("tags"):
+        payload["tags"] = [x.strip().lower() for x in re.split(r"[,;]", str(f["tags"])) if x.strip()][:10]
+    pt = {"rail": str(f.get("rail") or "escrow").strip().lower()}
+    if f.get("refund_window"):
+        try:
+            pt["refund_window_hours"] = int(str(f["refund_window"]).strip())
+        except ValueError:
+            return "refund_window must be whole hours (1-720), e.g. refund_window: 72"
+    if f.get("deposit"):
+        try:
+            pt["deposit_required"] = float(str(f["deposit"]).strip())
+        except ValueError:
+            return "deposit must be a number, e.g. deposit: 20"
+    payload["payment_terms"] = pt
+    try:
+        if sess:
+            token = sess["tokens"]["list"]
+        else:
+            _, acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["list"]})
+            token = acc["tokens"]["list"]
+        status, res = _hub_post(hub_url, "/listings", payload, token=token)
+    except Exception:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if status != 201:
+        if "unknown fields" in str(res.get("error", "")):
+            return ("This hub has no p2p vertical yet (community schema missing) — "
+                    "use 'list' for a public listing instead.")
+        return f"Deal rejected: {res.get('error') or res.get('detail') or 'unknown error'}"
+    _list_counts[sender] = _list_counts.get(sender, 0) + 1
+    lid = res.get("id", "?")
+    claim = res.get("claim_code", "")
+    mgmt = ("Owned by your account — manage it without codes." if sess
+            else f"🔑 Manage code (shown ONCE): {res.get('manage_code', '')}")
+    return (f"🔒 Private deal created: '{title}' — {price:g} USD (id: {lid})\n"
+            f"🗝 Claim code (shown ONCE — the ONLY key to this deal): {claim}\n\n"
+            f"Send the other party BOTH things: id {lid} + claim code.\n"
+            f"They book via any EverList agent ('book {lid} {claim} <name>') or the SDK "
+            "(booking field claim=...). Money locks in escrow when they book; you release "
+            "when done — if you stall past the refund window it returns to them automatically.\n"
+            + mgmt)
+
+
 def _create_listing(hub_url: str, sender: str, text: str) -> str:
     """One-prompt listing, two formats:
     Quick:  list Title | category | date | price | location | capacity
@@ -939,6 +1041,8 @@ _HELP = (
     "• search — all listings; 'search jazz' — filtered; 'find me a free yoga class' — natural language\n"
     "• filters: under/over <price> · from/until <YYYY-MM-DD> · soonest · cheapest (combine freely)\n"
     "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
+    "• deal <title> | <price> | <date> | <location> | [category] — PRIVATE escrow deal; you get a one-time claim code to send the other party\n"
+    "• book <id> <pvt-claim> <name> — book a private deal (claim code = the key)\n"
     "• list\n title: … description: … tags: … url: … — rich listing (description, tags, link)\n"
     "• signup — create a keypair organizer account (seed shown ONCE; cap 25, no per-listing codes)\n"
     "• login-seed <seed> — act as your keypair account from any chat (24h)\n"
@@ -1042,6 +1146,10 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     if low == "rate" or low.startswith("rate "):
         return _rate_booking(hub_url, sender, text.strip()[4:].strip())
 
+    # --- P2: private deal creation (one-liner)
+    if low == "deal" or low.startswith("deal ") or low.startswith("deal\n") or low.startswith("private deal"):
+        return _create_deal(hub_url, sender, text)
+
     # --- booking intent (H15: FREE listings book IN CHAT for logged-in accounts;
     # paid listings stay honest guidance - payment is a real gate)
     if low.startswith("book"):
@@ -1049,6 +1157,10 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         bits = rest.split(None, 1)
         lid = bits[0] if bits else ""
         who = bits[1].strip() if len(bits) > 1 else ""
+        mclaim = re.search(r"pvt-[0-9a-f]{16}", who)  # P2: inline claim ('book p2p-3 pvt-... Name')
+        claim = mclaim.group(0) if mclaim else ""
+        if claim:
+            who = who.replace(claim, "").strip()
         target = None
         if lid:
             try:
@@ -1056,6 +1168,13 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
                 target = next((l for l in (d.get("listings") or []) if l.get("id") == lid), None)
             except Exception:
                 target = None
+            if target is None and claim:
+                # P2: private deal — never in /search; fetch directly with the claim
+                try:
+                    t = _hub_get_claim(hub_url, f"/listings/{urllib.parse.quote(lid)}", claim)
+                    target = t if isinstance(t, dict) and t.get("id") == lid else None
+                except Exception:
+                    target = None
         if target is None:
             return (
                 "Bookings need two things EverList enforces for fairness:\n"
@@ -1076,7 +1195,9 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
             return (
                 f"'{target.get('title')}' is a PAID listing ({target.get('price')}).\n"
                 "Payment goes through x402 — use the EverList SDK (agenthub client) "
-                f"with listing id '{lid}'. Free listings book right here in chat."
+                f"with listing id '{lid}'"
+                + (f" and booking field claim='{claim}'" if claim else "")
+                + ". Free listings book right here in chat."
                 + pt_line
             )
         sess = _session(sender)
@@ -1089,6 +1210,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         try:
             sch = _hub_get(hub_url, "/verticals")["verticals"][target["vertical"]]["booking"]
             payload = {"listing_id": lid, sch["identity"]: who[:80]}
+            if claim:
+                payload["claim"] = claim  # P2: private-deal claim (hub validates, never stores)
             status, res = _hub_post(hub_url, "/book", payload, token=sess["tokens"]["book"])
         except Exception:
             return "Sorry — the EverList hub is unreachable right now. Try again shortly."

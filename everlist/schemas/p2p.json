@@ -1,0 +1,10 @@
+{
+  "name": "p2p",
+  "description": "Private peer-to-peer deals (secondhand, freelance, tickets, custom). Created visibility:private with a one-time claim code; escrow holds the money until both sides are done. Contributed community vertical - the P2 reference example.",
+  "required": ["title", "price", "date", "location"],
+  "optional": ["description", "category", "tags", "url", "source"],
+  "categories": ["secondhand", "freelance", "tickets", "custom"],
+  "tracks_capacity": false,
+  "field_types": {"date": "nonempty", "location": "nonempty"},
+  "booking": {"required": ["buyer"], "fields": ["buyer", "notes", "quantity"], "identity": "buyer", "action": "accept+pay"}
+}

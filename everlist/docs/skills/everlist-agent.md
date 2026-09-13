@@ -19,6 +19,8 @@ Agents can send these structured commands via the chat interface:
 | `seek` | `seek jobs --tag python` | List seekers matching criteria.
 | `list` | `list | Offer | Jobs | 2026-10-01 | dev` | Create an offer listing.
 | `apply` | `apply job-123 | "Interested"` | Send a sealed application.
+| `deal` | `deal Bike for sale | 120 | 2026-10-01 | Vienna | secondhand` | Create a PRIVATE escrow deal; returns id + one-time claim code. |
+| `book` + claim | `book p2p-1 pvt-abc... Name` | Book a private deal with its claim code. |
 | `manage` | `manage job-123 | close` | Close your own listing.
 
 ## 3. Taxonomy (Data Structure)

@@ -122,7 +122,7 @@ def _paginate(items, query):
     return items[off:off + lim], off, lim
 
 
-_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash"})
+_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash"})
 
 
 def _pub_listing(l):
@@ -453,7 +453,7 @@ VERTICAL_SCHEMAS = {
 # I1: field ownership. Server-owned fields may never come from clients.
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
     "owner_payout", "created", "booking_secret", "rail", "confirmation",
-    "verified_by", "payment_terms"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms)
+    "verified_by", "payment_terms", "claim"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms)
 
 # EverList taxonomy: category = controlled vocab per vertical (validated at
 # listing time); tags = free-form, normalized (lowercase, trimmed, deduped,
@@ -477,7 +477,7 @@ def normalize_tags(raw):
         if len(tags) >= TAXONOMY["tag_max"]:
             break
     return tags
-RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash"}  # owner = authenticated principal; manage_code_hash = server-only (anti-spoof)
+RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2)
 
 # C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
 # the LISTING; booking = acceptance (paid bookings echo custom terms via
@@ -671,11 +671,11 @@ def _openapi_spec():
             "/listings": {
                 "get": op("Public listings (query: vertical, archived)", "listings",
                           note="?archived=1 is OWNER-ONLY (auth required)"),
-                "post": op("Create listing (returns manage_code ONCE)", "listings", sec=tok,
+                "post": op("Create listing (manage_code ONCE; visibility:private adds a one-time claim_code)", "listings", sec=tok,
                            note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food)")},
-            "/listings/{id}": {"get": op("One listing, full rich record", "listings",
+            "/listings/{id}": {"get": op("One listing, full rich record (private deals need ?claim= or X-Claim-Code)", "listings",
                                         note="404 unknown / 410 archived")},
-            "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/delete a listing", "listings", sec=tok)},
+            "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
             "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, ...)", "listings",
                                   note="from/to = YYYY-MM-DD on the listing date (dateless listings excluded); "
                                        "tags=comma,any-of; sort=date|price|newest (newest = creation order reversed)")},
@@ -881,7 +881,7 @@ class Handler(BaseHTTPRequestHandler):
                                                         "value": info["value"], "payer": info["from"],
                                                         "network": srec.get("network", "base-sepolia")}})
                         _persist_locked()  # settlement record + ledger event persisted together
-                    res = [l for l in LISTINGS if l["vertical"] == "events"]
+                    res = [l for l in LISTINGS if l["vertical"] == "events" and l.get("visibility") != "private"]
                     rich = [{**_pub_listing(l), "premium_meta": {"owner_public": l.get("owner", ""),
                              "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
                              "payment": {"mode": "TESTNET", "verified": True,
@@ -917,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(402, {"x402Version": 1, "error": "invalid payment",
                                         "detail": str(ex)[:120], "mode": "SIMULATED"})
             with LOCK:
-                res = [l for l in LISTINGS if l["vertical"] == "events"]
+                res = [l for l in LISTINGS if l["vertical"] == "events" and l.get("visibility") != "private"]
                 # 'richer': only premium gets per-listing owner contact + inventory ratio
                 rich = [{**_pub_listing(l), "premium_meta": {"owner_public": l.get("owner", ""),
                          "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
@@ -961,8 +961,21 @@ class Handler(BaseHTTPRequestHandler):
                            and (not v or l["vertical"] == v)]
                 return self._json(200, {"count": len(res), "listings": res})
             with LOCK:
+                _me = None  # P2: the owner sees their own private deals here
+                _cred = self.headers.get("X-Hub-Token", "")
+                if _cred:
+                    _pl, _err = None, "missing X-Hub-Token"
+                    for _act in ("list", "book"):
+                        _pl, _err = hublib.verify_token(BOOKING_KEY, _cred, _act, single_use=False)
+                        if _pl: break
+                    if _pl:
+                        _pl, _err = _gen_check(_pl)  # B1
+                    if _pl:
+                        _me = _pl.get("sub")
                 res = [_pub_listing(l) for l in LISTINGS
-                       if not l.get("archived") and (not v or l["vertical"] == v)]
+                       if not l.get("archived")
+                       and (l.get("visibility") != "private" or (l.get("owner") == _me and _me))
+                       and (not v or l["vertical"] == v)]
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
@@ -977,6 +990,24 @@ class Handler(BaseHTTPRequestHandler):
                 l = next((x for x in LISTINGS if x["id"] == lid), None)
             if not l:
                 return self._json(404, {"error": f"no listing {lid}"})
+            if l.get("visibility") == "private":
+                # P2: private deal — claim (?claim= or X-Claim-Code) or owner token.
+                # Everyone else gets the same answer as unknown: no existence oracle.
+                _claim = (parse_qs(u.query).get("claim", [""])[0]
+                          or self.headers.get("X-Claim-Code", "")).strip()
+                _ok = bool(_claim) and l.get("claim_code_hash") == hashlib.sha256(_claim.encode()).hexdigest()
+                if not _ok:
+                    _cred = self.headers.get("X-Hub-Token", "")
+                    _pl, _err = None, "missing X-Hub-Token"
+                    if _cred:
+                        for _act in ("list", "book"):
+                            _pl, _err = hublib.verify_token(BOOKING_KEY, _cred, _act, single_use=False)
+                            if _pl: break
+                    if _pl:
+                        _pl, _err = _gen_check(_pl)  # B1
+                    _ok = bool(_pl) and _pl.get("sub") == l.get("owner")
+                if not _ok:
+                    return self._json(404, {"error": f"no listing {lid}"})
             if l.get("archived"):
                 return self._json(410, {"error": f"listing {lid} archived — its owner can unarchive it"})
             return self._json(200, _pub_listing(l))
@@ -1030,9 +1061,11 @@ class Handler(BaseHTTPRequestHandler):
                     if fts_ids is not None:
                         _idset = set(fts_ids)
                         pool = [l for l in LISTINGS
-                                if not l.get("archived") and l["id"] in _idset]
+                                if not l.get("archived")
+                                and l.get("visibility") != "private" and l["id"] in _idset]
                     res = [l for l in pool
                            if not l.get("archived")
+                           and l.get("visibility") != "private"
                            and (not term or fts_ids is not None
                                 or term in json.dumps(l).lower())
                            and (not fvert or l["vertical"] == fvert)
@@ -1076,7 +1109,7 @@ class Handler(BaseHTTPRequestHandler):
             tags, cats, verts = set(), set(), set()
             with LOCK:
                 for l in LISTINGS:
-                    if l.get("archived"):
+                    if l.get("archived") or l.get("visibility") == "private":
                         continue
                     for t in (l.get("tags") or []):
                         if sq in str(t).lower():
@@ -1728,8 +1761,15 @@ class Handler(BaseHTTPRequestHandler):
                 data["description"] = desc
             else:
                 data.pop("description", None)
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms"}
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
+            # P2: private deals — 'listed but not public'. visibility=private keeps a
+            # listing out of search/suggest/browse; access needs the one-time claim
+            # code (or owner auth). Everyone else gets the same answer as unknown (404).
+            _vis = str(data.get("visibility", "public")).strip().lower()
+            if _vis not in ("public", "private"):
+                return self._json(400, {"error": "visibility must be 'public' or 'private'"})
+            data["visibility"] = _vis
             with LOCK:
                 _pref = v[:4]
                 _n = ID_COUNTERS.get(_pref, 0)
@@ -1744,6 +1784,12 @@ class Handler(BaseHTTPRequestHandler):
                 data["owner"] = p["sub"]   # SERVER-OWNED: authenticated principal, never client-set (anti-spoof for /orders)
                 manage_code = "mgr-" + secrets.token_hex(8)   # ownership secret (64-bit): shown ONCE, stored as sha256 only — NEVER echoed (H9 _pub_listing)
                 data["manage_code_hash"] = hashlib.sha256(manage_code.encode()).hexdigest()
+                claim_code = ""
+                if data["visibility"] == "private":
+                    claim_code = "pvt-" + secrets.token_hex(8)  # shown ONCE, sha256-stored (manage_code pattern)
+                    data["claim_code_hash"] = hashlib.sha256(claim_code.encode()).hexdigest()
+                else:
+                    data.pop("claim_code_hash", None)
                 if schema.get("tracks_capacity"):
                     data["registered"] = 0   # server-initialized counter
                     data["available"] = True  # default; SOLD OUT derives from registered>=capacity at booking time
@@ -1751,15 +1797,20 @@ class Handler(BaseHTTPRequestHandler):
                     data["available"] = bool(data.get("available", True))
                 LISTINGS.append(data)
                 _persist_locked()
-            return self._json(201, {"ok": True, "id": lid, "manage_code": manage_code,
-                "manage_note": "shown ONCE — required to edit or delete this listing; store it now"})
+            _resp = {"ok": True, "id": lid, "manage_code": manage_code,
+                "manage_note": "shown ONCE — required to edit or delete this listing; store it now"}
+            if claim_code:
+                _resp["claim_code"] = claim_code
+                _resp["claim_note"] = "shown ONCE — the only key to this private deal; without it the deal is invisible"
+                _resp["share"] = f"send id {lid} + this claim code; any EverList agent views/books with them"
+            return self._json(201, _resp)
         if path.startswith("/listings/") and path.endswith("/manage"):
             # B3c-ownership: manage code OR logged-in account ownership proves control
             lid = path[len("/listings/"):-len("/manage")]
             code = str(data.get("manage_code", "")).strip()
             action = str(data.get("action", "")).strip().lower()
-            if action not in ("edit", "delete", "archive", "unarchive"):
-                return self._json(400, {"error": "action must be 'edit', 'delete', 'archive' or 'unarchive'"})
+            if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public"):
+                return self._json(400, {"error": "action must be 'edit', 'delete', 'archive', 'unarchive', 'make_private' or 'make_public'"})
             cred = self.headers.get("X-Hub-Token", "")
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
@@ -1797,6 +1848,21 @@ class Handler(BaseHTTPRequestHandler):
                     note = ("hidden from search; existing bookings stay fulfillable"
                             if listing["archived"] else "visible again")
                     return self._json(200, {"ok": True, "id": lid, "archived": listing["archived"], "note": note})
+                if action in ("make_private", "make_public"):
+                    # P2: visibility switch. make_private mints a FRESH claim (the old one dies).
+                    if action == "make_private":
+                        claim_code = "pvt-" + secrets.token_hex(8)
+                        listing["visibility"] = "private"
+                        listing["claim_code_hash"] = hashlib.sha256(claim_code.encode()).hexdigest()
+                        _persist_locked()
+                        return self._json(200, {"ok": True, "id": lid, "visibility": "private",
+                            "claim_code": claim_code,
+                            "note": "new claim code shown ONCE — the previous claim no longer works"})
+                    listing["visibility"] = "public"
+                    listing.pop("claim_code_hash", None)
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "id": lid, "visibility": "public",
+                        "note": "deal is public: discoverable in search, no claim needed"})
                 # H17: edit allowlist is SCHEMA-DERIVED (base + owner-name fields
                 # + the vertical's optional fields, intersected with the
                 # vertical's own fields) so services providers can edit
@@ -1930,8 +1996,24 @@ class Handler(BaseHTTPRequestHandler):
                 hist.append(now)
                 RATE_LIMITS[principal] = hist
             lid = data.get("listing_id")
+            _claim = str(data.pop("claim", "") or self.headers.get("X-Claim-Code", "")).strip()
             with LOCK: listing = next((l for l in LISTINGS if l["id"] == lid), None)
             if not listing: return self._json(404, {"error": f"no listing {lid}"})
+            if listing.get("visibility") == "private":
+                # P2: private deal — booking needs the claim (or owner auth); uniform 404
+                _ok = bool(_claim) and listing.get("claim_code_hash") == hashlib.sha256(_claim.encode()).hexdigest()
+                if not _ok:
+                    _cred = self.headers.get("X-Hub-Token", "")
+                    _pl, _err = None, "missing X-Hub-Token"
+                    if _cred:
+                        for _act in ("list", "book"):
+                            _pl, _err = hublib.verify_token(BOOKING_KEY, _cred, _act, single_use=False)
+                            if _pl: break
+                    if _pl:
+                        _pl, _err = _gen_check(_pl)  # B1
+                    _ok = bool(_pl) and _pl.get("sub") == listing.get("owner")
+                if not _ok:
+                    return self._json(404, {"error": f"no listing {lid}"})
             if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
                 return self._json(409, {"error": "listing archived - not bookable"})
             v = listing["vertical"]
