@@ -34,3 +34,15 @@
 - New community vertical `p2p` (secondhand/freelance/tickets/custom; booking identity buyer).
 - Chat: `deal …` one-liner (quick + rich, C12 rail/refund_window/deposit keys), inline claim in `book <id> <pvt-…> <name>`, claim-aware SDK guidance, help rows; live B10 help-honesty suite still 12/12.
 - SPEC §20 added. Tests: test_p2_private_deals.py 36/36; full isolated gate ALL PASSED (incl. A2A E2E).
+
+## 2026-09-13 — C11 verified-buyer gating shipped
+
+- Listing field `require_verified_buyer` (strict boolean, creation + manage edit, owner-only flips) wiring the M14
+  Tier-2 machinery as the approved merchant lever (SPEC section 22).
+- `/book` gate uses the server-side `acct_verified` predicate only; the client-asserted human_verified stub can never
+  satisfy it. 403 carries the requirement + the verify-midnight fix; bookings store server-derived `verified_by`.
+- Chat: `verified_only: yes|no` rich key (strict parsing), gate shown in the listing face, help updated. OpenAPI notes
+  for /listings + /book.
+- test_c11_verified_buyer.py: 34/34 (boolean walls, stub walls incl. unverified accounts, admin-vouch + midnight-zk
+  booking paths, revoked fail-closed, ungated regression, private-deal composition = two independent walls, chat E2E).
+- Full gate green (ALL PASSED incl. A2A E2E); live stack restarted + live-smoked (stub walled on :8802 as designed).
