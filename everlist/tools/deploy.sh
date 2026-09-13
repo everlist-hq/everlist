@@ -6,6 +6,7 @@ set -euo pipefail
 DOMAIN="${DOMAIN:-everlist.network}"
 REPO_URL="${REPO_URL:-https://github.com/everlist-hq/everlist.git}"
 HUB_PORT="${HUB_PORT:-8802}"
+WEBCHAT_PORT="${WEBCHAT_PORT:-8804}"
 INSTALL_DIR=/home/deploy/everlist
 ENVF=/home/deploy/everlist.env
 
@@ -32,6 +33,11 @@ cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
 encode zstd gzip
 reverse_proxy 127.0.0.1:$HUB_PORT
+}
+
+chat.$DOMAIN {
+encode zstd gzip
+reverse_proxy 127.0.0.1:$WEBCHAT_PORT
 }
 EOF
 systemctl enable caddy
@@ -102,6 +108,26 @@ RestartSec=5
 WantedBy=multi-user.target
 WRAPPER
 
+cat > /etc/systemd/system/everlist-webchat.service <<'WEBCHAT'
+[Unit]
+Description=EverList Web Chat (chat-first web UI)
+After=everlist.service
+Requires=everlist.service
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/everlist
+EnvironmentFile=/home/deploy/everlist.env
+Environment="WEBCHAT_HUB_URL=http://127.0.0.1:8802"
+ExecStart=/home/deploy/everlist/venv/bin/python webchat.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+WEBCHAT
+
 # 8. install wrapper dependencies (idempotent; venv is required by wrapper ExecStart)
 cd "$INSTALL_DIR"
 [ -x venv/bin/python ] || python3 -m venv venv
@@ -114,8 +140,8 @@ chown -R deploy:deploy "$INSTALL_DIR"
 chown deploy:deploy "$ENVF"
 chmod 600 "$ENVF"
 systemctl daemon-reload
-systemctl enable everlist everlist-wrapper
-systemctl restart everlist everlist-wrapper
+systemctl enable everlist everlist-wrapper everlist-webchat
+systemctl restart everlist everlist-wrapper everlist-webchat
 
 # 10. firewall
 ufw allow 22/tcp
@@ -131,4 +157,5 @@ echo "1) Point DNS A record of $DOMAIN at this server's IP"
 echo "   (Oracle ONLY: also open 80/443 in the VCN security list!)"
 echo "2) Verify hub:  curl -s https://$DOMAIN/.well-known/agent-hub.json"
 echo "3) Verify wrapper: curl -s https://$DOMAIN/wrapper/health"
-echo "4) Logs:    journalctl -u everlist -f"
+echo "4) Verify chat: curl -s https://chat.$DOMAIN/api/health"
+echo "5) Logs:    journalctl -u everlist -f"

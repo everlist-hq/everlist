@@ -32,11 +32,11 @@ cat tools/deploy.sh | ssh root@YOUR_VPS_IP 'cat > /tmp/deploy.sh && chmod +x /tm
 The script does, in order:
 
 1. Installs python3, git, ufw + **Caddy via the official apt repo** (arch-independent)
-2. Writes `/etc/caddy/Caddyfile` — auto-HTTPS reverse proxy for `everlist.network`
+2. Writes `/etc/caddy/Caddyfile` — auto-HTTPS reverse proxy for `everlist.network` (hub) and `chat.everlist.network` (web chat UI)
 3. Creates the `deploy` user and clones (or `git pull`s) the repo to `/home/deploy/everlist`
 4. Generates **real production secrets** into `/home/deploy/everlist.env` (0600):
    `HUB_ADMIN_KEY`, `HUB_BOOKING_KEY`, `HUB_AGENT_SEED` — re-runs keep the existing file
-5. Installs `everlist.service` + `everlist-wrapper.service` systemd units (auto-restart, run as `deploy`)
+5. Installs `everlist.service` + `everlist-wrapper.service` + `everlist-webchat.service` systemd units (auto-restart, run as `deploy`)
 6. Creates the wrapper venv (`uagents`, `httpx`)
 7. Configures the firewall: 22, 80 (ACME), 443
 
@@ -46,15 +46,19 @@ Environment used in production: `HUB_ENV=production`, `HUB_STORAGE_MODE=sqlite`,
 
 `everlist.network` A record → VPS IP. Caddy obtains the certificate automatically once DNS resolves.
 
+**Chat subdomain:** add a `chat` A record → the same VPS IP (or a `chat.everlist.network` CNAME → `everlist.network`). The deploy script's Caddyfile already serves `chat.<domain>` → webchat on 127.0.0.1:8804.
+
 **Oracle only:** additionally open 80/443 in the VCN Security List (cloud console), or the outside world sees nothing.
 
 ## 4. Verify
 
 ```bash
-curl -s https://everlist.network/.well-known/agent-hub.json   # hub descriptor
-journalctl -u everlist -f                                     # hub logs
-journalctl -u everlist-wrapper -f                             # chat agent logs
-journalctl -u caddy -f                                        # TLS/proxy logs
+curl -s https://everlist.network/.well-known/agent-hub.json          # hub live
+curl -s https://chat.everlist.network/api/health                    # web chat live
+journalctl -u everlist -f                                           # hub logs
+journalctl -u everlist-wrapper -f                                   # chat agent logs
+journalctl -u everlist-webchat -f                                   # web chat logs
+journalctl -u caddy -f                                              # TLS/proxy logs
 ```
 
 Smoke checks: `GET /search` (read), one demo listing via `tools/seed_demo.py --hub https://everlist.network` if desired.

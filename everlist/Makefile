@@ -8,6 +8,7 @@ SHELL := /bin/bash
 PYTHON   ?= /opt/venv/bin/python
 VPY      ?= venv/bin/python
 HUB_PORT ?= 8802
+WEBCHAT_PORT ?= 8804
 RUNDIR   ?= .run
 # C12 review lesson: the test gate must NEVER share state, PIDs, or seeds with
 # a live stack. make test runs a fully isolated stack (own rundir, port, seed,
@@ -77,10 +78,23 @@ gate-down: ## stop ONLY the gate hub (never touches live pids)
 	@echo "[gate-down] complete"
 
 status: ## show recorded process states
-	@for f in $(RUNDIR)/hub.pid $(RUNDIR)/wrapper.pid; do \
+	@for f in $(RUNDIR)/hub.pid $(RUNDIR)/wrapper.pid $(RUNDIR)/webchat.pid; do \
 		if [ -f "$$f" ]; then pid=$$(cat "$$f"); \
 			kill -0 "$$pid" 2>/dev/null && echo "$$f: $$pid RUNNING" || echo "$$f: $$pid DEAD"; \
 		else echo "$$f: none"; fi; done
+
+webchat-up: ## start webchat UI (chat-first web surface) on :8804
+	@if [ -f $(RUNDIR)/webchat.pid ] && kill -0 $$(cat $(RUNDIR)/webchat.pid) 2>/dev/null; then \
+		echo "[webchat] already running pid=$$(cat $(RUNDIR)/webchat.pid)"; exit 0; fi
+	@echo "[webchat] starting -> $(RUNDIR)/webchat.log"
+	@WEBCHAT_HUB_URL=http://localhost:$(HUB_PORT) nohup $(VPY) webchat.py $(WEBCHAT_PORT) > $(RUNDIR)/webchat.log 2>&1 & echo $$! > $(RUNDIR)/webchat.pid
+	@sleep 1
+	@if (exec 3<>/dev/tcp/127.0.0.1/$(WEBCHAT_PORT)) 2>/dev/null; then exec 3>&- 3<&-; echo "[webchat] up on :$(WEBCHAT_PORT) (pid $$(cat $(RUNDIR)/webchat.pid))"; else echo "[webchat] FAILED; log:"; tail -n 10 $(RUNDIR)/webchat.log; exit 1; fi
+
+webchat-down: ## stop ONLY the webchat process (never touches hub/wrapper pids)
+	@if [ -f $(RUNDIR)/webchat.pid ]; then pid=$$(cat $(RUNDIR)/webchat.pid); \
+		kill "$$pid" 2>/dev/null && echo "[webchat] stopped pid=$$pid" || echo "[webchat] not running"; \
+		rm -f $(RUNDIR)/webchat.pid; else echo "[webchat] not running"; fi
 
 test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 	@mkdir -p $(GATE_RUNDIR)
@@ -139,6 +153,7 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		echo '=== C4 reputation ==='; $(PYTHON) test_c4_rating.py || exit 1; \
 		echo '=== C5 community schemas ==='; $(PYTHON) test_c5_schemas.py || exit 1; \
 		echo '=== C12 payment terms ==='; $(PYTHON) test_c12_payment_terms.py || exit 1; \
+		echo '=== C9 webchat UI ==='; $(VPY) -u test_webchat.py || exit 1; \
 		echo "=== A2A E2E (isolated gate hub :$(GATE_PORT)) ==="; \
 		$(MAKE) --no-print-directory gate-up >/dev/null || exit 1; \
 		HUB_PORT=$(GATE_PORT) $(VPY) -u test_client.py || exit 1; \

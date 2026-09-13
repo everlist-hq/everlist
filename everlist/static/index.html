@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>EverList — what are you looking for?</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="shell">
+  <header class="top">
+    <div class="brand"><span class="logo">◆</span> EverList</div>
+    <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting…</span></div>
+  </header>
+
+  <section class="chat" id="chat" aria-live="polite">
+    <div class="msg agent"><div class="bubble">👋 Hi! I'm EverList. What are you looking for?
+
+Type anything — "jazz tonight in berlin", "sushi", "piano lessons"…
+Or try help for everything I can do: signup, search, book, my-bookings, rate, and even list your own offerings.</div></div>
+  </section>
+
+  <section class="chips" id="chips">
+    <button class="chip" data-q="help">help</button>
+    <button class="chip" data-q="search jazz berlin">search jazz berlin</button>
+    <button class="chip" data-q="signup">signup</button>
+    <button class="chip" data-q="my-bookings">my-bookings</button>
+  </section>
+
+  <form class="inputbar" id="form" autocomplete="off">
+    <textarea id="text" rows="1" placeholder="Type a message…" maxlength="8000" autofocus></textarea>
+    <button id="send" type="submit" aria-label="Send">➤</button>
+  </form>
+
+  <footer class="foot">
+    <span>chat-first marketplace · the same brain our agents use</span>
+    <button class="linkbtn" id="reset" type="button">new session</button>
+  </footer>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
