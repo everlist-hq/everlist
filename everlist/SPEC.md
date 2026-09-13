@@ -269,7 +269,7 @@ Binding product policy agreed with the owner. Implementation items: C11, C12, M1
 | services / gigs | fulfillment + 72h |
 | marketplace | delivery confirmation + 7 days |
 
-Window mechanics are already built (M4 permissionless `timeoutRefund`): before the deadline the buyer can refund themselves; after the deadline the permissionless refund returns funds to the buyer's stored key; the merchant's protection gap (auto-release after a quiet deadline) is backlog M17.
+Window mechanics are fully built: **M4 permissionless `timeoutRefund`** (buyer-favoring: before the refund deadline the buyer can refund themselves; after it, anyone can trigger the refund to the buyer's stored key) plus **M17 `autoRelease`** (merchant-favoring complement, 2026-09-13): every escrow carries a second, later **claim deadline** (set at creation, asserted strictly after the refund deadline). Before the claim deadline the buyer-favoring refund paths apply; after it, `refundEscrow` and `timeoutRefund` are walled and ANYONE can trigger `autoRelease`, which spends the deposit to the merchant's stored key — a buyer who received the service can no longer claw back, and the payout destination is fixed at creation so no caller can redirect it. Verified: 40/40 offline circuit tests, native ZK proof on proof-server 9.0.0-rc.7, mirror paths m7 25/25 + m8 17/17.
 
 ### 19d. Deposits and buyer gating
 
