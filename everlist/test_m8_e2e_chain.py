@@ -224,8 +224,8 @@ try:
     STAGE[0] = 3
     c, s = sync()
     res = {r["booking_id"]: r for r in s["results"]}
-    check("chain REFUNDED + hub RELEASED (RB) -> refused (cross-final)",
-          res[RB]["action"] == "refused", str(res[RB]))
+    check("chain REFUNDED + hub RELEASED (RB) -> updated (M16 carve-out: on-chain mutualRefund is the only path)",
+          res[RB]["action"] == "updated", str(res[RB]))
 
     # refund leg: booking C gets its OWN chain escrow 3 (the S1 duplicate-ref
     # wall rightly forbids two hub bookings on one chain escrow). The scenario
@@ -244,8 +244,8 @@ try:
     check("chain REFUNDED + hub HELD (C) -> updated",
           res[bc["id"]]["action"] == "updated", str(res[bc["id"]]))
     check("REFUNDED both sides (C)", hub_state(bc["id"]) == "REFUNDED")
-    check("RB (same escrow, hub RELEASED) still refused",
-          res[RB]["action"] == "refused", str(res[RB]))
+    check("RB (same escrow, now REFUNDED both sides) in-sync",
+          res[RB]["action"] == "in-sync", str(res[RB]))
     c, r = req("POST", "/book/%s/cancel" % bc["id"], {},
                {"X-Hub-Token": B["X-Hub-Token"], "X-Cancel-Token": CANCEL_B})
     check("cancel with wrong token refused", c == 403, str(c))
@@ -253,21 +253,25 @@ try:
     print("== M8: ledger integrity after all syncs ==")
     _, led1 = req("GET", "/ledger")
     sync_entries = [t for t in led1["ledger"] if t.get("kind") == "escrow_sync"]
-    check("exactly one escrow_sync entry (C's forward update)",
-          len(sync_entries) == 1, str(len(sync_entries)))
-    check("sync entry: from/to/chain_tx, no amount",
-          sync_entries and sync_entries[0].get("from") == "HELD"
+    check("exactly two escrow_sync entries (RB mutualRefund + C's forward update)",
+          len(sync_entries) == 2, str(len(sync_entries)))
+    check("sync entries: from/to/chain_tx, no amount (both, in order)",
+          len(sync_entries) == 2
+          and all(t.get("from") and t.get("to") and t.get("chain_tx")
+                  and "amount" not in t for t in sync_entries)
+          and sync_entries[0].get("from") == "RELEASED"   # RB: mutualRefund carve-out sync
           and sync_entries[0].get("to") == "REFUNDED"
-          and sync_entries[0].get("chain_tx")
-          and "amount" not in sync_entries[0], str(sync_entries[:1]))
+          and sync_entries[-1].get("from") == "HELD",     # C: forward update
+          str(sync_entries))
     check("volume unchanged by syncs", led1["totals"]["total_volume"] == vol0,
           "%s vs %s" % (led1["totals"]["total_volume"], vol0))
 
     print("== M8: done-when summary ==")
     check("RELEASED both sides (RA)", hub_state(RA) == "RELEASED")
-    # RB: hub RELEASED, chain REFUNDED -> cross-final refusal (documented C7
-    # behavior, NOT silently overwritten) - the honest E2E outcome
-    check("RB divergence flagged+refused, not silently mirrored", hub_state(RB) == "RELEASED")
+    # RB: hub RELEASED, chain REFUNDED -> M16 carve-out mirrors the mutual
+    # refund (on-chain RELEASED->REFUNDED is reachable only via mutualRefund,
+    # both commitments proven in-circuit) - chain is source of truth
+    check("RB mirrored to REFUNDED via M16 carve-out", hub_state(RB) == "REFUNDED")
 
 finally:
     proc.terminate()

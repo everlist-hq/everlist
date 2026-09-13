@@ -2504,10 +2504,15 @@ class Handler(BaseHTTPRequestHandler):
                     results.append({"booking_id": snap["id"], "action": "in-sync",
                                     "hub_state": hub_state, "chain_state": chain_state})
                     continue
-                # C7 safety rule: never overwrite downward or across final states
+                # C7 safety rule: never overwrite downward or across final states.
+                # M16 carve-out: chain REFUNDED while hub says RELEASED is a
+                # legal forward transition - on-chain, RELEASED -> REFUNDED is
+                # reachable ONLY via mutualRefund (both role commitments proven
+                # in-circuit), so the chain truth is mirrored, not refused.
+                # The reverse (chain RELEASED, hub REFUNDED) is unreachable by
+                # any circuit and remains refused for operator investigation.
                 downward = ((chain_state == "HELD" and hub_state != "HELD")
-                            or (chain_state == "RELEASED" and hub_state == "REFUNDED")
-                            or (chain_state == "REFUNDED" and hub_state == "RELEASED"))
+                            or (chain_state == "RELEASED" and hub_state == "REFUNDED"))
                 if downward:
                     results.append({"booking_id": snap["id"], "action": "refused",
                                     "hub_state": hub_state, "chain_state": chain_state,

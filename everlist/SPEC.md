@@ -278,7 +278,7 @@ Window mechanics are already built (M4 permissionless `timeoutRefund`): before t
 
 ### 19e. Post-settlement undo
 
-Mutual refund after settlement (buyer wants refund, merchant agrees) requires a new `mutualRefund` circuit — both role commitments must prove, funds return to the buyer's stored key; neither party alone can move anything. Backlog M16. Until then, post-settlement refunds are off-contract manual payments.
+Mutual refund after settlement is implemented (M16, 2026-09-13): the `mutualRefund` circuit requires BOTH role commitments to prove, the merchant returns an equivalent coin through the contract (exact amount + asset asserted; fresh nonce — the original coin was consumed at release), and funds route atomically to the buyer's stored key — neither party alone can move anything. Verified: 32/32 offline circuit tests, native ZK proof on proof-server 9.0.0-rc.7, and the C7 mirror carve-out (chain REFUNDED + hub RELEASED mirrors forward; the reverse is unreachable by any circuit and stays refused).
 
 ## 20. Private deals (P2, owner-approved 2026-09-13)
 

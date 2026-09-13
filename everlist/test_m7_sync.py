@@ -1,6 +1,8 @@
 """M7: mirror sync - POST /admin/sync-escrow (+ conformance checker C7).
 Done-when: chain RELEASED + hub HELD -> sync fixes; chain HELD + hub RELEASED
--> flagged, refused. Plus: cross-final refusal, WAIVED untouched, ledger
+-> flagged, refused. Plus: M16 carve-out (chain REFUNDED + hub RELEASED ->
+forward-mirrored: on-chain RELEASED->REFUNDED is reachable ONLY via
+mutualRefund with both commitments proven), WAIVED untouched, ledger
 entries carry no amount (no volume double-count), honest indexer errors,
 admin gating (403), unknown booking ids, and C7 verdict via the real checker.
 
@@ -194,15 +196,16 @@ try:
 
     print("== M7: divergence matrix ==")
     # booking 2: chain HELD, hub RELEASED -> downward, REFUSED
-    # booking 4: chain flipped to REFUNDED, hub RELEASED -> cross-final, REFUSED
+    # booking 4: chain flipped to REFUNDED, hub RELEASED -> M16 carve-out:
+    # legal forward transition (only mutualRefund can do this on-chain)
     CHAIN[4] = "refunded"
     c, s = sync()
     res = {r["booking_id"]: r for r in s["results"]}
     check("chain HELD + hub RELEASED -> refused (C7)",
           res[bids[2]]["action"] == "refused" and "downward" in res[bids[2]]["reason"],
           str(res[bids[2]]))
-    check("chain REFUNDED + hub RELEASED -> refused (cross-final)",
-          res[bids[4]]["action"] == "refused", str(res[bids[4]]))
+    check("chain REFUNDED + hub RELEASED -> updated (M16 mutualRefund carve-out)",
+          res[bids[4]]["action"] == "updated", str(res[bids[4]]))
     check("refusal left hub state untouched", hub_state(bids[2]) == "RELEASED")
 
     print("== M7: forward sync - chain wins ==")
@@ -217,10 +220,14 @@ try:
     check("updated carries chain_tx", len(res[bids[1]].get("chain_tx", "")) == 64)
     _, led1 = req("GET", "/ledger")
     sync_entries = [t for t in led1["ledger"] if t.get("kind") == "escrow_sync"]
-    check("ledger has 2 escrow_sync entries", len(sync_entries) == 2, str(len(sync_entries)))
+    check("ledger has 3 escrow_sync entries (2 forward + 1 M16 carve-out)",
+          len(sync_entries) == 3, str(len(sync_entries)))
     check("sync entries carry from/to/chain_tx",
-          all(t.get("from") == "HELD" and t.get("to") == "RELEASED" and t.get("chain_tx")
-              for t in sync_entries), str(sync_entries[:1]))
+          all(t.get("chain_tx") for t in sync_entries)
+          and sum(1 for t in sync_entries
+                  if t.get("from") == "HELD" and t.get("to") == "RELEASED") == 2
+          and any(t.get("from") == "RELEASED" and t.get("to") == "REFUNDED"
+                  for t in sync_entries), str(sync_entries))
     check("sync entries have NO amount key", all("amount" not in t for t in sync_entries))
     check("volume unchanged by sync (no double-count)",
           led1["totals"]["total_volume"] == vol0,
