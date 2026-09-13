@@ -331,3 +331,46 @@ quantity). Works on every hub that ships the schema; hubs without it just reject
 - The hub escrows **money**, not goods: correctness of the traded item remains the parties'
   business; escrow removes the who-pays-first problem and enforces the refund window.
 - Real money stays gated behind the existing real-money gate (owner approval / C10 conditions).
+
+## 21. Review integrity (S6, owner-approved 2026-09-13; REQUIRED before real money)
+
+Ratings are the hub's trust surface; fake-review farming is treated as an economic
+attack, not a moderation nuisance. Four layers, all server-enforced:
+
+### 21a. L1 — self-review walls
+
+- The listing owner's principal can never rate their own listing (403 `self-review rejected`).
+- Instant-rail (DIRECT) paid bookings may bind payment evidence: an optional `X-PAYMENT`
+  header carrying a real EIP-3009 `TransferWithAuthorization` is verified server-side
+  (x402verify: signature recovery + nonce replay wall) against the listing's
+  `receive_addr` (merchant wallet, validated 0x+40hex; optional, falls back to the hub
+  pay-to). A booking paid from the merchant's own receive wallet can never rate (403).
+  Payment evidence fields (`payment_payer/value/nonce`) are server-only, never
+  client-claimable (reserved-field wall).
+
+### 21b. L2 — channel separation
+
+Free (WAIVED) bookings rate into a separate **free-class feedback** channel
+(`free_rating_sum` / `free_rating_count`); they never enter the paid aggregate.
+The cheapest farm (zero-cost bookings) produces zero paid reputation.
+
+### 21c. L3 — amount weighting
+
+Paid aggregates are weighted by settled amount, capped at weight 50 (weight =
+booking amount, floor 1). `rating_avg` is the weighted average; raw `rating_sum` /
+`rating_count` remain for auditability. A self-loop of micro-payments cannot buy a
+reputation a real booking would earn.
+
+### 21d. L4 — interlock detection (detection only, never auto-delete)
+
+Server-side heuristics over booking payment evidence append to `review_flags`
+(server-only, bounded): repeated payer wallet on one listing, payer interlock with a
+sibling listing of the same owner, burst ratings (3+ paid within 10 minutes). The
+operator reviews via `GET /admin/review-queue` (admin key). Nothing is auto-deleted.
+
+### 21e. Migration & honesty
+
+At boot, aggregates are recomputed from booking history (channel split + weighting),
+so pre-S6 ratings aggregate under the new rules too. Aggregates stay absent from the
+ledger; ratings carry no identity data. Legacy plain averages are superseded by
+`rating_avg` (weighted).

@@ -122,7 +122,94 @@ def _paginate(items, query):
     return items[off:off + lim], off, lim
 
 
-_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash"})
+# S6: rating_wsum/rating_wtot (weighted-average numerator/denominator), review_flags
+# (L4 interlock heuristics) and rating_times (burst detection) are server-internal.
+_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash", "rating_wsum", "rating_wtot", "review_flags", "rating_times"})
+
+
+def _review_weight(b):
+    """S6-L3: review weight scales with the settled amount (capped 1..50). A
+    0.50 self-loop counts a fraction of a 50-unit booking; free bookings do not
+    enter this channel at all (L2)."""
+    try:
+        amt = float(b.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        amt = 0.0
+    return max(1.0, min(50.0, amt))
+
+
+def _agg_text(lst):
+    """S6: honest aggregate display - amount-weighted paid average plus the
+    separate free-feedback channel (never merged)."""
+    out = []
+    wtot = lst.get("rating_wtot", 0)
+    if wtot > 0:
+        out.append(f"paid reviews: {lst.get('rating_wsum', 0) / wtot:.1f}/5 weighted ({lst.get('rating_count', 0)} rating(s))")
+    fc = lst.get("free_rating_count", 0)
+    if fc:
+        out.append(f"free-class feedback: {lst.get('free_rating_sum', 0) / fc:.1f}/5 ({fc} free booking(s))")
+    return (" | " .join(out)) if out else ""
+
+
+def _s6_flag_review(lst):
+    """S6-L4: cheap interlock heuristics over booking payment evidence.
+    Flags feed a MANUAL review queue - detection only, never auto-deletion."""
+    reasons = []
+    mine = [x for x in BOOKINGS if x.get("listing_id") == lst["id"]]
+    rated = [x for x in mine if isinstance(x.get("rating"), int)]
+    # (1) repeated payer wallet on the same listing
+    seen = {}
+    for x in rated:
+        pp = str(x.get("payment_payer") or "").lower()
+        if pp:
+            seen[pp] = seen.get(pp, 0) + 1
+    dup = {p: c for p, c in seen.items() if c > 1}
+    if dup:
+        reasons.append(f"repeated payer wallet(s): {len(dup)}")
+    # (2) interlock: payer wallet also paid a sibling listing of the same owner
+    owner = lst.get("owner")
+    if owner:
+        sib = {x["id"] for x in LISTINGS if x.get("owner") == owner} - {lst["id"]}
+        here = {str(x.get("payment_payer") or "").lower() for x in rated if x.get("payment_payer")}
+        there = {str(x.get("payment_payer") or "").lower() for x in BOOKINGS
+                 if x.get("listing_id") in sib and x.get("payment_payer")}
+        if here & there:
+            reasons.append("interlock: payer wallet also paid a sibling listing of this owner")
+    # (3) burst: 3+ paid ratings within a 10-minute window
+    times = sorted(x.get("rated_at", 0) for x in rated
+                   if x.get("escrow") != "WAIVED" and x.get("rated_at"))
+    if len(times) >= 3 and times[-1] - times[-3] <= 600:
+        reasons.append("burst: 3+ paid ratings within 10 minutes")
+    if reasons:
+        flags = lst.setdefault("review_flags", [])
+        if not any(e.get("reasons") == reasons for e in flags):
+            flags.append({"ts": time.time(), "reasons": reasons})
+            del flags[:-100]  # bounded
+
+
+def _s6_recompute_aggregates():
+    """S6 boot migration: rebuild channel-split + weighted aggregates from the
+    booking history so pre-S6 ratings aggregate under the new rules too."""
+    for l in LISTINGS:
+        l["rating_sum"] = 0; l["rating_count"] = 0
+        l["free_rating_sum"] = 0; l["free_rating_count"] = 0
+        l["rating_wsum"] = 0; l["rating_wtot"] = 0
+    for b in BOOKINGS:
+        r = b.get("rating")
+        if not isinstance(r, int) or not (1 <= r <= 5):
+            continue
+        lst = next((x for x in LISTINGS if x["id"] == b.get("listing_id")), None)
+        if lst is None:
+            continue
+        if b.get("escrow") == "WAIVED":
+            lst["free_rating_sum"] += r; lst["free_rating_count"] += 1
+        else:
+            w = _review_weight(b)
+            lst["rating_wsum"] += r * w; lst["rating_wtot"] += w
+            lst["rating_sum"] += r; lst["rating_count"] += 1
+    for l in LISTINGS:
+        if l.get("rating_wtot"):
+            l["rating_avg"] = round(l["rating_wsum"] / l["rating_wtot"], 2)
 
 
 def _pub_listing(l):
@@ -453,7 +540,8 @@ VERTICAL_SCHEMAS = {
 # I1: field ownership. Server-owned fields may never come from clients.
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
     "owner_payout", "created", "booking_secret", "rail", "confirmation",
-    "verified_by", "payment_terms", "claim"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms)
+    "verified_by", "payment_terms", "claim",
+    "payment_payer", "payment_value", "payment_nonce"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms); S6: x402 payment evidence is server-verified, never client-claimed
 
 # EverList taxonomy: category = controlled vocab per vertical (validated at
 # listing time); tags = free-form, normalized (lowercase, trimmed, deduped,
@@ -477,7 +565,9 @@ def normalize_tags(raw):
         if len(tags) >= TAXONOMY["tag_max"]:
             break
     return tags
-RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2)
+RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash",
+    "rating_sum", "rating_count", "rating_avg", "free_rating_sum", "free_rating_count",
+    "rating_wsum", "rating_wtot", "review_flags", "rating_times"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation)
 
 # C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
 # the LISTING; booking = acceptance (paid bookings echo custom terms via
@@ -685,12 +775,12 @@ def _openapi_spec():
             "/orders": {"get": op("Incoming orders for listings you own", "bookings", sec=tok)},
             "/book/{id}": {"get": op("Private booking details", "bookings", sec=tok,
                                     note="credential = booking secret (shown once at creation), via X-Hub-Token header")},
-            "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0 / DIRECT on the instant rail)", "bookings", sec=tok,
+            "/book": {"post": op("Create booking (escrow HELD / WAIVED at price 0 / DIRECT on the instant rail; testnet instant bookings accept an optional X-PAYMENT EIP-3009 header -> verified payer wallet bound for S6 review integrity)", "bookings", sec=tok,
                                  note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms)")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
-                                note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); listing aggregates update publicly; ledger untouched")},
+                                note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (WAIVED) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
@@ -1231,6 +1321,18 @@ class Handler(BaseHTTPRequestHandler):
                     b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
                 return self._json(200, {"id": bid, "private_details": {**b, **rec["private"]}})
+        if u.path == "/admin/review-queue":
+            # S6-L4: manual review queue. Same admin gate as /admin/tokens.
+            cred = self.headers.get("X-Hub-Token", "")
+            if not hmac.compare_digest(cred, ADMIN_KEY):
+                return self._json(403, {"error": "invalid admin key"})
+            with LOCK:
+                flagged = [{"id": l["id"], "title": l.get("title"), "owner": l.get("owner"),
+                            "paid_rating_count": l.get("rating_count", 0),
+                            "flags": l.get("review_flags", [])}
+                           for l in LISTINGS if l.get("review_flags")]
+            return self._json(200, {"flagged": flagged,
+                "note": "S6-L4 manual review queue - detection only, never auto-deleted"})
         return self._json(404, {"error": "not found", "hint": "GET /.well-known/agent-hub.json"})
 
     def do_POST(self):
@@ -1761,7 +1863,16 @@ class Handler(BaseHTTPRequestHandler):
                 data["description"] = desc
             else:
                 data.pop("description", None)
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility"}
+            # S6-L1: optional merchant receive address for the instant rail - the
+            # anchor the self-pay wall compares x402 payers against.
+            if data.get("receive_addr") is not None:
+                _rx = str(data["receive_addr"]).strip().lower()
+                if not re.fullmatch(r"0x[a-f0-9]{40}", _rx):
+                    return self._json(400, {"error": "receive_addr must be a 0x + 40-hex EVM address"})
+                data["receive_addr"] = _rx
+            else:
+                data.pop("receive_addr", None)
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # P2: private deals — 'listed but not public'. visibility=private keeps a
             # listing out of search/suggest/browse; access needs the one-time claim
@@ -2130,6 +2241,25 @@ class Handler(BaseHTTPRequestHandler):
                                 and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
                     if dup is not None:
                         return self._json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
+                # S6-L1: instant-rail payment evidence (testnet). A valid X-PAYMENT
+                # header binds the buyer's wallet address to this booking; it powers
+                # the self-pay review wall and interlock detection below. Absent
+                # header -> booking proceeds, rating later weights at the floor.
+                _payer6 = _pvalue6 = _pnonce6 = None
+                if escrow_state == "DIRECT" and price_c > 0 and PAY_MODE == "testnet":
+                    _phdr = self.headers.get("X-PAYMENT", "")
+                    if _phdr:
+                        _recv6 = str(listing.get("receive_addr") or PAYTO).lower()
+                        _units6 = int(round(price * 1_000_000))
+                        _info6, _perr6 = x402verify.verify_payment(
+                            _phdr, network="base-sepolia", pay_to=_recv6,
+                            max_amount_units=_units6)
+                        if _perr6:
+                            return self._json(402, {"x402Version": 1, "error": "invalid payment",
+                                                    "detail": _perr6, "mode": "TESTNET"})
+                        _payer6 = str(_info6["from"]).lower()
+                        _pvalue6 = _info6["value"]
+                        _pnonce6 = _info6["nonce"]
                 # H2: unguessable booking IDs (no sequential enumeration)
                 bid = "bk-" + secrets.token_hex(12)
                 secret = secrets.token_hex(16)
@@ -2150,6 +2280,11 @@ class Handler(BaseHTTPRequestHandler):
                     _acct = ACCOUNTS.get(principal)
                     if _acct and _acct.get("human_verified"):
                         booking["verified_by"] = _acct.get("verified_by") or "midnight-zk"
+                if _payer6:
+                    # S6: server-verified payment evidence (never client-claimed)
+                    booking["payment_payer"] = _payer6
+                    booking["payment_value"] = _pvalue6
+                    booking["payment_nonce"] = _pnonce6
                 if er is not None:
                     booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
                 # real identity stored ONLY here, retrievable only with the secret
@@ -2256,16 +2391,35 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(409, {"error": f"rating opens after settlement (escrow is {b['escrow']})"})
                 if "rating" in b:  # once per booking, forever
                     return self._json(409, {"error": "already rated"})
-                b["rating"] = val
                 lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
-                if lst:
-                    lst["rating_sum"] = lst.get("rating_sum", 0) + val
-                    lst["rating_count"] = lst.get("rating_count", 0) + 1
+                free = (b["escrow"] == "WAIVED")
+                if lst is not None:
+                    # S6-L1 wall 1: the listing owner can never rate their own listing
+                    if b.get("booked_by") == lst.get("owner"):
+                        return self._json(403, {"error": "self-review rejected: the listing owner cannot rate their own listing"})
+                    # S6-L1 wall 2: x402 self-pay - the paying wallet equals the merchant receive address
+                    _pp = str(b.get("payment_payer") or "").lower()
+                    _rx = str(lst.get("receive_addr") or "").lower()
+                    if _pp and _rx and _pp == _rx:
+                        return self._json(403, {"error": "self-review rejected: payment came from the merchant's own receive address"})
+                b["rating"] = val
+                b["rated_at"] = time.time()  # S6-L4: burst detection (server-only)
+                if lst is not None:
+                    if free:  # S6-L2: free bookings feed a separate feedback channel, never the paid aggregate
+                        lst["free_rating_sum"] = lst.get("free_rating_sum", 0) + val
+                        lst["free_rating_count"] = lst.get("free_rating_count", 0) + 1
+                    else:     # S6-L3: paid reviews weighted by settled amount (capped)
+                        w = _review_weight(b)
+                        lst["rating_wsum"] = lst.get("rating_wsum", 0) + val * w
+                        lst["rating_wtot"] = lst.get("rating_wtot", 0) + w
+                        lst["rating_sum"] = lst.get("rating_sum", 0) + val
+                        lst["rating_count"] = lst.get("rating_count", 0) + 1
+                        lst["rating_avg"] = round(lst["rating_wsum"] / lst["rating_wtot"], 2)
+                        _s6_flag_review(lst)  # S6-L4: interlock heuristics -> manual queue
                 _persist_locked()
-            agg = ""
-            if lst is not None and lst.get("rating_count"):
-                agg = f"Listing now {lst['rating_sum'] / lst['rating_count']:.1f} stars ({lst['rating_count']} rating(s))."
-            return self._json(200, {"ok": True, "id": bid, "rating": val, "aggregate": agg,
+            agg = _agg_text(lst) if lst is not None else ""
+            return self._json(200, {"ok": True, "id": bid, "rating": val,
+                "channel": "free-feedback" if free else "paid", "aggregate": agg,
                 "note": "public ledger untouched - ratings carry no ledger entries and no new identity data"})
         if path == "/admin/tokens":
             # H5: admin-key brute-force backstop (shared 'admin' kind with vouch)
@@ -2437,6 +2591,7 @@ if __name__ == "__main__":
               file=sys.stderr)
         sys.exit(79)
     _load_state()
+    _s6_recompute_aggregates()  # S6: rebuild weighted/channel-split aggregates from history
     print(f"agent-hub-v2 (open/fair) on :{port} - fee {FEE_PCT}%, env {RUN_ENV}, state {STATE_FILE}")
     class HubServer(ThreadingHTTPServer):
         # B6-lesson: default backlog (5) refuses burst connections (B2 caught -1

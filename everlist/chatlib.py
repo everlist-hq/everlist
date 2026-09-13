@@ -172,7 +172,7 @@ def _fmt_listing(l: dict) -> str:
 
 _RICH_KEYS = ("title", "category", "date", "price", "location", "capacity",
               "description", "tags", "url", "merchant", "vertical", "provider",
-              "duration_minutes")
+              "duration_minutes", "receive")  # S6: receive = instant-rail payout wallet (0x...)
 
 
 def _parse_rich(body: str) -> dict | None:
@@ -663,7 +663,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         tail = [rich.get(k, "") for k in ("category", "date", "price", "location", "capacity")]
         parts += tail
         extra = {k: rich[k] for k in ("description", "tags", "url", "vertical",
-                                      "provider", "duration_minutes") if rich.get(k)}
+                                      "provider", "duration_minutes", "receive") if rich.get(k)}
     else:
         parts = [p.strip() for p in body.split("|")]
         extra = {}
@@ -761,6 +761,9 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         payload["url"] = extra["url"][:300]
     if extra.get("tags"):
         payload["tags"] = extra["tags"]
+    # S6-L1: optional instant-rail receive wallet; the hub validates the 0x format
+    if extra.get("receive"):
+        payload["receive_addr"] = str(extra["receive"]).strip()[:64]
     # C12: chat merchants can set payment terms in rich format
     # (rail: escrow|instant, refund_window: hours, deposit: amount)
     if any(extra.get(k) for k in ("rail", "refund_window", "deposit")):

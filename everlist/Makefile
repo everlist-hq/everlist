@@ -100,6 +100,8 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		$(PYTHON) test_concurrency.py || exit 1; \
 		echo "=== SDK accounts (B5) ==="; \
 		$(PYTHON) test_sdk_accounts.py || exit 1; \
+		echo "=== S6 review integrity (anti-fake-review) ==="; \
+		$(VPY) -u test_s6_review_integrity.py || exit 1; \
 		echo "=== Chat E2E via real wrapper (B6) ==="; \
 		$(VPY) -u test_chat_e2e.py || exit 1; \
 		echo "=== Public read limits (B7) ==="; \
