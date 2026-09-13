@@ -42,6 +42,8 @@ The script does, in order:
 
 Environment used in production: `HUB_ENV=production`, `HUB_STORAGE_MODE=sqlite`, `HUB_PORT=8802` (behind Caddy).
 
+**Optional — chat LLM intent router (C9/NLU):** the web chat's free-text layer is OFF until a key exists. Create `.secrets/llm.env` (0600, gitignored, same convention as `email.env`) with `EVERLIST_NLU_API_URL`, `EVERLIST_NLU_API_KEY`, `EVERLIST_NLU_MODEL`, then restart `everlist-webchat`. Without it, every surface stays fully deterministic (keyword search still works). Swapping providers later is a pure env change — no code edits.
+
 ## 3. Point DNS
 
 `everlist.network` A record → VPS IP. Caddy obtains the certificate automatically once DNS resolves.

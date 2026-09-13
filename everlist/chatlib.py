@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime as _dt
 
 from cryptography.hazmat.primitives import serialization as _ser
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EdPriv
@@ -105,10 +106,7 @@ def _show_listing(hub_url: str, arg: str) -> str:
         return f"Could not fetch listing (HTTP {e.code})."
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
-    extra = ""
-    if l.get("capacity"):
-        extra = f"\nBooked: {l.get('registered', 0)}/{l['capacity']}"
-    return _fmt_listing(l) + extra
+    return _fmt_listing(l)
 
 
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
@@ -147,29 +145,87 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
             f"Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.")
 
 
+_V_EMOJI = {"events": "🎫", "food": "🍽️", "services": "🛠️", "classes": "🎓", "p2p": "🏷️"}
+
+
+def _weekday(date_s: str) -> str | None:
+    try:
+        return _dt.strptime(date_s, "%Y-%m-%d").strftime("%a")
+    except Exception:
+        return None
+
+
+def _fmt_price(l: dict) -> str:
+    try:
+        p = float(l.get("price", 0))
+    except (TypeError, ValueError):
+        return "💶 %s USD" % l.get("price", "?")
+    return "💶 free" if p == 0 else "💶 %.2f USD" % p
+
+
+def _fmt_spots(l: dict) -> str | None:
+    """'🎟 18 of 30 spots open' / '🎟 sold out (30 of 30 booked)' / None if no capacity."""
+    try:
+        cap = int(l.get("capacity") or 0)
+    except (TypeError, ValueError):
+        return None
+    if cap <= 0:
+        return None
+    try:
+        reg = int(l.get("registered", 0))
+    except (TypeError, ValueError):
+        reg = 0
+    reg = max(0, min(reg, cap))
+    if reg >= cap:
+        return "🎟 sold out (%d of %d booked)" % (reg, cap)
+    return "🎟 %d of %d spots open" % (cap - reg, cap)
+
+
 def _fmt_listing(l: dict) -> str:
-    price = l.get("price", "?")
-    avail = "spots open" if l.get("available") else "SOLD OUT"
-    cat = l.get("category") or "listing"
-    date = l.get("date") or ""
-    when = f" on {date}" if date else ""
-    line = f"• {l.get('title', '?')} [{cat}]{when} — {price} USD, {avail} (id: {l.get('id')})"
-    extra = []
-    if l.get("description"):
-        d = str(l["description"]).strip()
-        extra.append("  " + (d[:100] + "…" if len(d) > 100 else d))
-    if l.get("url"):
-        extra.append(f"  🔗 {l['url']}")
+    """C9 canonical listing card — ONE fixed shape on every surface (webchat,
+    Agentverse wrapper, CLI all share this brain). Emoji-anchored plain text,
+    fixed field order, no markdown dependency: renders well in any chat."""
+    emoji = _V_EMOJI.get(l.get("vertical"), "🎫")
+    title = str(l.get("title", "?")).strip() or "?"
+    head = "%s %s · %s" % (emoji, title, l.get("id", "?"))
+
+    ctx = []
+    if l.get("category"):
+        ctx.append(str(l["category"]).strip())
+    if l.get("location"):
+        ctx.append(str(l["location"]).strip())
+    if l.get("date"):
+        wd = _weekday(str(l["date"]))
+        ctx.append("%s %s" % (wd, l["date"]) if wd else str(l["date"]))
+
+    money = [_fmt_price(l)]
+    spots = _fmt_spots(l)
+    if spots:
+        money.append(spots)
+
+    terms = None
     pt = l.get("payment_terms")  # C12: terms are part of the public listing face
     if isinstance(pt, dict):
         if pt.get("rail") == "instant":
-            extra.append("  ⚡ instant rail — settled at booking, no refund window")
+            terms = "⚡ instant rail — settled at booking, no refund window"
         else:
-            _dep = f" · deposit {pt.get('deposit_required')}" if pt.get("deposit_required") else ""
-            extra.append(f"  🛡 escrow · refund window {pt.get('refund_window_hours', '?')}h{_dep}")
+            _dep = " · deposit %s" % pt["deposit_required"] if pt.get("deposit_required") else ""
+            terms = "🛡 escrow · refund window %sh%s" % (pt.get("refund_window_hours", "?"), _dep)
+
+    lines = [head]
+    if ctx:
+        lines.append("  " + " · ".join(ctx))
+    lines.append("  " + " · ".join(money))
+    if terms:
+        lines.append("  " + terms)
     if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
-        extra.append("  ✅ verified buyers only — Tier-2 Midnight sign-in required to book")
-    return line + ("\n" + "\n".join(extra) if extra else "")
+        lines.append("  ✅ verified buyers only — Tier-2 Midnight sign-in required to book")
+    if l.get("description"):
+        d = str(l["description"]).strip()
+        lines.append("  📝 " + (d[:100] + "…" if len(d) > 100 else d))
+    if l.get("url"):
+        lines.append("  🔗 %s" % l["url"])
+    return "\n".join(lines)
 
 
 _RICH_KEYS = ("title", "category", "date", "price", "location", "capacity",
@@ -1043,9 +1099,9 @@ def _smart_search(hub_url: str, text: str) -> str:
     if not listings:
         return (f"No listings matched{qualifier}. Try: 'search' (all), 'search jazz', "
                 "or 'find me a free yoga class'.")
-    lines = [_fmt_listing(l) for l in listings[:8]]
+    cards = [_fmt_listing(l) for l in listings[:8]]
     tail = "\n\nTo book one, say 'book <id>' — free listings book without payment."
-    return f"Found {len(listings)} listing(s){qualifier}:\n" + "\n".join(lines) + tail
+    return f"Found {len(listings)} listing(s){qualifier}:\n\n" + "\n\n".join(cards) + tail
 
 
 _HELP = (
@@ -1260,4 +1316,15 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _HELP
 
     # --- fallback: treat the whole text as a search query
+    # C9/NLU: free text may be translated by the optional LLM layer into a
+    # validated canonical search command. Fail-open: no key, API error, or
+    # non-search text keeps the deterministic behavior unchanged.
+    try:
+        import nlu
+    except ImportError:
+        nlu = None
+    if nlu is not None:
+        cmd = nlu.translate(text, sender=sender)
+        if cmd:
+            return handle_text(hub_url, cmd, sender=sender)
     return handle_text(hub_url, "search " + text.strip(), sender=sender)

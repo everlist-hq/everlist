@@ -154,6 +154,7 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		echo '=== C5 community schemas ==='; $(PYTHON) test_c5_schemas.py || exit 1; \
 		echo '=== C12 payment terms ==='; $(PYTHON) test_c12_payment_terms.py || exit 1; \
 		echo '=== C9 webchat UI ==='; $(VPY) -u test_webchat.py || exit 1; \
+		echo '=== C9 NLU + card format ==='; $(PYTHON) test_nlu.py || exit 1; \
 		echo "=== A2A E2E (isolated gate hub :$(GATE_PORT)) ==="; \
 		$(MAKE) --no-print-directory gate-up >/dev/null || exit 1; \
 		HUB_PORT=$(GATE_PORT) $(VPY) -u test_client.py || exit 1; \
