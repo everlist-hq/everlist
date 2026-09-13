@@ -145,7 +145,27 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
             f"Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.")
 
 
-_V_EMOJI = {"events": "🎫", "food": "🍽️", "services": "🛠️", "classes": "🎓", "p2p": "🏷️"}
+_V_GLYPH = {"events": "♪", "food": "♨\uFE0E", "services": "⚙\uFE0E", "classes": "✎", "p2p": "⇄"}
+# C9c: original monochrome glyphs (alt-code text symbols, NOT color emoji) -
+# render identically in any chat and keep the card unmistakably EverList.
+# Emoji-prone codepoints carry U+FE0E (text presentation selector) so mobile
+# platforms cannot colorize them.
+_G_TITLE = "◆"      # brand diamond (default head)
+_G_PRICE = "¤"      # generic currency sign
+_G_OPEN = "▢"       # open spots (hollow grid)
+_G_FULL = "▣"       # sold out (filled grid)
+_G_ESCROW = "✪"     # seal = escrow-protected
+_G_INSTANT = "⇢"    # instant settlement
+_G_QUOTE = "»"      # description
+_G_LINK = "⇗"       # external link
+_G_OK = "✓"         # verified gate
+
+# C9c: result-list display limits
+_INLINE_LIMIT = 6   # <= this many results: full cards straight away
+_HARD_CAP = 12      # never flood the chat with more full cards at once
+_INDEX_CAP = 20     # index lines shown before pointing at refinement
+_PREVIEW_CARDS = 3  # full cards attached under a long index
+_LAST_RESULTS: dict[str, list] = {}  # per-sender stash for '3' / '2-6' / 'all' follow-ups
 
 
 def _weekday(date_s: str) -> str | None:
@@ -159,12 +179,12 @@ def _fmt_price(l: dict) -> str:
     try:
         p = float(l.get("price", 0))
     except (TypeError, ValueError):
-        return "💶 %s USD" % l.get("price", "?")
-    return "💶 free" if p == 0 else "💶 %.2f USD" % p
+        return "¤ %s USD" % l.get("price", "?")
+    return "¤ free" if p == 0 else "¤ %.2f USD" % p
 
 
 def _fmt_spots(l: dict) -> str | None:
-    """'🎟 18 of 30 spots open' / '🎟 sold out (30 of 30 booked)' / None if no capacity."""
+    """'▢ 18 of 30 spots open' / '▣ sold out (30 of 30 booked)' / None if no capacity."""
     try:
         cap = int(l.get("capacity") or 0)
     except (TypeError, ValueError):
@@ -177,17 +197,18 @@ def _fmt_spots(l: dict) -> str | None:
         reg = 0
     reg = max(0, min(reg, cap))
     if reg >= cap:
-        return "🎟 sold out (%d of %d booked)" % (reg, cap)
-    return "🎟 %d of %d spots open" % (cap - reg, cap)
+        return "▣ sold out (%d of %d booked)" % (reg, cap)
+    return "▢ %d of %d spots open" % (cap - reg, cap)
 
 
 def _fmt_listing(l: dict) -> str:
     """C9 canonical listing card — ONE fixed shape on every surface (webchat,
-    Agentverse wrapper, CLI all share this brain). Emoji-anchored plain text,
-    fixed field order, no markdown dependency: renders well in any chat."""
-    emoji = _V_EMOJI.get(l.get("vertical"), "🎫")
+    Agentverse wrapper, CLI all share this brain). Original alt-code glyphs,
+    fixed field order, no markdown dependency: renders identically in any chat
+    and stays unmistakably EverList (no generic color emoji)."""
+    glyph = _V_GLYPH.get(l.get("vertical"), _G_TITLE)
     title = str(l.get("title", "?")).strip() or "?"
-    head = "%s %s · %s" % (emoji, title, l.get("id", "?"))
+    head = "%s %s · %s" % (glyph, title, l.get("id", "?"))
 
     ctx = []
     if l.get("category"):
@@ -207,10 +228,10 @@ def _fmt_listing(l: dict) -> str:
     pt = l.get("payment_terms")  # C12: terms are part of the public listing face
     if isinstance(pt, dict):
         if pt.get("rail") == "instant":
-            terms = "⚡ instant rail — settled at booking, no refund window"
+            terms = "⇢ instant rail — settled at booking, no refund window"
         else:
             _dep = " · deposit %s" % pt["deposit_required"] if pt.get("deposit_required") else ""
-            terms = "🛡 escrow · refund window %sh%s" % (pt.get("refund_window_hours", "?"), _dep)
+            terms = "✪ escrow · refund window %sh%s" % (pt.get("refund_window_hours", "?"), _dep)
 
     lines = [head]
     if ctx:
@@ -219,12 +240,12 @@ def _fmt_listing(l: dict) -> str:
     if terms:
         lines.append("  " + terms)
     if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
-        lines.append("  ✅ verified buyers only — Tier-2 Midnight sign-in required to book")
+        lines.append("  ✓ verified buyers only — Tier-2 Midnight sign-in required to book")
     if l.get("description"):
         d = str(l["description"]).strip()
-        lines.append("  📝 " + (d[:100] + "…" if len(d) > 100 else d))
+        lines.append("  » " + (d[:100] + "…" if len(d) > 100 else d))
     if l.get("url"):
-        lines.append("  🔗 %s" % l["url"])
+        lines.append("  ⇗ %s" % l["url"])
     return "\n".join(lines)
 
 
@@ -1028,7 +1049,39 @@ _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", 
                  "in", "on", "at", "my", "under", "around"}
 
 
-def _smart_search(hub_url: str, text: str) -> str:
+def _show_results(hub_url: str, sender: str, arg: str) -> str:
+    """C9c pagination: '1', '2-6', 'all' replay the last search as full cards."""
+    sel = (arg or "").strip().lower()
+    results = _LAST_RESULTS.get(sender) or []
+    if not results:
+        return "Nothing to show yet — run a search first (e.g. 'search jazz')."
+    if sel == "all":
+        if len(results) > _HARD_CAP:
+            shown = "\n\n".join(_fmt_listing(x) for x in results[:_HARD_CAP])
+            return (f"From your last search (first {_HARD_CAP} of {len(results)}):\n\n" + shown
+                    + "\n\nRefine with 'search <keyword> under <price>' to narrow further.")
+        picks, hidden = results, 0
+    elif re.fullmatch(r"\d+", sel):
+        i = int(sel)
+        if not 1 <= i <= len(results):
+            return f"No result {i} — the last search found {len(results)}."
+        picks, hidden = [results[i - 1]], len(results) - 1
+    elif re.fullmatch(r"\d+\s*-\s*\d+", sel):
+        a, b = (int(x) for x in sel.split("-"))
+        a, b = min(a, b), max(a, b)
+        if a < 1 or b > len(results):
+            return f"Range out of bounds — the last search found {len(results)}."
+        picks, hidden = results[a - 1:b], len(results) - (b - a + 1)
+    else:
+        return "Say a number ('3'), a range ('2-6') or 'all' from your last search."
+    shown = "\n\n".join(_fmt_listing(x) for x in picks)
+    out = f"From your last search ({len(results)} result(s)):\n\n" + shown
+    if hidden:
+        out += f"\n\n({hidden} more — say 'all' or a range like '2-6'.)"
+    return out
+
+
+def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     """Natural-language search: 'find me a free yoga class' -> max_price=0 + word match.
     Multi-word queries union per-word matches (hub q is substring-AND by design)."""
     low = text.strip().lower()
@@ -1099,9 +1152,32 @@ def _smart_search(hub_url: str, text: str) -> str:
     if not listings:
         return (f"No listings matched{qualifier}. Try: 'search' (all), 'search jazz', "
                 "or 'find me a free yoga class'.")
-    cards = [_fmt_listing(l) for l in listings[:8]]
+    if len(_LAST_RESULTS) > 500:
+        _LAST_RESULTS.clear()
+    _LAST_RESULTS[sender] = listings
+    n = len(listings)
     tail = "\n\nTo book one, say 'book <id>' — free listings book without payment."
-    return f"Found {len(listings)} listing(s){qualifier}:\n\n" + "\n\n".join(cards) + tail
+    if n <= _INLINE_LIMIT:
+        cards = [_fmt_listing(l) for l in listings[:_HARD_CAP]]
+        return f"Found {n} listing(s){qualifier}:\n\n" + "\n\n".join(cards) + tail
+
+    def _idx_line(i: int, x: dict) -> str:
+        g = _V_GLYPH.get(x.get("vertical"), _G_TITLE)
+        bits = [str(x.get("title", "?")).strip() or "?", str(x.get("id", "?"))]
+        if x.get("location"):
+            bits.append(str(x["location"]).strip())
+        if x.get("date"):
+            wd = _weekday(str(x["date"]))
+            bits.append((f"{wd} {x['date']}") if wd else str(x["date"]))
+        bits.append(_fmt_price(x))
+        return "%2d. %s %s" % (i, g, " · ".join(bits))
+
+    idx = [_idx_line(i, x) for i, x in enumerate(listings[:_INDEX_CAP], 1)]
+    more = "" if n <= _INDEX_CAP else f"\n… and {n - _INDEX_CAP} more — refine: 'search <keyword> under <price>'."
+    preview = "\n\n".join(_fmt_listing(x) for x in listings[:_PREVIEW_CARDS])
+    return (f"Found {n} listing(s){qualifier}:\n\n" + "\n".join(idx) + more
+            + "\n\n" + preview
+            + "\n\nSay '1', '2-6' or 'all' to show full cards." + tail)
 
 
 _HELP = (
@@ -1194,6 +1270,9 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _owned_listing(hub_url, sender, text.strip()[4:].strip(), "edit")
     if low.startswith("delete "):
         return _owned_listing(hub_url, sender, text.strip()[6:].strip(), "delete")
+    # C9c: numbered follow-ups to the last search ('2', '2-6', 'all')
+    if re.fullmatch(r"\d+(?:\s*-\s*\d+)?|all", low):
+        return _show_results(hub_url, sender, low)
     # H9: full listing detail — BEFORE smart-search (it would eat 'show' as a search keyword)
     if low.startswith("show "):
         return _show_listing(hub_url, text.strip()[5:].strip())
@@ -1206,7 +1285,7 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     for kw in ("search", "find", "listings", "events", "show"):
         if low == kw or low.startswith(kw + " "):
             rest = text.strip()[len(kw):].strip()
-            return _smart_search(hub_url, (kw + " " + rest) if rest else kw)
+            return _smart_search(hub_url, (kw + " " + rest) if rest else kw, sender)
 
     # H10: booking status poll — BEFORE the booking-intent (startswith('book') would swallow it)
     if low.startswith("booking "):

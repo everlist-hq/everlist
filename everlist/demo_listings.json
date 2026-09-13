@@ -1,77 +1,169 @@
 {
-  "listings": [
-    {
-      "slug": "surya-kriya",
-      "vertical": "events",
-      "title": "Free Surya Kriya Taster Class",
-      "category": "workshop",
-      "date": "2026-09-20",
-      "price": 0,
-      "location": "Bad Tatzmannsdorf",
-      "capacity": 12,
-      "description": "Free taster session of Surya Kriya, a powerful ancient yoga from the Isha tradition. Gentle upa-yoga, guided practice, and Q&A about the full weekend retreat at Reduce Gesundheitszentrum. No experience needed.",
-      "tags": ["yoga", "free", "meditation", "wellness", "beginners"],
-      "url": "https://reduce-gesundheitszentrum.example/surya-kriya"
-    },
-    {
-      "slug": "rooftop-jazz",
-      "vertical": "events",
-      "title": "Rooftop Jazz Night",
-      "category": "concert",
-      "date": "2026-10-03",
-      "price": 15,
-      "location": "Vienna",
-      "capacity": 50,
-      "description": "Live jazz on the rooftop — quartet, sunset, and a bar with local wine.",
-      "tags": ["jazz", "music", "rooftop"],
-      "url": "https://rooftopjazz.example"
-    },
-    {
-      "slug": "repair-cafe",
-      "vertical": "events",
-      "title": "Repair Café Linz",
-      "category": "community",
-      "date": "2026-10-11",
-      "price": 0,
-      "location": "Linz",
-      "capacity": 30,
-      "description": "Bring your broken things — volunteers fix them with you. Free coffee, tools provided.",
-      "tags": ["free", "community", "sustainability"]
-    },
-    {
-      "slug": "astro-photography",
-      "vertical": "events",
-      "title": "Astrophotography Workshop",
-      "category": "workshop",
-      "date": "2026-10-24",
-      "price": 45,
-      "location": "Neusiedler See",
-      "capacity": 15,
-      "description": "Night-sky photography under dark skies. Tripods provided, bring any camera.",
-      "tags": ["photography", "workshop", "night"]
-    },
-    {
-      "slug": "mobile-massage",
-      "vertical": "services",
-      "title": "Mobile Massage",
-      "provider": "Serenity Spa",
-      "price": 30,
-      "category": "wellness",
-      "location": "Vienna",
-      "duration_minutes": 60,
-      "description": "Relaxing 60-minute massage at your home or office.",
-      "tags": ["wellness", "massage"]
-    },
-    {
-      "slug": "home-repair",
-      "vertical": "services",
-      "title": "Home Repair Visit",
-      "provider": "FixIt Co",
-      "price": 0,
-      "category": "repair",
-      "duration_minutes": 90,
-      "description": "Free first consultation visit — small repairs around the house.",
-      "tags": ["free", "repair"]
-    }
-  ]
+ "listings": [
+  {
+   "slug": "surya-kriya",
+   "vertical": "events",
+   "title": "Free Surya Kriya Taster Class",
+   "category": "workshop",
+   "date": "2026-09-20",
+   "price": 0,
+   "location": "Bad Tatzmannsdorf",
+   "capacity": 12,
+   "description": "Free taster session of Surya Kriya, a powerful ancient yoga from the Isha tradition. Gentle upa-yoga, guided practice, and Q&A about the full weekend retreat at Reduce Gesundheitszentrum. No experience needed.",
+   "tags": [
+    "yoga",
+    "free",
+    "meditation",
+    "wellness",
+    "beginners"
+   ],
+   "url": "https://reduce-gesundheitszentrum.example/surya-kriya"
+  },
+  {
+   "slug": "rooftop-jazz",
+   "vertical": "events",
+   "title": "Rooftop Jazz Night",
+   "category": "concert",
+   "date": "2026-10-03",
+   "price": 15,
+   "location": "Vienna",
+   "capacity": 50,
+   "description": "Live jazz on the rooftop — quartet, sunset, and a bar with local wine.",
+   "tags": [
+    "jazz",
+    "music",
+    "rooftop"
+   ],
+   "url": "https://rooftopjazz.example"
+  },
+  {
+   "slug": "repair-cafe",
+   "vertical": "events",
+   "title": "Repair Café Linz",
+   "category": "community",
+   "date": "2026-10-11",
+   "price": 0,
+   "location": "Linz",
+   "capacity": 30,
+   "description": "Bring your broken things — volunteers fix them with you. Free coffee, tools provided.",
+   "tags": [
+    "free",
+    "community",
+    "sustainability"
+   ]
+  },
+  {
+   "slug": "astro-photography",
+   "vertical": "events",
+   "title": "Astrophotography Workshop",
+   "category": "workshop",
+   "date": "2026-10-24",
+   "price": 45,
+   "location": "Neusiedler See",
+   "capacity": 15,
+   "description": "Night-sky photography under dark skies. Tripods provided, bring any camera.",
+   "tags": [
+    "photography",
+    "workshop",
+    "night"
+   ]
+  },
+  {
+   "slug": "mobile-massage",
+   "vertical": "services",
+   "title": "Mobile Massage",
+   "provider": "Serenity Spa",
+   "price": 30,
+   "category": "wellness",
+   "location": "Vienna",
+   "duration_minutes": 60,
+   "description": "Relaxing 60-minute massage at your home or office.",
+   "tags": [
+    "wellness",
+    "massage"
+   ]
+  },
+  {
+   "slug": "home-repair",
+   "vertical": "services",
+   "title": "Home Repair Visit",
+   "provider": "FixIt Co",
+   "price": 0,
+   "category": "repair",
+   "duration_minutes": 90,
+   "description": "Free first consultation visit — small repairs around the house.",
+   "tags": [
+    "free",
+    "repair"
+   ]
+  },
+  {
+   "slug": "vinyl-market",
+   "vertical": "events",
+   "title": "Vinyl & Coffee Market",
+   "category": "market",
+   "date": "2026-10-10",
+   "price": 5,
+   "location": "Vienna",
+   "capacity": 120,
+   "description": "Crates of second-hand vinyl, local roasters, and a repair corner for turntables.",
+   "tags": [
+    "vinyl",
+    "music",
+    "market"
+   ],
+   "url": "https://vinylmarket.example"
+  },
+  {
+   "slug": "open-air-cinema",
+   "vertical": "events",
+   "title": "Open-Air Cinema: Sci-Fi Classics",
+   "category": "community",
+   "date": "2026-10-17",
+   "price": 9,
+   "location": "Berlin",
+   "capacity": 80,
+   "description": "Retro sci-fi double feature under the stars — blankets and mulled wine available.",
+   "tags": [
+    "cinema",
+    "outdoor",
+    "scifi"
+   ],
+   "url": "https://openaircinema.example"
+  },
+  {
+   "slug": "trivia-night",
+   "vertical": "events",
+   "title": "Trivia Night at the Aquarium",
+   "category": "community",
+   "date": "2026-10-08",
+   "price": 3,
+   "location": "Berlin",
+   "capacity": 40,
+   "description": "Teams of four, five rounds, and the aquarium's jellyfish room as the tie-break stage.",
+   "tags": [
+    "quiz",
+    "fun",
+    "teams"
+   ],
+   "url": "https://aquariumquiz.example"
+  },
+  {
+   "slug": "bauhaus-tour",
+   "vertical": "events",
+   "title": "Guided Bauhaus Walking Tour",
+   "category": "other",
+   "date": "2026-09-27",
+   "price": 12,
+   "location": "Dessau",
+   "capacity": 20,
+   "description": "Two-hour architecture walk through the Bauhaus masters' estate with a local historian.",
+   "tags": [
+    "architecture",
+    "tour",
+    "history"
+   ],
+   "url": "https://bauhaustours.example"
+  }
+ ]
 }

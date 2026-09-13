@@ -30,25 +30,25 @@ class CardFormat(unittest.TestCase):
 
     def test_card_fixed_order(self):
         c = chatlib._fmt_listing(self._l())
-        self.assertTrue(c.startswith("🎫 Rooftop Jazz Night · even-2"))
+        self.assertTrue(c.startswith("♪ Rooftop Jazz Night · even-2"))
         self.assertIn("concert · Berlin rooftop · Sat 2026-10-03", c)
-        self.assertIn("💶 15.00 USD · 🎟 18 of 30 spots open", c)
-        self.assertIn("🛡 escrow · refund window 72h", c)
-        self.assertIn("📝 Live jazz on the rooftop", c)
-        self.assertIn("🔗 https://rooftopjazz.example", c)
+        self.assertIn("¤ 15.00 USD · ▢ 18 of 30 spots open", c)
+        self.assertIn("✪ escrow · refund window 72h", c)
+        self.assertIn("» Live jazz on the rooftop", c)
+        self.assertIn("⇗ https://rooftopjazz.example", c)
 
     def test_card_variants(self):
         self.assertIn("sold out (20 of 20 booked)",
                       chatlib._fmt_listing(self._l(capacity=20, registered=20)))
-        self.assertIn("💶 free", chatlib._fmt_listing(self._l(price=0)))
-        self.assertIn("⚡ instant rail",
+        self.assertIn("¤ free", chatlib._fmt_listing(self._l(price=0)))
+        self.assertIn("⇢ instant rail",
                       chatlib._fmt_listing(self._l(payment_terms={"rail": "instant"})))
         self.assertIn("verified buyers only",
                       chatlib._fmt_listing(self._l(require_verified_buyer=True)))
 
     def test_card_optional_fields(self):
         c = chatlib._fmt_listing(self._l(capacity=None))
-        self.assertNotIn("🎟", c)
+        self.assertNotIn("▢", c)
         c = chatlib._fmt_listing(self._l(date=None))
         self.assertIn("concert · Berlin rooftop", c)
         self.assertNotIn("· ·", c)
@@ -124,6 +124,63 @@ class NLUValidation(unittest.TestCase):
         with mock.patch.object(nlu, "_API_KEY", "k"), mock.patch(
                 "urllib.request.urlopen", mock.mock_open(read_data=resp)):
             self.assertEqual(nlu.translate("any jazz tonight"), "search jazz")
+
+
+class SearchPagination(unittest.TestCase):
+    """C9c: long result lists -> one-line index + preview; '3' / '2-6' / 'all' replay."""
+
+    def _ls(self, n):
+        return [{"id": f"even-{i}", "title": f"Event {i}", "category": "concert",
+                 "date": "2026-10-03", "price": i, "vertical": "events", "description": f"Description {i}"}
+                for i in range(1, n + 1)]
+
+    def _run(self, n, sender="s9"):
+        with mock.patch.object(chatlib, "_hub_get", return_value={"listings": self._ls(n)}):
+            return chatlib.handle_text("http://hub", "search concert", sender=sender)
+
+    def setUp(self):
+        chatlib._LAST_RESULTS.clear()
+
+    def test_short_list_full_cards(self):
+        r = self._run(4)
+        self.assertIn("Found 4 listing(s)", r)
+        self.assertIn("♪ Event 1 · even-1", r)
+
+    def test_long_list_index_and_preview(self):
+        r = self._run(10)
+        self.assertIn("Found 10 listing(s)", r)
+        self.assertIn("10. ♪ Event 10", r)          # index covers ALL results
+        self.assertIn("♪ Event 1 · even-1", r)      # first preview card shown
+        self.assertIn("» Description 1", r)          # first preview card shown
+        self.assertNotIn("» Description 6", r)      # card 6 NOT auto-flooded
+        self.assertIn("'2-6'", r)
+
+    def test_number_replay(self):
+        self._run(10)
+        r = chatlib.handle_text("http://hub", "3", sender="s9")
+        self.assertIn("♪ Event 3 · even-3", r)
+        self.assertIn("» Description 3", r)
+        self.assertNotIn("» Description 4", r)
+
+    def test_range_and_all_replay(self):
+        self._run(10)
+        r = chatlib.handle_text("http://hub", "2-4", sender="s9")
+        self.assertIn("♪ Event 2 · even-2", r)
+        self.assertIn("♪ Event 4 · even-4", r)
+        self.assertNotIn("» Description 5", r)
+        r = chatlib.handle_text("http://hub", "all", sender="s9")
+        self.assertIn("♪ Event 10 · even-10", r)
+
+    def test_out_of_bounds(self):
+        self._run(3)
+        r = chatlib.handle_text("http://hub", "7", sender="s9")
+        self.assertIn("No result 7", r)
+
+    def test_per_sender_isolation(self):
+        self._run(10, sender="a1")
+        self.assertIsNone(chatlib._LAST_RESULTS.get("b2"))
+        r = chatlib.handle_text("http://hub", "2", sender="b2")
+        self.assertIn("search first", r)
 
 
 if __name__ == "__main__":
