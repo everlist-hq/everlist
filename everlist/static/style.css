@@ -1,23 +1,25 @@
-/* EverList — dark-gray skin, chat-first dock + manual Discover grid.
-   Palette sampled from the owner's swatch strip; sage is the money color only. */
+/* EverList — original palette, chat-first dock + manual Discover grid.
+   Colors are the pre-redesign originals: #0d1117 blue-black + #4ade80 green.
+   Layout is the approved Direction A (centered chat dock, Discover grid). */
 :root {
-  --bg: #1B1D1F;        /* page — neutral dark gray (replaced the old blue-black) */
-  --bg2: #232628;       /* header, cards */
-  --bg3: #2A2D30;       /* inputs, chips */
-  --bg4: #323639;       /* date blocks, hover */
-  --line: #3D4348;
-  --line-soft: #2B2F32;
-  --text: #E9EBEC;
-  --text2: #BCC2C6;
-  --muted: #878E94;
-  --accent: #86C0A6;    /* sage — escrow, price accent, live dot, every CTA */
-  --accent-ink: #12211A;
-  --plum: #B089AE;      /* featured / event tags */
-  --blue: #8FA9CE;      /* services / secondary tags */
-  --accent-soft: rgba(134,192,166,.15);
-  --danger: #f0a0a0;
-  --glass: rgba(27,29,31,.9);
-  --shadow: rgba(0,0,0,.45);
+  --bg: #0d1117;        /* page — original blue-black */
+  --bg2: #161b22;       /* header, cards */
+  --bg3: #1f2630;       /* inputs, chips */
+  --bg4: #1f2630;       /* date blocks, agent bubbles (original --bg3) */
+  --line: #2b3440;
+  --line-soft: #222a34;
+  --text: #e6edf3;
+  --text2: #b6c2cf;
+  --muted: #8b98a5;
+  --accent: #4ade80;    /* original green */
+  --accent-dim: #22c55e;
+  --accent-ink: #052e14;
+  --plum: #4ade80;      /* tags unified back into the original green */
+  --blue: #4ade80;
+  --accent-soft: rgba(74,222,128,.15);
+  --danger: #f87171;
+  --glass: rgba(13,17,23,.92);
+  --shadow: rgba(0,0,0,.5);
   --radius: 14px;
 }
 
@@ -67,14 +69,14 @@ body {
 .filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .flex { flex: 1; }
 .chip {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--text2);
+  background: var(--bg3); border: 1px solid var(--line); color: var(--text);
   border-radius: 999px; padding: 7px 13px; font-size: 13px; font-weight: 500;
   cursor: pointer; white-space: nowrap; font-family: inherit;
 }
-.chip:hover { border-color: var(--accent); }
-.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.chip:hover { border-color: var(--accent-dim); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent-dim); color: var(--accent); }
 .postbtn {
-  background: var(--bg2); border: 1px dashed var(--accent); color: var(--accent);
+  background: var(--bg2); border: 1px dashed var(--accent-dim); color: var(--accent);
   border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap;
 }
 .postbtn:hover { background: var(--accent-soft); }
@@ -85,14 +87,14 @@ body {
   padding: 17px; display: flex; flex-direction: column; gap: 9px;
   cursor: default; transition: .18s;
 }
-.card:hover { border-color: var(--accent); transform: translateY(-3px); box-shadow: 0 10px 26px var(--shadow); }
-.card.feat { grid-column: span 2; background: linear-gradient(120deg, #262A28, var(--bg2)); border-color: #3C4642; }
+.card:hover { border-color: var(--accent-dim); transform: translateY(-3px); box-shadow: 0 10px 26px var(--shadow); }
+.card.feat { grid-column: span 2; background: linear-gradient(120deg, #141b24, var(--bg2)); border-color: var(--line); }
 .r1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .date { background: var(--bg4); border: 1px solid var(--line); border-radius: 9px; padding: 4px 9px; text-align: center; line-height: 1.1; }
 .date b { font-size: 16px; font-weight: 700; color: var(--accent); }
 .date s { text-decoration: none; display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .9px; color: var(--muted); }
 .vtag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; border-radius: 999px; padding: 3px 9px; background: var(--accent-soft); color: var(--accent); }
-.card.feat .vtag { background: rgba(176,137,174,.16); color: var(--plum); }
+.card.feat .vtag { background: var(--accent-soft); color: var(--accent); }
 .card h3 { margin: 0; font-size: 16px; font-weight: 640; letter-spacing: -.2px; }
 .card.feat h3 { font-size: 22px; }
 .meta { color: var(--muted); font-size: 13px; }
@@ -123,7 +125,7 @@ body {
 .dhead2 .live { display: flex; align-items: center; gap: 7px; }
 .dhead2 .tag { opacity: .7; }
 .minbtn { cursor: pointer; color: var(--text2); background: none; border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; font-size: 12px; font-family: inherit; }
-.minbtn:hover { border-color: var(--accent); color: var(--accent); }
+.minbtn:hover { border-color: var(--accent-dim); color: var(--accent); }
 
 .chat { flex: 1; overflow-y: auto; max-height: 210px; padding: 14px 15px 6px; scroll-behavior: smooth; }
 .msg { display: flex; margin: 6px 0; }
@@ -132,7 +134,7 @@ body {
   max-width: 84%; padding: 9px 13px; border-radius: 14px; font-size: 14px;
   white-space: pre-wrap; overflow-wrap: break-word;
 }
-.msg.user .bubble { background: #2C4A44; border: 1px solid #3E6357; color: var(--text); }
+.msg.user .bubble { background: #1d3a2a; border: 1px solid #2b5a3f; color: var(--text); }
 .msg.agent .bubble { background: var(--bg4); border: 1px solid var(--line); }
 .msg.err .bubble { border-color: var(--danger); color: #fca5a5; }
 .msg.think .bubble { color: var(--muted); font-style: italic; background: none; border: none; padding: 2px 8px; font-size: 12px; }
@@ -143,7 +145,7 @@ body {
   flex: 1; resize: none; background: var(--bg3); border: 1px solid var(--line);
   color: var(--text); border-radius: 14px; padding: 12px 14px; font: inherit; font-size: 14px; max-height: 180px;
 }
-.inputbar textarea:focus { outline: none; border-color: var(--accent); }
+.inputbar textarea:focus { outline: none; border-color: var(--accent-dim); }
 .inputbar button {
   background: var(--accent); border: none; color: var(--accent-ink); font-size: 16px;
   width: 44px; height: 44px; border-radius: 12px; cursor: pointer; flex-shrink: 0;
