@@ -54,7 +54,7 @@ atexit.register(lambda: (proc.terminate(), logf.close()))
 def is_fallback(reply):
     """The fallback re-enters as search; with a reachable hub its signatures are
     '֎ EverList ...' / 'No listings matched ...' (smart-search)."""
-    return reply.startswith("֎ EverList") or reply.startswith("No listings matched")
+    return reply.startswith("╔") or reply.startswith("No listings matched")
 
 
 # ---- required command coverage (backlog B10 list) ----

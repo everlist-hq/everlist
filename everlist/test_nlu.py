@@ -30,7 +30,9 @@ class CardFormat(unittest.TestCase):
 
     def test_card_fixed_order(self):
         c = chatlib._fmt_listing(self._l())
-        self.assertTrue(c.startswith(chatlib._mb("Rooftop Jazz Night") + " · even-2"))
+        self.assertTrue(c.startswith("╔═፨"))
+        self.assertIn(" " + chatlib._mb("Rooftop Jazz Night"), c)
+        self.assertNotIn("even-2", c)  # C9f: id removed, number is the handle
         self.assertIn("⌂ Berlin rooftop · ◷ " + chatlib._mb("Sat 2026-10-03") + " · $15", c)
         self.assertIn("♟ 18 left · ✪ escrow · refund window 72h", c)
         self.assertIn("✪ escrow · refund window 72h", c)
@@ -56,7 +58,7 @@ class CardFormat(unittest.TestCase):
 
     def test_card_bad_data(self):
         c = chatlib._fmt_listing({"id": "x", "price": "abc"})
-        self.assertIn("x", c)
+        self.assertIn("$abc", c)  # C9f: id no longer shown; bad price must still render safely
 
 
 class NLUValidation(unittest.TestCase):
@@ -144,13 +146,13 @@ class SearchPagination(unittest.TestCase):
     def test_short_list_full_cards(self):
         r = self._run(4)
         self.assertIn("4 found", r)
-        self.assertIn(chatlib._mb("Event 1") + " · even-1", r)
+        self.assertIn(chatlib._mb("Event 1"), r)
 
     def test_long_list_index_and_preview(self):
         r = self._run(10)
         self.assertIn("10 found", r)
         self.assertIn("10  " + chatlib._mb("Event 10"), r)          # index covers ALL results
-        self.assertIn(chatlib._mb("Event 1") + " · even-1", r)      # first preview card shown
+        self.assertIn(chatlib._mb("Event 1"), r)      # first preview card shown
         self.assertIn("» Description 1", r)          # first preview card shown
         self.assertNotIn("» Description 6", r)      # card 6 NOT auto-flooded
         self.assertIn("To book one", r)
@@ -158,18 +160,18 @@ class SearchPagination(unittest.TestCase):
     def test_number_replay(self):
         self._run(10)
         r = chatlib.handle_text("http://hub", "3", sender="s9")
-        self.assertIn(chatlib._mb("Event 3") + " · even-3", r)
+        self.assertIn(chatlib._mb("Event 3"), r)
         self.assertIn("» Description 3", r)
         self.assertNotIn("» Description 4", r)
 
     def test_range_and_all_replay(self):
         self._run(10)
         r = chatlib.handle_text("http://hub", "2-4", sender="s9")
-        self.assertIn(chatlib._mb("Event 2") + " · even-2", r)
-        self.assertIn(chatlib._mb("Event 4") + " · even-4", r)
+        self.assertIn(chatlib._mb("Event 2"), r)
+        self.assertIn(chatlib._mb("Event 4"), r)
         self.assertNotIn("» Description 5", r)
         r = chatlib.handle_text("http://hub", "all", sender="s9")
-        self.assertIn(chatlib._mb("Event 10") + " · even-10", r)
+        self.assertIn(chatlib._mb("Event 10"), r)
 
     def test_out_of_bounds(self):
         self._run(3)

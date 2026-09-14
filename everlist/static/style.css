@@ -86,6 +86,7 @@ body {
   max-width: 84%;
   padding: 10px 14px;
   border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }

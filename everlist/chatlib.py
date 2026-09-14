@@ -148,8 +148,8 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
 # C9d: the one true sheet - owner-picked grammar after 15 rounds of the sheet
 # lab: ֎ mark - ⌂ place - ◷ time - $ real currency - ♟ person
 # (always last, spaced) - math-bold names & dates (real weight in every chat).
-# The knot frame is a CSS concern on our site; foreign chats get the same rows,
-# no drifting borders. One grammar, two renderings. Monochrome text symbols only
+# The knot frame ships in the brain (C9e) - webchat CSS pins monospace so it
+# locks perfectly; foreign chats may drift slightly - accepted trade. Monochrome text symbols only
 # (U+FE0E pinned where emoji-prone) - no generic color emoji, ever.
 _G_MARK = "֎"      # eternity sign - the brand mark
 _G_PLACE = "⌂"     # house = place
@@ -173,6 +173,37 @@ for _i, _c in enumerate("0123456789"):
 def _mb(t) -> str:
     """Math-bold text - renders BOLD in every chat, no markdown needed."""
     return "".join(_BOLD.get(c, c) for c in str(t))
+
+
+# C9e: the knot frame ships IN THE BRAIN - the sheet is one framed document
+# (owner verdict: "where is the lines?"). Webchat adds monospace CSS so it
+# locks perfectly at home; foreign chats may drift slightly - accepted trade.
+_FW = 56  # inner text width in monospace cells
+
+
+def _fit(t) -> str:
+    t = str(t)
+    return t if len(t) <= _FW - 1 else t[:_FW - 2] + "\u2026"
+
+
+def _row(t) -> str:
+    return " " + _fit(t)
+
+
+def _frame(header, blocks):
+    """One knot-framed sheet: top rule, optional header + mid rule, entry
+    blocks separated by thin seams, bottom rule. All lines exactly _FW+3."""
+    fill = "\u2550" * (_FW - 3)
+    out = ["\u2554\u2550\u1368" + fill + "\u1368\u2550\u2557"]
+    if header is not None:
+        out.append(_row(header))
+        out.append("\u2560\u2550\u1368" + fill + "\u1368\u2550\u2563")
+    for i, blk in enumerate(blocks):
+        if i:
+            out.append("\u255f" + "\u2500" * (_FW + 1) + "\u2562")
+        out.extend(_row(x) for x in blk)
+    out.append("\u255a\u2550\u1368" + fill + "\u1368\u2550\u255d")
+    return "\n".join(out)
 
 # C9c: result-list display limits
 _INLINE_LIMIT = 6   # <= this many results: full cards straight away
@@ -239,14 +270,14 @@ def _fmt_facts(l: dict, full_date: bool = False, person: bool = True) -> str:
     return " · ".join(bits)
 
 
-def _fmt_listing(l: dict) -> str:
-    """C9d level-2 card - ONE fixed shape on every surface (webchat,
-    Agentverse wrapper, CLI share this brain). Bold title + id, full-date
-    facts row, person + terms, gate, story, link. Minimal-text law: no
-    instruction rows - the sheet speaks, the commands live in 'help'."""
+def _listing_rows(l: dict, num=None) -> list:
+    """Inner rows of one listing (no side rails): number + bold title, full-date
+    facts row, person + terms, gate, story, link. Minimal-text law: no id, no
+    instruction rows - the leading number is the handle ('book <n>')."""
     title = str(l.get("title", "?")).strip() or "?"
-    lines = ["%s · %s" % (_mb(title), l.get("id", "?"))]
-    lines.append("  " + _fmt_facts(l, full_date=True, person=False))
+    head = ("%2d  %s" % (num, _mb(title))) if num else _mb(title)
+    rows = [head]
+    rows.append(_fmt_facts(l, full_date=True, person=False))
     money = []
     spots = _fmt_spots(l)
     if spots:
@@ -259,15 +290,22 @@ def _fmt_listing(l: dict) -> str:
             _dep = " · deposit %s" % pt["deposit_required"] if pt.get("deposit_required") else ""
             money.append("%s escrow · refund window %sh%s" % (_G_ESCROW, pt.get("refund_window_hours", "?"), _dep))
     if money:
-        lines.append("  " + " · ".join(money))
+        rows.append(" · ".join(money))
     if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
-        lines.append("  %s verified buyers only - Tier-2 Midnight sign-in required to book" % _G_OK)
+        rows.append("%s verified buyers only - Tier-2 Midnight sign-in required to book" % _G_OK)
     if l.get("description"):
         d = str(l["description"]).strip()
-        lines.append("  %s " % _G_QUOTE + (d[:100] + "…" if len(d) > 100 else d))
+        rows.append("%s %s" % (_G_QUOTE, d[:100] + "…" if len(d) > 100 else d))
     if l.get("url"):
-        lines.append("  %s %s" % (_G_LINK, l["url"]))
-    return "\n".join(lines)
+        rows.append("%s %s" % (_G_LINK, l["url"]))
+    return rows
+
+
+def _fmt_listing(l: dict, num=None) -> str:
+    """Level-2 card - ONE fixed shape on every surface (webchat, Agentverse
+    wrapper, CLI share this brain). Horizontal knot rules + seams only, no
+    side rails, so it aligns in every chat with the bold letters intact."""
+    return _frame(None, [_listing_rows(l, num)])
 
 
 _RICH_KEYS = ("title", "category", "date", "price", "location", "capacity",
@@ -1071,34 +1109,35 @@ _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", 
 
 
 def _show_results(hub_url: str, sender: str, arg: str) -> str:
-    """C9c pagination: '1', '2-6', 'all' replay the last search as full cards."""
+    """C9c pagination: '1', '2-6', 'all' replay the last search as framed cards,
+    each numbered by its position in that search (the number is the book handle)."""
     sel = (arg or "").strip().lower()
     results = _LAST_RESULTS.get(sender) or []
     if not results:
         return "Nothing to show yet — run a search first (e.g. 'search jazz')."
     if sel == "all":
         if len(results) > _HARD_CAP:
-            shown = "\n\n".join(_fmt_listing(x) for x in results[:_HARD_CAP])
-            return (f"From your last search (first {_HARD_CAP} of {len(results)}):\n\n" + shown
-                    + "\n\nRefine with 'search <keyword> under <price>' to narrow further.")
-        picks, hidden = results, 0
+            blocks = [_listing_rows(x, i + 1) for i, x in enumerate(results[:_HARD_CAP])]
+            return (_frame("From your last search (first %d of %d):" % (_HARD_CAP, len(results)), blocks)
+                    + "\nRefine with 'search <keyword> under <price>' to narrow further.")
+        picks, hidden, start = results, 0, 1
     elif re.fullmatch(r"\d+", sel):
         i = int(sel)
         if not 1 <= i <= len(results):
             return f"No result {i} — the last search found {len(results)}."
-        picks, hidden = [results[i - 1]], len(results) - 1
+        picks, hidden, start = [results[i - 1]], len(results) - 1, i
     elif re.fullmatch(r"\d+\s*-\s*\d+", sel):
         a, b = (int(x) for x in sel.split("-"))
         a, b = min(a, b), max(a, b)
         if a < 1 or b > len(results):
             return f"Range out of bounds — the last search found {len(results)}."
-        picks, hidden = results[a - 1:b], len(results) - (b - a + 1)
+        picks, hidden, start = results[a - 1:b], len(results) - (b - a + 1), a
     else:
         return "Say a number ('3'), a range ('2-6') or 'all' from your last search."
-    shown = "\n\n".join(_fmt_listing(x) for x in picks)
-    out = f"From your last search ({len(results)} result(s)):\n\n" + shown
+    blocks = [_listing_rows(x, start + i) for i, x in enumerate(picks)]
+    out = _frame("From your last search (%d result(s)):" % len(results), blocks)
     if hidden:
-        out += f"\n\n({hidden} more — say 'all' or a range like '2-6'.)"
+        out += "\n(%d more — say 'all' or a range like '2-6'.)" % hidden
     return out
 
 
@@ -1177,20 +1216,20 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         _LAST_RESULTS.clear()
     _LAST_RESULTS[sender] = listings
     n = len(listings)
-    head = "%s EverList · %d found%s:" % (_G_MARK, n, qualifier)
-    tail = "\n\nTo book one, say 'book <id>' - $0 listings book without payment."
+    head = "%s EverList · %d found%s" % (_G_MARK, n, qualifier)
+    tail = "\nTo book one, say 'book <n>' - $0 listings book without payment."
     if n <= _INLINE_LIMIT:
-        cards = [_fmt_listing(l) for l in listings[:_HARD_CAP]]
-        return head + "\n\n" + "\n\n".join(cards) + tail
+        return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail
 
     def _idx_line(i: int, x: dict) -> str:
         title = str(x.get("title", "?")).strip() or "?"
         return "%2d  %s · %s" % (i, _mb(title), _fmt_facts(x))
 
-    idx = [_idx_line(i, x) for i, x in enumerate(listings[:_INDEX_CAP], 1)]
-    more = "" if n <= _INDEX_CAP else f"\n… and {n - _INDEX_CAP} more - refine: 'search <keyword> under <price>'."
-    preview = "\n\n".join(_fmt_listing(x) for x in listings[:_PREVIEW_CARDS])
-    return head + "\n\n" + "\n".join(idx) + more + "\n\n" + preview + tail
+    blocks = [[_idx_line(i, x) for i, x in enumerate(listings[:_INDEX_CAP], 1)]]
+    if n > _INDEX_CAP:
+        blocks.append(["… and %d more - refine: 'search <keyword> under <price>'" % (n - _INDEX_CAP)])
+    blocks += [_listing_rows(x, i + 1) for i, x in enumerate(listings[:_PREVIEW_CARDS])]
+    return _frame(head, blocks) + tail
 
 
 _HELP = (
@@ -1219,7 +1258,7 @@ _HELP = (
     "• show <id> — full listing details (description, url, availability)\n"
     "• booking <id> — check your booking's escrow status (buyer or owner)\n"
     "• rate <booking_id> <1-5> — rate a settled booking (after confirm, or free listings)\n"
-    "• book <id> <name> — book a FREE listing instantly with your account (paid = guidance)\n"
+    "• book <n> <name> — book listing n from your last search (FREE = instant; paid = guidance)\n"
     "• fee — how our fee model stays fair"
 )
 
@@ -1318,6 +1357,11 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         bits = rest.split(None, 1)
         lid = bits[0] if bits else ""
         who = bits[1].strip() if len(bits) > 1 else ""
+        if lid and re.fullmatch(r"\d+", lid):
+            _stash = _LAST_RESULTS.get(sender) or []
+            _k = int(lid)
+            if 1 <= _k <= len(_stash):
+                lid = _stash[_k - 1].get("id", lid)
         mclaim = re.search(r"pvt-[0-9a-f]{16}", who)  # P2: inline claim ('book p2p-3 pvt-... Name')
         claim = mclaim.group(0) if mclaim else ""
         if claim:
