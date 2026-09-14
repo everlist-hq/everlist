@@ -75,3 +75,11 @@
 - Live E2E in the real browser UI: "search" -> 10-line index + 3 preview cards + hint, screenshot verified.
 - Housekeeping: a chatlib comment briefly contained a framework-substituted value from a secret alias (own typo while typing the Unicode word); scanned all repo trees - the value appears only as a substring of Unicode words in worklog/review docs and the owner LICENSE copyright handle; no credential material in any file, nothing ever committed; cosmetic alias-text artifacts in the two security-review docs repaired to the plain word. AUTH_PASSWORD confirmed absent everywhere.
 - Docs: backlog C9 C9c update; staging synced + committed (not pushed).
+
+## 2026-09-14 · web UI: Direction A shipped to the live skin
+
+- Ported the chosen design into the real webchat files (static/index.html, style.css, app.js, favicon.svg).
+- Chat is the main interaction: centered glass dock, always visible, minimises to a corner pill (pill-by-default under 760px).
+- Added a manual Discover grid bound to real hub data via a new read-only /api/listings passthrough in webchat.py (proxies hub GET /listings; touches no escrow/liveness path).
+- Palette from the owner swatch strip: neutral dark-gray bg (replaced blue-black), sage = money color only (replaced neon green), plum/blue category tags.
+- CSP-safe throughout (no inline handlers, textContent-only rendering). Full `make test` gate green (GATE_EXIT=0, ALL PASSED incl. A2A E2E escrow=HELD); test_webchat 20/20; render verified by eye on an isolated non-live stack.

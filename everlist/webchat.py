@@ -208,6 +208,26 @@ class Handler(BaseHTTPRequestHandler):
     def api_get(self, path):
         if path == "/api/health":
             return self.reply(200, {"ok": hub_ok(), "hub": HUB_URL})
+        if path == "/api/listings":
+            # Read-only passthrough so the browser can render the Discover grid
+            # without a cross-origin call to the hub (CSP connect-src 'self').
+            # Proxies hub GET /listings verbatim; touches no escrow/liveness path.
+            q = self.path.split("?", 1)[1] if "?" in self.path else ""
+            url = HUB_URL + "/listings" + (("?" + q) if q else "")
+            try:
+                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = r.read()
+            except Exception:
+                return self.reply(502, {"error": "hub unreachable"})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.common_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
         return self.reply(404, {"error": "not found"})
 
     # ---- POST ----

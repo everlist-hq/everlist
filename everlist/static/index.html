@@ -4,41 +4,75 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>EverList — what are you looking for?</title>
+<title>EverList — discover anything, book it in one message</title>
+<meta name="description" content="A listing is something with a date where a human is needed or wanted. Browse manually or ask the AI — the same brain our agents use.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main class="shell">
+<div class="page">
   <header class="top">
-    <div class="brand"><span class="logo">◆</span> EverList</div>
-    <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting…</span></div>
+    <div class="brand"><img src="/favicon.svg" alt="" width="30" height="30"><span>EverList</span></div>
+    <nav class="nav">
+      <a href="#" class="on">Browse</a>
+      <a href="#" id="nav-post">Post a listing</a>
+    </nav>
+    <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting&#8230;</span></div>
   </header>
 
-  <section class="chat" id="chat" aria-live="polite">
-    <div class="msg agent"><div class="bubble">👋 Hi! I'm EverList. What are you looking for?
+  <section class="discover">
+    <div class="dhead">
+      <h1>Discover</h1>
+      <span class="cnt" id="count">loading&#8230;</span>
+      <div class="filters" id="filters">
+        <button class="chip on" data-f="all" type="button">All</button>
+        <button class="chip" data-f="events" type="button">Events</button>
+        <button class="chip" data-f="services" type="button">Services</button>
+        <button class="chip" data-f="classes" type="button">Classes</button>
+      </div>
+      <span class="flex"></span>
+      <button class="postbtn" id="postbtn" type="button">+ list a thing in one message</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <p class="empty" id="empty" hidden>Nothing here yet &#8212; be the first. Type <b>list &#8230;</b> in the chat below, or tap <b>+ list a thing</b>.</p>
+  </section>
 
-Type anything — "jazz tonight in berlin", "sushi", "piano lessons"…
+  <div class="spacer"></div>
+</div>
+
+<!-- chat dock: the main interaction, always visible, centered -->
+<div class="dock" id="dock">
+  <div class="panel">
+    <div class="dhead2">
+      <span class="live"><span class="dot ok"></span><b>Ask EverList</b></span>
+      <span class="tag">same brain our agents use</span>
+      <span class="flex"></span>
+      <button class="minbtn" id="minbtn" type="button" aria-label="Minimise chat">minimise &#8595;</button>
+    </div>
+    <section class="chat" id="chat" aria-live="polite">
+      <div class="msg agent"><div class="bubble">&#128075; Hi! I'm EverList. What are you looking for?
+
+Type anything &#8212; "jazz tonight in berlin", "sushi", "piano lessons"&#8230;
 Or try help for everything I can do: signup, search, book, my-bookings, rate, and even list your own offerings.</div></div>
-  </section>
+    </section>
+    <section class="chips" id="chips">
+      <button class="chip" data-q="help" type="button">help</button>
+      <button class="chip" data-q="search jazz berlin" type="button">search jazz berlin</button>
+      <button class="chip" data-q="signup" type="button">signup</button>
+      <button class="chip" data-q="my-bookings" type="button">my-bookings</button>
+    </section>
+    <form class="inputbar" id="form" autocomplete="off">
+      <textarea id="text" rows="1" placeholder="Ask anything &#8212; &#8220;jazz tonight under &#8364;20&#8221; then I book it" maxlength="8000" autofocus></textarea>
+      <button id="send" type="submit" aria-label="Send">&#10148;</button>
+    </form>
+    <footer class="foot">
+      <span>no account needed to look &#183; escrow holds payment until the event ends</span>
+      <button class="linkbtn" id="reset" type="button">new session</button>
+    </footer>
+  </div>
+</div>
+<button class="pill" id="pill" type="button" aria-label="Open chat">&#128172; Ask EverList</button>
 
-  <section class="chips" id="chips">
-    <button class="chip" data-q="help">help</button>
-    <button class="chip" data-q="search jazz berlin">search jazz berlin</button>
-    <button class="chip" data-q="signup">signup</button>
-    <button class="chip" data-q="my-bookings">my-bookings</button>
-  </section>
-
-  <form class="inputbar" id="form" autocomplete="off">
-    <textarea id="text" rows="1" placeholder="Type a message…" maxlength="8000" autofocus></textarea>
-    <button id="send" type="submit" aria-label="Send">➤</button>
-  </form>
-
-  <footer class="foot">
-    <span>chat-first marketplace · the same brain our agents use</span>
-    <button class="linkbtn" id="reset" type="button">new session</button>
-  </footer>
-</main>
 <script src="/app.js"></script>
 </body>
 </html>
