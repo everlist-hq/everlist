@@ -36,13 +36,22 @@ cat > /etc/caddy/Caddyfile <<EOF
 }
 
 $DOMAIN {
-encode zstd gzip
-reverse_proxy 127.0.0.1:$HUB_PORT
+    encode zstd gzip
+
+    # Browser chat is the face of the site; the agent hub API shares the same
+    # domain under its own paths (agents discover it via /.well-known/...).
+    @chat path / /index.html /api/* /app.js /style.css /favicon.svg
+    handle @chat {
+        reverse_proxy 127.0.0.1:$WEBCHAT_PORT
+    }
+    handle {
+        reverse_proxy 127.0.0.1:$HUB_PORT
+    }
 }
 
+# Chat subdomain is a friendly alias -> canonical apex
 chat.$DOMAIN {
-encode zstd gzip
-reverse_proxy 127.0.0.1:$WEBCHAT_PORT
+    redir https://$DOMAIN{uri} 301
 }
 EOF
 systemctl enable caddy
