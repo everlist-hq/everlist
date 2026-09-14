@@ -127,6 +127,21 @@ class NLUValidation(unittest.TestCase):
                 "urllib.request.urlopen", mock.mock_open(read_data=resp)):
             self.assertEqual(nlu.translate("any jazz tonight"), "search jazz")
 
+    def test_translate_affirmed_offtopic_is_empty_string(self):
+        # router ANSWERS that this is not a search -> sentinel '', not None
+        content = json.dumps({"q": None})
+        resp = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        with mock.patch.object(nlu, "_API_KEY", "k"), mock.patch(
+                "urllib.request.urlopen", mock.mock_open(read_data=resp)):
+            self.assertEqual(nlu.translate("capital of france?", sender="s3"), "")
+
+    def test_translate_empty_content_fails_open(self):
+        # reasoning model may return empty content -> indeterminate -> None (fail-open)
+        resp = json.dumps({"choices": [{"message": {"content": ""}}]}).encode()
+        with mock.patch.object(nlu, "_API_KEY", "k"), mock.patch(
+                "urllib.request.urlopen", mock.mock_open(read_data=resp)):
+            self.assertIsNone(nlu.translate("jazz", sender="s4"))
+
 
 class SearchPagination(unittest.TestCase):
     """C9c: long result lists -> one-line index + preview; '3' / '2-6' / 'all' replay."""

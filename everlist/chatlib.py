@@ -8,7 +8,9 @@ Supported intents:
   list Title | cat | date | price | loc | cap -> POST /listings (one-prompt listing, B3c)
   book <id> <name>             -> books FREE listings for logged-in accounts; guidance otherwise
   fee/commission               -> manifest declared-fee transparency info
-  help/hello/anything else     -> capability summary (fallback treats text as search)
+  help/hello                   -> capability summary
+  anything else                -> LLM router: a search, or a clean EverList-only
+                                 boundary; fail-open keeps deterministic keyword search
 """
 
 import hashlib
@@ -200,7 +202,7 @@ def _frame(header, blocks):
         out.append("\u2560\u2550\u1368" + fill + "\u1368\u2550\u2563")
     for i, blk in enumerate(blocks):
         if i:
-            out.append("\u255f" + "\u2500" * (_FW + 1) + "\u2562")
+            out.append("\u2570" + "\u2500" * (_FW + 1) + "\u256f")
         out.extend(_row(x) for x in blk)
     out.append("\u255a\u2550\u1368" + fill + "\u1368\u2550\u255d")
     return "\n".join(out)
@@ -1263,6 +1265,17 @@ _HELP = (
 )
 
 
+# Boundary reply for messages the router affirmatively classifies as NOT an
+# EverList request. The chat has one job: real-world listings. It never
+# role-plays, answers general knowledge, or discusses anything outside EverList.
+_OFFTOPIC = (
+    "I'm just the EverList chat — I only help you find, book, or list real-world "
+    "things (events, classes, services, food, gigs). I can't help with anything "
+    "else. Say 'help' for what I can do, or tell me what you're looking for — "
+    "like 'free yoga this weekend'."
+)
+
+
 def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
@@ -1453,8 +1466,13 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
 
     # --- fallback: treat the whole text as a search query
     # C9/NLU: free text may be translated by the optional LLM layer into a
-    # validated canonical search command. Fail-open: no key, API error, or
-    # non-search text keeps the deterministic behavior unchanged.
+    # validated canonical search command. Three outcomes, one law preserved:
+    #   cmd non-empty -> affirmed search, run it (deterministic core executes).
+    #   cmd == ''     -> router AFFIRMED this is not an EverList request ->
+    #                    clean boundary; the chat never answers off-topic.
+    #   cmd is None   -> indeterminate (no key / API error / empty content) ->
+    #                    fail-open: keep the deterministic keyword search, so
+    #                    'free yoga this weekend' still works without any LLM.
     try:
         import nlu
     except ImportError:
@@ -1463,4 +1481,6 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         cmd = nlu.translate(text, sender=sender)
         if cmd:
             return handle_text(hub_url, cmd, sender=sender)
+        if cmd == "":
+            return _OFFTOPIC
     return handle_text(hub_url, "search " + text.strip(), sender=sender)
