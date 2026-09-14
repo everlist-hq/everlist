@@ -144,7 +144,7 @@ cd "$INSTALL_DIR"
 [ -x venv/bin/python ] || python3 -m venv venv
 source venv/bin/activate
 pip install --quiet --upgrade pip
-pip install --quiet uagents httpx || echo "[warn] wrapper venv update failed"
+pip install --quiet -r "$APP_DIR/requirements.txt" || echo "[warn] venv requirements install failed"
 
 # 9. permissions
 chown -R deploy:deploy "$INSTALL_DIR"
