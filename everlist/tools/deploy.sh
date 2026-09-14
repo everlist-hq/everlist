@@ -30,6 +30,11 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
 # 3. Caddyfile: auto-HTTPS reverse proxy to the hub
 mkdir -p /etc/caddy
 cat > /etc/caddy/Caddyfile <<EOF
+{
+    email admin@$DOMAIN
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
 $DOMAIN {
 encode zstd gzip
 reverse_proxy 127.0.0.1:$HUB_PORT
