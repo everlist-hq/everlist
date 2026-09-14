@@ -145,7 +145,7 @@ reply = chatlib.handle_text(B1, "search " + "x" * 300, "b7-chat")
 check("B7 chat surfaces real rejection (not 'unreachable')",
       reply.startswith("Search rejected:") and "q too long" in reply, reply[:60])
 reply_ok = chatlib.handle_text(B1, "search bulk", "b7-chat")
-check("B7 normal chat search unaffected", reply_ok.startswith("Found"), reply_ok[:40])
+check("B7 normal chat search unaffected", reply_ok.startswith("֎ EverList"), reply_ok[:40])
 
 _kill(hub1); _ACTIVE.remove(hub1); log1.close()
 

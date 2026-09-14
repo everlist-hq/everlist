@@ -184,28 +184,28 @@ check("C2 OpenAPI /search documents from/to + tags + sort",
 import chatlib  # noqa: E402
 
 r = chatlib.handle_text(HUB, "search under 8 c2suite", "c2-chat")
-check("C2 chat 'under N' parses to max_price", "(under 8)" in r and "Found 2 listing(s)" in r
-      and "Beta Workshop" in r and "Gamma Meetup" in r, r[:120])
+check("C2 chat 'under N' parses to max_price", "(under 8)" in r and "2 found" in r
+      and chatlib._mb("Beta Workshop") in r and chatlib._mb("Gamma Meetup") in r, r[:120])
 
 r = chatlib.handle_text(HUB, "search cheapest c2suite", "c2-chat")
 check("C2 chat 'cheapest' sorts by price", "(cheapest first)" in r
-      and r.find("Gamma Meetup") < r.find("C2Suite Alpha"), r[:120])
+      and r.find(chatlib._mb("Gamma Meetup")) < r.find(chatlib._mb("C2Suite Alpha")), r[:120])
 
 r = chatlib.handle_text(HUB, "search soonest c2suite", "c2-chat")
 check("C2 chat 'soonest' sorts by date", "(soonest first)" in r
-      and r.find("Alpha Concert") < r.find("Beta Workshop"), r[:120])
+      and r.find(chatlib._mb("Alpha Concert")) < r.find(chatlib._mb("Beta Workshop")), r[:120])
 
 r = chatlib.handle_text(HUB, "search c2suite until 2026-11-30", "c2-chat")
-check("C2 chat 'until DATE' parses to to=", "(until 2026-11-30)" in r and "Found 2 listing(s)" in r
+check("C2 chat 'until DATE' parses to to=", "(until 2026-11-30)" in r and "2 found" in r
       and "Delta Repair" not in r, r[:120])
 
 r = chatlib.handle_text(HUB, "search free c2suite", "c2-chat")
 check("C2 chat 'free' still works alongside qualifiers", "(free only)" in r
-      and "Found 1 listing(s)" in r and "Gamma Meetup" in r, r[:120])
+      and "1 found" in r and chatlib._mb("Gamma Meetup") in r, r[:120])
 
 r = chatlib.handle_text(HUB, "search over 6 c2suite", "c2-chat")
-check("C2 chat 'over N' parses to min_price", "(over 6)" in r and "Found 2 listing(s)" in r
-      and "Alpha" in r and "Delta" in r, r[:120])
+check("C2 chat 'over N' parses to min_price", "(over 6)" in r and "2 found" in r
+      and chatlib._mb("Alpha") in r and chatlib._mb("Delta") in r, r[:120])
 
 print(f"\n=== C2 search: {sum(1 for _, ok in RESULTS if ok)}/{len(RESULTS)} passed ===")
 fails = [n for n, ok in RESULTS if not ok]

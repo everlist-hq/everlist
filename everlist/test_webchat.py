@@ -13,6 +13,8 @@ import json
 import os
 import socket
 import subprocess
+
+import chatlib
 import sys
 import tempfile
 import threading
@@ -155,7 +157,7 @@ def main():
     check("fallback search", code == 200 and "listing" in txt.lower())
     code, _, body = c.chat("search pizza under 10")
     txt = json.loads(body).get("reply", "")
-    check("filtered search", code == 200 and "Pizza" in txt)
+    check("filtered search", code == 200 and chatlib._mb("Pizza") in txt)
 
     # 6. reset clears session
     req = urllib.request.Request(BASE + "/api/reset", method="POST")

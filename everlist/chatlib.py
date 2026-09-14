@@ -145,20 +145,34 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
             f"Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.")
 
 
-_V_GLYPH = {"events": "♪", "food": "♨\uFE0E", "services": "⚙\uFE0E", "classes": "✎", "p2p": "⇄"}
-# C9c: original monochrome glyphs (alt-code text symbols, NOT color emoji) -
-# render identically in any chat and keep the card unmistakably EverList.
-# Emoji-prone codepoints carry U+FE0E (text presentation selector) so mobile
-# platforms cannot colorize them.
-_G_TITLE = "◆"      # brand diamond (default head)
-_G_PRICE = "¤"      # generic currency sign
-_G_OPEN = "▢"       # open spots (hollow grid)
-_G_FULL = "▣"       # sold out (filled grid)
-_G_ESCROW = "✪"     # seal = escrow-protected
-_G_INSTANT = "⇢"    # instant settlement
-_G_QUOTE = "»"      # description
-_G_LINK = "⇗"       # external link
-_G_OK = "✓"         # verified gate
+# C9d: the one true sheet - owner-picked grammar after 15 rounds of the sheet
+# lab: ֎ mark - ⌂ place - ◷ time - $ real currency - ♟ person
+# (always last, spaced) - math-bold names & dates (real weight in every chat).
+# The knot frame is a CSS concern on our site; foreign chats get the same rows,
+# no drifting borders. One grammar, two renderings. Monochrome text symbols only
+# (U+FE0E pinned where emoji-prone) - no generic color emoji, ever.
+_G_MARK = "֎"      # eternity sign - the brand mark
+_G_PLACE = "⌂"     # house = place
+_G_TIME = "◷"      # clock face = time
+_G_PERSON = "♟"    # pawn = a human wanted; closes every row
+_G_ESCROW = "✪"    # seal = escrow-protected
+_G_INSTANT = "⇢"   # instant settlement
+_G_QUOTE = "»"     # description
+_G_LINK = "⇗"      # external link
+_G_OK = "✓"        # verified gate
+_CUR = {"USD": "$"}    # real currency symbols (hub amounts are USD)
+
+_BOLD = {}
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    _BOLD[_c.upper()] = chr(0x1D5D4 + _i)   # sans-bold capitals
+    _BOLD[_c] = chr(0x1D5EE + _i)           # sans-bold small
+for _i, _c in enumerate("0123456789"):
+    _BOLD[_c] = chr(0x1D7EC + _i)           # sans-bold digits
+
+
+def _mb(t) -> str:
+    """Math-bold text - renders BOLD in every chat, no markdown needed."""
+    return "".join(_BOLD.get(c, c) for c in str(t))
 
 # C9c: result-list display limits
 _INLINE_LIMIT = 6   # <= this many results: full cards straight away
@@ -176,15 +190,19 @@ def _weekday(date_s: str) -> str | None:
 
 
 def _fmt_price(l: dict) -> str:
+    """'$15' / '$12.50' / '$0' - free is $0: the count language covers all."""
     try:
         p = float(l.get("price", 0))
     except (TypeError, ValueError):
-        return "¤ %s USD" % l.get("price", "?")
-    return "¤ free" if p == 0 else "¤ %.2f USD" % p
+        return "$%s" % l.get("price", "?")
+    s = "%.2f" % p
+    if s.endswith(".00"):
+        s = s[:-3]
+    return "$" + s
 
 
 def _fmt_spots(l: dict) -> str | None:
-    """'▢ 18 of 30 spots open' / '▣ sold out (30 of 30 booked)' / None if no capacity."""
+    """'♟ 50 open' / '♟ 3 left' / '♟ 0 left' (sold out) / None if no capacity."""
     try:
         cap = int(l.get("capacity") or 0)
     except (TypeError, ValueError):
@@ -196,56 +214,59 @@ def _fmt_spots(l: dict) -> str | None:
     except (TypeError, ValueError):
         reg = 0
     reg = max(0, min(reg, cap))
-    if reg >= cap:
-        return "▣ sold out (%d of %d booked)" % (reg, cap)
-    return "▢ %d of %d spots open" % (cap - reg, cap)
+    word = "open" if reg == 0 else "left"
+    return "%s %d %s" % (_G_PERSON, cap - reg, word)
+
+
+def _fmt_facts(l: dict, full_date: bool = False, person: bool = True) -> str:
+    """One glance, four answers: ⌂ place - ◷ date - $ price - ♟ person.
+    Rows show 'Sat 10-03' (year dropped); the card shows the full date."""
+    bits = []
+    if l.get("location"):
+        bits.append("%s %s" % (_G_PLACE, str(l["location"]).strip()))
+    if l.get("date"):
+        d = str(l["date"])
+        wd = _weekday(d)
+        if wd:
+            d = "%s %s" % (wd, d)
+        if not full_date and len(d) > 12 and d[-10:][:4].isdigit():
+            d = d[:-10] + d[-5:]  # 'Sat 2026-10-03' -> 'Sat 10-03'
+        bits.append("%s %s" % (_G_TIME, _mb(d)))
+    bits.append(_fmt_price(l))
+    spots = _fmt_spots(l)
+    if person and spots:
+        bits.append(spots)
+    return " · ".join(bits)
 
 
 def _fmt_listing(l: dict) -> str:
-    """C9 canonical listing card — ONE fixed shape on every surface (webchat,
-    Agentverse wrapper, CLI all share this brain). Original alt-code glyphs,
-    fixed field order, no markdown dependency: renders identically in any chat
-    and stays unmistakably EverList (no generic color emoji)."""
-    glyph = _V_GLYPH.get(l.get("vertical"), _G_TITLE)
+    """C9d level-2 card - ONE fixed shape on every surface (webchat,
+    Agentverse wrapper, CLI share this brain). Bold title + id, full-date
+    facts row, person + terms, gate, story, link. Minimal-text law: no
+    instruction rows - the sheet speaks, the commands live in 'help'."""
     title = str(l.get("title", "?")).strip() or "?"
-    head = "%s %s · %s" % (glyph, title, l.get("id", "?"))
-
-    ctx = []
-    if l.get("category"):
-        ctx.append(str(l["category"]).strip())
-    if l.get("location"):
-        ctx.append(str(l["location"]).strip())
-    if l.get("date"):
-        wd = _weekday(str(l["date"]))
-        ctx.append("%s %s" % (wd, l["date"]) if wd else str(l["date"]))
-
-    money = [_fmt_price(l)]
+    lines = ["%s · %s" % (_mb(title), l.get("id", "?"))]
+    lines.append("  " + _fmt_facts(l, full_date=True, person=False))
+    money = []
     spots = _fmt_spots(l)
     if spots:
         money.append(spots)
-
-    terms = None
     pt = l.get("payment_terms")  # C12: terms are part of the public listing face
     if isinstance(pt, dict):
         if pt.get("rail") == "instant":
-            terms = "⇢ instant rail — settled at booking, no refund window"
+            money.append("%s instant rail - settled at booking, no refund window" % _G_INSTANT)
         else:
             _dep = " · deposit %s" % pt["deposit_required"] if pt.get("deposit_required") else ""
-            terms = "✪ escrow · refund window %sh%s" % (pt.get("refund_window_hours", "?"), _dep)
-
-    lines = [head]
-    if ctx:
-        lines.append("  " + " · ".join(ctx))
-    lines.append("  " + " · ".join(money))
-    if terms:
-        lines.append("  " + terms)
+            money.append("%s escrow · refund window %sh%s" % (_G_ESCROW, pt.get("refund_window_hours", "?"), _dep))
+    if money:
+        lines.append("  " + " · ".join(money))
     if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
-        lines.append("  ✓ verified buyers only — Tier-2 Midnight sign-in required to book")
+        lines.append("  %s verified buyers only - Tier-2 Midnight sign-in required to book" % _G_OK)
     if l.get("description"):
         d = str(l["description"]).strip()
-        lines.append("  » " + (d[:100] + "…" if len(d) > 100 else d))
+        lines.append("  %s " % _G_QUOTE + (d[:100] + "…" if len(d) > 100 else d))
     if l.get("url"):
-        lines.append("  ⇗ %s" % l["url"])
+        lines.append("  %s %s" % (_G_LINK, l["url"]))
     return "\n".join(lines)
 
 
@@ -1156,28 +1177,20 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         _LAST_RESULTS.clear()
     _LAST_RESULTS[sender] = listings
     n = len(listings)
-    tail = "\n\nTo book one, say 'book <id>' — free listings book without payment."
+    head = "%s EverList · %d found%s:" % (_G_MARK, n, qualifier)
+    tail = "\n\nTo book one, say 'book <id>' - $0 listings book without payment."
     if n <= _INLINE_LIMIT:
         cards = [_fmt_listing(l) for l in listings[:_HARD_CAP]]
-        return f"Found {n} listing(s){qualifier}:\n\n" + "\n\n".join(cards) + tail
+        return head + "\n\n" + "\n\n".join(cards) + tail
 
     def _idx_line(i: int, x: dict) -> str:
-        g = _V_GLYPH.get(x.get("vertical"), _G_TITLE)
-        bits = [str(x.get("title", "?")).strip() or "?", str(x.get("id", "?"))]
-        if x.get("location"):
-            bits.append(str(x["location"]).strip())
-        if x.get("date"):
-            wd = _weekday(str(x["date"]))
-            bits.append((f"{wd} {x['date']}") if wd else str(x["date"]))
-        bits.append(_fmt_price(x))
-        return "%2d. %s %s" % (i, g, " · ".join(bits))
+        title = str(x.get("title", "?")).strip() or "?"
+        return "%2d  %s · %s" % (i, _mb(title), _fmt_facts(x))
 
     idx = [_idx_line(i, x) for i, x in enumerate(listings[:_INDEX_CAP], 1)]
-    more = "" if n <= _INDEX_CAP else f"\n… and {n - _INDEX_CAP} more — refine: 'search <keyword> under <price>'."
+    more = "" if n <= _INDEX_CAP else f"\n… and {n - _INDEX_CAP} more - refine: 'search <keyword> under <price>'."
     preview = "\n\n".join(_fmt_listing(x) for x in listings[:_PREVIEW_CARDS])
-    return (f"Found {n} listing(s){qualifier}:\n\n" + "\n".join(idx) + more
-            + "\n\n" + preview
-            + "\n\nSay '1', '2-6' or 'all' to show full cards." + tail)
+    return head + "\n\n" + "\n".join(idx) + more + "\n\n" + preview + tail
 
 
 _HELP = (

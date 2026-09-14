@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+N = len(json.load(open(os.path.join(HERE, "demo_listings.json")))["listings"])
 RESULTS = []
 
 
@@ -78,9 +79,9 @@ try:
     print("== H16: one command seeds the full demo ==")
     r = run_seed(port1)
     check("seed tool exit 0 on fresh hub", r.returncode == 0, r.stdout + r.stderr)
-    check("all 6 demo listings created", r.stdout.count("seeded") == 6, r.stdout)
+    check(f"all {N} demo listings created", r.stdout.count("seeded") == N, r.stdout)
     check("yoga class in demo output", "Free Surya Kriya Taster Class" in r.stdout)
-    check("manage codes surfaced for owners", r.stdout.count("manage:") == 6, r.stdout)
+    check("manage codes surfaced for owners", r.stdout.count("manage:") == N, r.stdout)
     st, res = get(port1, "/search?q=yoga")
     yoga = [l for l in res.get("listings", []) if "Surya Kriya" in l.get("title", "")]
     check("yoga findable via search after seeding", st == 200 and len(yoga) == 1, str(st))

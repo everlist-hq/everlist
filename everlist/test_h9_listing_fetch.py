@@ -163,7 +163,7 @@ try:
     print("== H9: chat 'show' ==")
     import chatlib
     out = chatlib.handle_text(BASE, f"show {LID}", sender="h9-sender")
-    check("chat show renders full record", "H9 Rich Event" in out and "https://example.dev/h9" in out, out[:140])
+    check("chat show renders full record", chatlib._mb("H9 Rich Event") in out and "https://example.dev/h9" in out, out[:140])
     out2 = chatlib.handle_text(BASE, "show even-9999", sender="h9-sender")
     check("chat show 404 honest", "no listing" in out2.lower(), out2[:100])
     out3 = chatlib.handle_text(BASE, f"show {HID}", sender="h9-sender")
