@@ -51,6 +51,17 @@ else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
+# Resolve app root: the public repo nests the hub under everlist/; support both layouts
+if [ -f "$INSTALL_DIR/app.py" ]; then
+  APP_DIR="$INSTALL_DIR"
+elif [ -f "$INSTALL_DIR/everlist/app.py" ]; then
+  APP_DIR="$INSTALL_DIR/everlist"
+else
+  echo "ERROR: app.py not found after clone/pull under $INSTALL_DIR" >&2
+  exit 1
+fi
+echo "[layout] app root: $APP_DIR"
+
 # 5. production env file — real admin/booking/seed keys generated HERE (0600).
 if [ ! -s "$ENVF" ]; then
   umask 077
@@ -77,9 +88,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=deploy
-WorkingDirectory=$INSTALL_DIR
+WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENVF
-ExecStart=/usr/bin/python3 -u $INSTALL_DIR/app.py
+ExecStart=/usr/bin/python3 -u $APP_DIR/app.py
 Restart=always
 RestartSec=5
 
@@ -88,7 +99,7 @@ WantedBy=multi-user.target
 EOF
 
 # 7. wrapper unit (agentverse chat agent, depends on hub)
-cat > /etc/systemd/system/everlist-wrapper.service <<'WRAPPER'
+cat > /etc/systemd/system/everlist-wrapper.service <<WRAPPER
 [Unit]
 Description=EverList Agentverse Wrapper
 After=everlist.service
@@ -97,10 +108,10 @@ Requires=everlist.service
 [Service]
 Type=simple
 User=deploy
-WorkingDirectory=/home/deploy/everlist
-EnvironmentFile=/home/deploy/everlist.env
-Environment="HUB_URL=http://127.0.0.1:8802"
-ExecStart=/home/deploy/everlist/venv/bin/python wrapper.py
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$ENVF
+Environment="HUB_URL=http://127.0.0.1:$HUB_PORT"
+ExecStart=$INSTALL_DIR/venv/bin/python $APP_DIR/wrapper.py
 Restart=always
 RestartSec=5
 
@@ -108,7 +119,7 @@ RestartSec=5
 WantedBy=multi-user.target
 WRAPPER
 
-cat > /etc/systemd/system/everlist-webchat.service <<'WEBCHAT'
+cat > /etc/systemd/system/everlist-webchat.service <<WEBCHAT
 [Unit]
 Description=EverList Web Chat (chat-first web UI)
 After=everlist.service
@@ -117,10 +128,10 @@ Requires=everlist.service
 [Service]
 Type=simple
 User=deploy
-WorkingDirectory=/home/deploy/everlist
-EnvironmentFile=/home/deploy/everlist.env
-Environment="WEBCHAT_HUB_URL=http://127.0.0.1:8802"
-ExecStart=/home/deploy/everlist/venv/bin/python webchat.py
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$ENVF
+Environment="WEBCHAT_HUB_URL=http://127.0.0.1:$HUB_PORT"
+ExecStart=$INSTALL_DIR/venv/bin/python $APP_DIR/webchat.py
 Restart=always
 RestartSec=5
 
