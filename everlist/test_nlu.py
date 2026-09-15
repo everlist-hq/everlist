@@ -200,5 +200,43 @@ class SearchPagination(unittest.TestCase):
         self.assertIn("search first", r)
 
 
+class BookByNumber(unittest.TestCase):
+    # C9i: 'book <n>' resolves the Nth result of the sender's last search;
+    # honest errors when the stash is empty or n is out of range. Ids are
+    # never pure digits (SPEC 14), so digits are always positional handles.
+    # A message carrying a pvt-claim keeps the P2 fall-through.
+
+    def _ls(self, n):
+        return [{"id": "even-%d" % i, "title": "Event %d" % i, "price": 10,
+                 "payment_terms": {"rail": "escrow", "refund_window_hours": 72}}
+                for i in range(1, n + 1)]
+
+    def test_book_by_number_resolves(self):
+        with mock.patch.object(chatlib, "_hub_get", return_value={"listings": self._ls(4)}):
+            chatlib.handle_text("http://hub", "search concert", sender="bn1")
+        with mock.patch.object(chatlib, "_hub_get", return_value={"listings": self._ls(4)}):
+            r = chatlib.handle_text("http://hub", "book 2 Alex", sender="bn1")
+        self.assertIn("Event 2", r)  # stash position 2 -> real id even-2
+
+    def test_book_by_number_out_of_range(self):
+        with mock.patch.object(chatlib, "_hub_get", return_value={"listings": self._ls(3)}):
+            chatlib.handle_text("http://hub", "search concert", sender="bn2")
+        r = chatlib.handle_text("http://hub", "book 5 Alex", sender="bn2")
+        self.assertIn("No result 5", r)
+        self.assertIn("found 3", r)
+
+    def test_book_by_number_no_search(self):
+        chatlib._LAST_RESULTS.pop("bn3", None)
+        r = chatlib.handle_text("http://hub", "book 2 Alex", sender="bn3")
+        self.assertIn("no last search here", r)
+        self.assertIn("search", r)
+
+    def test_book_number_with_claim_keeps_p2_path(self):
+        chatlib._LAST_RESULTS.pop("bn4", None)
+        with mock.patch.object(chatlib, "_hub_get", side_effect=Exception("no hub")), mock.patch.object(chatlib, "_hub_get_claim", side_effect=Exception("no hub")):
+            r = chatlib.handle_text("http://hub", "book 2 pvt-abcdef0123456789 Alex", sender="bn4")
+        self.assertIn("Bookings need two things", r)  # generic P2 wall, not the number error
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

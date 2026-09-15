@@ -413,3 +413,25 @@ gate. `_fmt_listing` shows a verified-buyers-only line for gated listings.
 Claim code and verification are INDEPENDENT walls on a private gated deal:
 valid claim without verification is still 403; verification without claim is
 still 404. Neither substitutes for the other.
+
+## 23. Chat payload format (owner-pinned, 2026-09-15)
+
+Two interfaces, never mixed in one message:
+
+- **Chats speak the sheet.** Every chat surface (webchat, Agentverse wrapper,
+  CLI) renders listings through the shared deterministic brain (`chatlib.py`):
+  knot-framed sheet, math-bold brand/names/dates, glyph facts row
+  (place/time/price/person), numbered entries, `book <n>` positional handles.
+  No format negotiation, no JSON in chat bubbles, no per-consumer rendering -
+  the brand must not drift.
+- **Programs speak JSON.** The hub API (`/search`, `/listings/{id}`, ...) and
+  the SDK are the data interface for programmatic consumers (compare, filter,
+  escrow tooling). They use real listing ids, never positional numbers.
+
+`chatlib` is the only JSON-to-sheet translator; LLM/NLU layers emit commands,
+they never render listings. Since ids are never pure digits (SPEC 14), a
+numeric `book` argument always means the Nth result of the sender's last
+search in this chat; with no last search (or n out of range) the chat answers
+with honest guidance instead of the generic booking wall. A message carrying
+a `pvt-` claim keeps the P2 path. An optional `json` command inside chats may
+exist later for a proven consumer need - not built speculatively.

@@ -533,3 +533,13 @@ default, corner only when minimised), and supplied a swatch strip to replace neo
 - Live E2E on :8804 (fresh session, search jazz berlin): DOM-verified bold brand header, bold names/dates, thin rounded seams, numbered entries, $/pawn/escrow/quote/link rows, tail "book <n>". Screenshot + page-content verified.
 - DOC LESSON (process): appending an entry containing raw math-bold glyphs through a shell heredoc corrupted them into lone surrogates and the open('w') truncate-on-crash emptied worklog.md (committed empty in b1f85ed). Restored here from git HEAD~1. Rule: never embed math-bold literals in heredocs/scripts - describe them or use runtime _mb().
 - Observation (not chased, out of scope): the Discover side panel shows "hub offline" while the chat search works - likely the panel's browser-side fetch (CORS) vs the chat's server-side proxy; pre-existing, worth a look on the VPS pass.
+
+
+## 2026-09-15 - C9i: chat payload format pinned + book-by-number hardened (owner: layered answer approved)
+- Owner asked the format strategy question for random chats (JSON only / human only / both). Answer given and approved: LAYERED - chats speak the sheet (chatlib is the only JSON-to-sheet translator, no format negotiation, brand cannot drift), programs speak JSON (hub API + SDK with real ids). Pinned as SPEC section 23 (Chat payload format, owner-pinned 2026-09-15).
+- Gap found while auditing the feature: with an empty last-search stash (fresh session) a numeric 'book 2' fell through to the hub and returned the generic credentials/SDK wall. Guard added: out-of-range answers 'No result N - your last search found M', empty stash answers 'No result N - you have no last search here. Run one first'. P2 messages carrying a pvt-claim keep the fall-through (guard does not fire).
+- Safety ground: SPEC 14 guarantees ids are never pure digits, so a digit argument is ALWAYS a positional handle - zero collision.
+- Tests: BookByNumber class added (4 tests: resolves / out-of-range / no-search / claim-keeps-P2); test_nlu now 24/24. Full make test gate ALL PASSED (GATE_EXIT=0, PYTHON=venv/bin/python override).
+- Live E2E on :8804 (fresh session): typed 'book 2' with no prior search - page answered exactly 'No result 2 - you have no last search here. Run one first (e.g. search jazz), then book <n> <name>.' Verified in page content.
+- Surfaces restarted on the C9i build: hub + wrapper + webchat all RUNNING.
+- Patch-script lesson (repeat of the heredoc rule in new clothes): triple-single-quoted strings containing apostrophes broke the patch script itself (SyntaxError, nothing executed - files untouched). Fixed by wrapping text in triple-double quotes and using comments instead of docstrings. Nothing was corrupted this time; caught at parse.

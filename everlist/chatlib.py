@@ -1378,10 +1378,20 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         lid = bits[0] if bits else ""
         who = bits[1].strip() if len(bits) > 1 else ""
         if lid and re.fullmatch(r"\d+", lid):
+            # C9f/C9i: ids are never pure digits (SPEC 14), so a digit is a
+            # positional handle into the sender's last search. Empty stash or
+            # out-of-range -> honest guidance, never the generic SDK wall.
+            # (A message carrying a pvt-claim keeps the P2 fall-through.)
             _stash = _LAST_RESULTS.get(sender) or []
             _k = int(lid)
             if 1 <= _k <= len(_stash):
                 lid = _stash[_k - 1].get("id", lid)
+            elif not re.search(r"pvt-[0-9a-f]{16}", who):
+                if _stash:
+                    return ("No result %d - your last search found %d. "
+                            "Say 'book <n> <name>' with n from that search." % (_k, len(_stash)))
+                return ("No result %d - you have no last search here. Run one first "
+                        "(e.g. 'search jazz'), then 'book <n> <name>'." % _k)
         mclaim = re.search(r"pvt-[0-9a-f]{16}", who)  # P2: inline claim ('book p2p-3 pvt-... Name')
         claim = mclaim.group(0) if mclaim else ""
         if claim:
