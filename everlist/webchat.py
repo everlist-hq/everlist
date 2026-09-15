@@ -296,7 +296,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_get(self, path):
         if path == "/api/health":
-            return self.reply(200, {"ok": hub_ok(), "hub": HUB_URL})
+            try:
+                import nlu as _nlu
+                nlu_status = _nlu.status()
+            except Exception:
+                nlu_status = {"configured": False, "error": "nlu unavailable"}
+            return self.reply(200, {"ok": hub_ok(), "hub": HUB_URL, "nlu": nlu_status})
         if path == "/api/listings":
             # Read-only passthrough so the browser can render the Discover grid
             # without a cross-origin call to the hub (CSP connect-src 'self').

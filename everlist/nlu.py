@@ -46,6 +46,18 @@ _MODEL = os.environ.get("EVERLIST_NLU_MODEL", "e2ee-glm-5-3-flash")
 _TIMEOUT = float(os.environ.get("EVERLIST_NLU_TIMEOUT", "8"))
 
 # Tiny per-sender rate limit: NLU is the only external call in the chat path.
+# C9h: router health visibility - counters so /api/health can report the
+# router state instead of the fail-open path hiding an outage (a dead key or
+# empty quota previously looked identical to "no LLM configured").
+_STAT = {"ok": 0, "no_search": 0, "errors": 0, "last_error": ""}
+
+
+def status() -> dict:
+    """Router health snapshot for /api/health. Never includes key material."""
+    return {"configured": bool(_API_KEY), "model": _MODEL if _API_KEY else None,
+            "ok": _STAT["ok"], "no_search": _STAT["no_search"],
+            "errors": _STAT["errors"], "last_error": _STAT["last_error"]}
+
 _RL: dict = {}
 _RL_WINDOW = 300.0
 _RL_CAP = 30
@@ -209,17 +221,24 @@ def translate(text: str, sender: str = "") -> str | None:
                 {"role": "user", "content": text.strip()[:500]},
             ]
         )
-    except Exception:
+    except Exception as e:
+        _STAT["errors"] += 1
+        _STAT["last_error"] = ("%s: %s" % (type(e).__name__, e))[:120]
         return None
     if not content:
+        _STAT["errors"] += 1
+        _STAT["last_error"] = "empty completion"
         return None
     d = _extract_json(content)
     if not isinstance(d, dict):
         return None
     cmd = build_cmd(d)
     if cmd is None:
+        _STAT["no_search"] += 1
         # Router answered with valid JSON but found no search in it. That is an
         # AFFIRMED off-topic -> return the empty-string sentinel, distinct from
         # None (None stays reserved for indeterminate / fail-open paths).
         return ""
+    if cmd:
+        _STAT["ok"] += 1
     return cmd
