@@ -1315,6 +1315,12 @@ def _boundary_or_none(text: str):
         return _WHOAMI
     if _OFFTOPIC_RX.search(t):
         return _OFFTOPIC
+    # C9g: math gate — pure arithmetic messages or explicit math questions.
+    # fullmatch keeps range-style searches ('party for 4-6 people') safe.
+    if re.fullmatch(r"[\d\s+\-*/x().%^]+", low) and re.search(r"\d\s*[-+*/x%^]\s*\d", low):
+        return _OFFTOPIC
+    if re.match(r"^(what(?:'| i)s|what is|how much is|calculate|compute)\s+[\d(]", low):
+        return _OFFTOPIC
     return None
 
 
@@ -1384,11 +1390,75 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _owned_listing(hub_url, sender, text.strip()[4:].strip(), "edit")
     if low.startswith("delete "):
         return _owned_listing(hub_url, sender, text.strip()[6:].strip(), "delete")
+    # --- page/board reset (C9e): 'show me the main page again', 'back to all'
+    if re.fullmatch(
+        r"(show (me |us )?|take (me |us )?|back (to |on )?)*(the )?(main |home |start |front )?(page|screen|board|homepage)"
+        r"( again| once more| please)?|back to (all|everything|start)|reset( the)? (board|page|screen)", low):
+        _LAST_RESULTS.pop(sender, None)
+        return ("🔎 The whole board is back — every live listing is up.\n"
+                "Tell me what you feel like — 'jazz tonight', 'free yoga', 'sushi' — and I'll pull them out for you.")
+
+    # --- dismissals & negations (C9f): don't keyword-search feelings.
+    # 'nah never mind', 'i decided differently' -> acknowledge, keep state.
+    # 'i don't want yoga, show me something else' -> browse all EXCEPT that.
+    _m = re.search(
+        r"\b(?:i\s+)?(?:do(?:e)?s?n?['’]?t|don['’]?t|not)\s+"
+        r"(?:want|like|need|do|care for)\s+(\w+)", low)
+    if _m and not re.match(r"^(search|find|book|show|help)\b", low):
+        excl = _m.group(1)
+        if excl in ("it", "that", "this", "them", "to", "the", "a", "any"):
+            excl = None
+        listings = []
+        try:
+            listings = (_hub_get(hub_url, "/listings") or {}).get("listings") or []
+        except Exception:
+            pass
+        if excl:
+            listings = [l for l in listings
+                        if excl not in str(l.get("title", "")).lower()
+                        and excl not in str(l.get("category", "")).lower()
+                        and excl not in str(l.get("description", "")).lower()]
+        if listings:
+            if len(_LAST_RESULTS) > 500:
+                _LAST_RESULTS.clear()
+            _LAST_RESULTS[sender] = listings
+            return (_frame("%s %s · %d found (without %s)" % (_G_MARK, _mb("EverList"), len(listings), excl or "that"),
+                           [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])])
+                    + "\nTo book one, say 'book <n>' - $0 listings book without payment.")
+        return ("Got it — no %s on the board right now anyway. "
+                "Tell me what you're in the mood for instead." % (excl or "that"))
+
+    # dismissals ('nah never mind', 'i decided differently') — acknowledge,
+    # never keyword-search feelings. Token-based: short messages built only
+    # from dismissal tokens (+ optional reason) match; real searches don't.
+    _DTOK = ("i decided differently", "i decided otherwise", "changed my mind",
+             "never mind", "nevermind", "forget it", "no thanks", "no thank you",
+             "not now", "not today", "maybe later", "thank you", "thanks",
+             "nah", "nope", "no", "ok", "okay", "alright", "fine", "thx")
+    _core = low
+    for _ in range(4):
+        _prev = _core
+        for t in _DTOK:
+            _core = re.sub(r"\b" + re.escape(t) + r"\b", " ", _core)
+        _core = re.sub(r"[^a-z']+", " ", _core).strip()
+        if _core == _prev:
+            break
+    # must contain real letters (a dismissal word); pure numbers/punctuation
+    # ('2', '7', '2-6' replay handles) must fall through to the dispatcher.
+    if low and not _core and len(low) <= 40 and re.search(r"[a-z]", low):
+        return ("No problem 👍 The board stays as it is. When you're ready: tell me what "
+                "you feel like — 'jazz tonight', 'free yoga', 'sushi' — and I'll find it.")
+
     # C9c: numbered follow-ups to the last search ('2', '2-6', 'all')
     if re.fullmatch(r"\d+(?:\s*-\s*\d+)?|all", low):
         return _show_results(hub_url, sender, low)
     # H9: full listing detail — BEFORE smart-search (it would eat 'show' as a search keyword)
     if low.startswith("show "):
+        arg = text.strip()[5:].strip().lower()
+        if arg in ("all", "everything", "the board", "listings"):
+            if _LAST_RESULTS.get(sender):
+                return _show_results(hub_url, sender, "all")
+            return handle_text(hub_url, "search", sender=sender)
         return _show_listing(hub_url, text.strip()[5:].strip())
     if low.startswith("unarchive "):
         return _owned_listing(hub_url, sender, text.strip()[9:].strip(), "unarchive")
