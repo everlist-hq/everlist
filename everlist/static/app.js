@@ -328,20 +328,28 @@ if (filters) filters.addEventListener("click", (e) => {
    Math: every animated box stays inside its own final footprint, so nothing
    can ever cover a neighbor.
    - The hero card (opening/closing) animates its REAL width/height (layout
-     box, no transform scale — text never smears) from old rect to new. Its
-     animated box is always within the union of old+new footprint.
-   - Every other card moves rigidly: translate-only, same easing. Pushed
-     neighbors share the hero's delta per grid lane, so the clearance between
-     the moving edge and the hero stays constant (= grid gap) at every frame.
-   - If the hero's top-left jumps (row crossing), it fades in place instead
-     of flying — no motion, no overlap. */
-const EASE = { duration: 340, easing: "cubic-bezier(.2,.7,.2,1)" };
+     box, no transform scale — text never smears). Its animated box is always
+     within the union of old+new footprint.
+   - Every other card moves rigidly, translate-only, same easing. Layout-wise
+     each card shifts exactly ONE flow slot; the only long moves are "wrap"
+     cards (row-end -> next-row-start). Those never slide across the board:
+     they fade out at the old slot and fade in at the new one, so no card ever
+     VISIBLY travels more than one position (owner call: no big jumps). */
+const EASE = { duration: 320, easing: "cubic-bezier(.2,.7,.2,1)" };
+
+function gridPitch() {
+  const cs = getComputedStyle(grid);
+  const w = parseFloat(cs.gridTemplateColumns.split(" ")[0]) || 0;
+  const gap = parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0;
+  return (w + gap) || 320;
+}
 
 function animateBoardChange(mutate, hero) {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const before = new Map();
   Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
   mutate();
+  const pitch = gridPitch();
   Array.from(grid.children).forEach((c) => {
     const f = before.get(c);
     if (!f) return;
@@ -358,9 +366,21 @@ function animateBoardChange(mutate, hero) {
       );
       return;
     }
-    if (reduce) return;
     const dx = f.left - l.left, dy = f.top - l.top;
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    if (reduce) return;
+    if (Math.abs(dy) > 2 && Math.abs(dx) > pitch * 0.5) {
+      /* corner move (changes row AND column): fade out where it was, fade in
+         where it lands — never sweep across the board */
+      c.animate(
+        [{ transform: "translate(" + dx + "px," + dy + "px)", opacity: 1 },
+         { transform: "translate(" + dx + "px," + dy + "px)", opacity: 0, offset: 0.35 },
+         { transform: "none", opacity: 0, offset: 0.65 },
+         { transform: "none", opacity: 1 }],
+        { duration: 380, easing: "ease-in-out" }
+      );
+      return;
+    }
     c.animate(
       [{ transform: "translate(" + dx + "px," + dy + "px)" },
        { transform: "none" }],
