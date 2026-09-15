@@ -45,18 +45,42 @@ _API_KEY = os.environ.get("EVERLIST_NLU_API_KEY", "")
 _MODEL = os.environ.get("EVERLIST_NLU_MODEL", "e2ee-glm-5-3-flash")
 _TIMEOUT = float(os.environ.get("EVERLIST_NLU_TIMEOUT", "8"))
 
+# C9i: provider fallback chain - if the primary (A0 Venice proxy) is out of
+# quota or unreachable, try the fallback provider (OpenRouter) before failing
+# open to keyword search. Same validated-JSON contract on every provider.
+_FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://openrouter.ai/api/v1")
+_FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
+_FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "inception/mercury-2.5")
+_PROVIDERS: list[dict] = []
+if _API_KEY:
+    _PROVIDERS.append({"name": "primary", "url": _API_URL, "key": _API_KEY, "model": _MODEL})
+if _FB_KEY:
+    _PROVIDERS.append({"name": "fallback", "url": _FB_URL, "key": _FB_KEY, "model": _FB_MODEL})
+
 # Tiny per-sender rate limit: NLU is the only external call in the chat path.
 # C9h: router health visibility - counters so /api/health can report the
 # router state instead of the fail-open path hiding an outage (a dead key or
 # empty quota previously looked identical to "no LLM configured").
 _STAT = {"ok": 0, "no_search": 0, "errors": 0, "last_error": ""}
+_PSTAT: dict = {}
+
+
+def _perr(p: dict, err: str) -> None:
+    st = _PSTAT.setdefault(p["name"], {"ok": 0, "errors": 0, "last_error": ""})
+    st["errors"] += 1
+    st["last_error"] = err[:120]
+    _STAT["errors"] += 1
+    _STAT["last_error"] = (p["name"] + ": " + err)[:120]
 
 
 def status() -> dict:
     """Router health snapshot for /api/health. Never includes key material."""
-    return {"configured": bool(_API_KEY), "model": _MODEL if _API_KEY else None,
+    return {"configured": bool(_PROVIDERS), "model": _MODEL if _API_KEY else None,
             "ok": _STAT["ok"], "no_search": _STAT["no_search"],
-            "errors": _STAT["errors"], "last_error": _STAT["last_error"]}
+            "errors": _STAT["errors"], "last_error": _STAT["last_error"],
+            "providers": [{"name": p["name"], "model": p["model"],
+                           **_PSTAT.get(p["name"], {"ok": 0, "errors": 0, "last_error": ""})}
+                          for p in _PROVIDERS]}
 
 _RL: dict = {}
 _RL_WINDOW = 300.0
@@ -122,18 +146,32 @@ def _rate_ok(sender: str) -> bool:
 
 
 def _call(messages: list) -> str | None:
-    body = json.dumps(
-        {"model": _MODEL, "messages": messages, "temperature": 0, "max_tokens": int(os.environ.get("EVERLIST_NLU_MAX_TOKENS", "4000"))}  # mercury-2-5 reasoning burns ~1200 tokens before content; 1200 starved it to empty (finish=length)
-    ).encode()
-    req = urllib.request.Request(
-        _API_URL.rstrip("/") + "/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + _API_KEY},
-    )
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-        d = json.loads(r.read().decode())
-    msg = (d.get("choices") or [{}])[0].get("message") or {}
-    return msg.get("content")
+    """Try each configured provider in order; first non-empty content wins.
+    A provider failure (quota 403, timeout, empty content) falls through to
+    the next one; only when ALL fail do we return None (fail-open upstream)."""
+    max_tokens = int(os.environ.get("EVERLIST_NLU_MAX_TOKENS", "4000"))
+    for p in _PROVIDERS:
+        body = json.dumps(
+            {"model": p["model"], "messages": messages, "temperature": 0, "max_tokens": max_tokens}  # mercury reasoning burns ~1200 tokens before content
+        ).encode()
+        req = urllib.request.Request(
+            p["url"].rstrip("/") + "/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + p["key"],
+                     "User-Agent": "everlist-nlu/1 (hub; contact: ops@everlist.network)"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
+                d = json.loads(r.read().decode())
+            msg = (d.get("choices") or [{}])[0].get("message") or {}
+            content = msg.get("content")
+            if content:
+                _PSTAT.setdefault(p["name"], {"ok": 0, "errors": 0, "last_error": ""})["ok"] += 1
+                return content
+            _perr(p, "empty completion")
+        except Exception as e:
+            _perr(p, type(e).__name__ + ": " + str(e))
+    return None
 
 
 def _extract_json(content: str) -> dict | None:
