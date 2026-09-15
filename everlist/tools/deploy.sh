@@ -40,7 +40,7 @@ $DOMAIN {
 
     # Browser chat is the face of the site; the agent hub API shares the same
     # domain under its own paths (agents discover it via /.well-known/...).
-    @chat path / /index.html /api/* /app.js /style.css /favicon.svg
+    @chat path / /index.html /api/* /app.js /style.css /favicon.svg /l/* /sitemap.xml /robots.txt
     handle @chat {
         reverse_proxy 127.0.0.1:$WEBCHAT_PORT
     }
