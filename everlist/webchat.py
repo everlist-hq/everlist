@@ -397,6 +397,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if path == "/api/reset":
+            # SECURITY: clearing the cookie must also kill the server-side
+            # session — otherwise the old sid value could still act (hub
+            # tokens live in chatlib._SESSIONS keyed by "web-"+sid).
+            old = self.sid()
+            with BRAIN_LOCK:
+                chatlib._SESSIONS.pop("web-" + old, None)
             return self.reply(200, {"ok": True}, cookie=self.cookie_attr(0) % "")
         if path == "/api/login":
             return self.api_login()
@@ -453,6 +459,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 502, {"error": "chat brain error — try again"},
                 cookie=self.set_sid(sid))
+        # Board-only results (owner call): when the search already opened as
+        # UI on the board, don't repeat the ASCII wall in the transcript —
+        # speak one short line instead. Only search-result frames are
+        # rewritten ('To book one' tail); my-listings/booking frames stay text.
+        if results and "╔" in reply and "To book one" in reply:
+            reply = ("I found %d match%s — they're open on the board for you. "
+                     "Say 'book <n>' to book one, or tell me what to refine."
+                     % (len(results), "" if len(results) == 1 else "es"))
         return self.reply(200, {"reply": reply, "results": results}, cookie=self.set_sid(sid))
 
     # ---- W1: account endpoints (session = sid, tokens stay server-side) ----
@@ -491,6 +505,20 @@ class Handler(BaseHTTPRequestHandler):
             if not sess.get("account_id"):
                 chatlib._SESSIONS.pop("web-" + sid, None)
                 acct = None
+            else:
+                # SECURITY: rotate the sid on privilege change (session
+                # fixation hardening) — a pre-login sid must not survive into
+                # an authenticated session. Move the chatlib session to the
+                # new key and hand the browser the new cookie.
+                new_sid = secrets.token_urlsafe(24)
+                if SID_RE.fullmatch(new_sid):
+                    with BRAIN_LOCK:
+                        chatlib._SESSIONS["web-" + new_sid] = chatlib._SESSIONS.pop("web-" + sid)
+                        # keep positional 'book 1' refs working across login
+                        old_stash = chatlib._LAST_RESULTS.pop("web-" + sid, None)
+                        if old_stash is not None:
+                            chatlib._LAST_RESULTS["web-" + new_sid] = old_stash
+                    sid = new_sid
         return self.reply(200, {"ok": acct is not None, "account": acct, "reply": reply},
                           cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
 

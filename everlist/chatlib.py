@@ -1269,11 +1269,53 @@ _HELP = (
 # EverList request. The chat has one job: real-world listings. It never
 # role-plays, answers general knowledge, or discusses anything outside EverList.
 _OFFTOPIC = (
-    "I'm just the EverList chat — I only help you find, book, or list real-world "
-    "things (events, classes, services, food, gigs). I can't help with anything "
-    "else. Say 'help' for what I can do, or tell me what you're looking for — "
-    "like 'free yoga this weekend'."
+    "I can't help with that — I only do EverList: finding, booking, and listing "
+    "real-world things (events, classes, services, food, gigs).\n"
+    "Tell me what you're looking for — e.g. 'free yoga this weekend' or 'jazz "
+    "in berlin' — or say 'help' to see everything I can do."
 )
+
+# Identity questions are not off-topic — they are about this site. Answer them
+# warmly and steer straight back to the one job (deterministic, no LLM).
+_WHOAMI = (
+    "I'm the EverList assistant. I run this marketplace: I find listings, book "
+    "them with escrow-protected payment, and list your own offerings — in one "
+    "message, no forms.\n"
+    "Try 'search jazz berlin', 'free yoga this weekend', or 'signup' to create "
+    "an account. 'help' shows everything."
+)
+
+# Deterministic chit-chat screen (C9d-hardening): catches pure conversation
+# EVEN when the LLM router is unavailable (its fail-open path would otherwise
+# run a confusing keyword search on 'tell me a joke'). EverList-shaped text
+# (any listing intent below) always skips this screen and goes to the router —
+# the fail-open law for real searches is unchanged.
+_OFFTOPIC_RX = re.compile(
+    r"\b(joke|jokes|story|poem|riddle|weather|forecast|horoscope|capital of|"
+    r"president|prime minister|who won|score of|stock price|translate|"
+    r"how are you|how's it going|what time is it|what.?s the time|"
+    r"what.?s the date|today.?s date|solve|homework|essay)\b", re.I)
+_EVERLIST_RX = re.compile(
+    r"\b(search|find|book|booking|list|listing|price|cost|escrow|refund|cancel|"
+    r"confirm|signup|login|my-bookings|my listings|yoga|jazz|sushi|pizza|class|"
+    r"event|concert|workshop|market|tour|repair|cleaning|massage|ticket)\b", re.I)
+_OFFTOPIC_MAXLEN = 120  # long, specific texts are real queries — never screened
+
+
+def _boundary_or_none(text: str):
+    """Return a fixed reply for affirmed chit-chat, or None to continue the
+    normal flow. Deterministic (no LLM): works during router flakes.
+    Identity questions get the branded intro; everything else the boundary."""
+    t = text.strip()
+    if len(t) > _OFFTOPIC_MAXLEN or _EVERLIST_RX.search(t):
+        return None
+    low = t.lower().strip("?!. ")
+    if low in ("who are you", "what are you", "who r u", "what is this",
+               "what is everlist", "what's everlist", "who are you?"):
+        return _WHOAMI
+    if _OFFTOPIC_RX.search(t):
+        return _OFFTOPIC
+    return None
 
 
 def last_results(sender: str, cap: int = 48) -> list:
@@ -1498,6 +1540,14 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     #   cmd is None   -> indeterminate (no key / API error / empty content) ->
     #                    fail-open: keep the deterministic keyword search, so
     #                    'free yoga this weekend' still works without any LLM.
+    # C9d-hardening: BEFORE the router, a deterministic chit-chat screen
+    # declines pure conversation even during router flakes (the fail-open
+    # path would otherwise run a confusing keyword search on 'tell me a
+    # joke'). EverList-shaped text always skips the screen (fail-open law
+    # for real searches is unchanged).
+    bound = _boundary_or_none(text)
+    if bound is not None:
+        return bound
     try:
         import nlu
     except ImportError:

@@ -154,11 +154,15 @@ def main():
 
     # 5. fallback search + filtered search
     code, _, body = c.chat("jazz")
-    txt = json.loads(body).get("reply", "")
-    check("fallback search", code == 200 and "listing" in txt.lower())
+    d = json.loads(body)
+    check("fallback search", code == 200
+          and "open on the board" in d.get("reply", "")
+          and len(d.get("results") or []) > 0)
     code, _, body = c.chat("search pizza under 10")
-    txt = json.loads(body).get("reply", "")
-    check("filtered search", code == 200 and chatlib._mb("Pizza") in txt)
+    d = json.loads(body)
+    check("filtered search", code == 200
+          and any("Pizza" in (l.get("title") or "") for l in (d.get("results") or []))
+          and "open on the board" in d.get("reply", ""))
 
     # 6. reset clears session
     req = urllib.request.Request(BASE + "/api/reset", method="POST")
@@ -167,6 +171,48 @@ def main():
     code, _, body = c.chat("whoami")
     txt = json.loads(body).get("reply", "")
     check("session cleared", code == 200 and "acct-" not in txt)
+
+    # 6a. boundary hardening: the chat declines off-topic — even if the LLM
+    # router flakes — and answers identity questions with the site intro.
+    c2 = Client()
+    code, _, body = c2.chat("tell me a joke")
+    txt = json.loads(body).get("reply", "")
+    check("joke declined", code == 200 and "only do EverList" in txt, txt[:60])
+    code, _, body = c2.chat("what is the capital of france")
+    txt = json.loads(body).get("reply", "")
+    check("general knowledge declined", code == 200 and "only do EverList" in txt, txt[:60])
+    code, _, body = c2.chat("who are you")
+    txt = json.loads(body).get("reply", "")
+    check("identity intro", code == 200 and "EverList assistant" in txt, txt[:60])
+    code, _, body = c2.chat("free yoga this weekend")
+    txt = json.loads(body).get("reply", "")
+    check("real search not screened", code == 200 and ("found" in txt.lower() or "No listings" in txt or "EverList" in txt), txt[:60])
+
+    # 6a-sec. reset must kill the server-side session too (old sid is dead)
+    c3 = Client()
+    c3.chat("hi")  # mint session
+    old_sid = c3.sid()
+    req = urllib.request.Request(BASE + "/api/reset", method="POST")
+    with c3.opener.open(req, timeout=10) as r:
+        pass
+    check("reset purges server session", chatlib._SESSIONS.get("web-" + old_sid) is None)
+
+    # 6a-sec2. successful login rotates the sid (fixation hardening) and the
+    # browser keeps working on the NEW cookie; the old one is dead.
+    c4 = Client()
+    _, _, body = c4.chat("signup")
+    seed4 = re.search(r"[0-9a-f]{64}", json.loads(body).get("reply", "")).group(0)
+    sid_before = c4.sid()
+    req = urllib.request.Request(BASE + "/api/login",
+        data=json.dumps({"seed": seed4}).encode(),
+        headers={"Content-Type": "application/json"})
+    with c4.opener.open(req, timeout=10) as r:
+        check("login 200", r.status == 200)
+    sid_after = c4.sid()
+    check("sid rotated on login", sid_after and sid_after != sid_before)
+    check("old sid dead after rotation", chatlib._SESSIONS.get("web-" + sid_before) is None)
+    code, _, body = c4.get("/api/me")
+    check("new sid authenticated", json.loads(body)["account"] is not None)
 
     # 6b. W1: dashboard + escrow actions (fresh clients; tokens stay server-side)
     def wpost(cl, path, payload):
@@ -211,7 +257,8 @@ def main():
     aid_b = json.loads(buyer.get("/api/me")[2])["account"]["account_id"]
     check("buyer vouch", vouch(aid_b) == 200)
     code, _, body = buyer.chat("search zebra")
-    check("buyer found listing", code == 200 and chatlib._mb("Zebra Quiz Night") in json.loads(body).get("reply", ""))
+    check("buyer found listing", code == 200
+          and any(l.get("title") == "Zebra Quiz Night" for l in (json.loads(body).get("results") or [])))
     code, _, body = buyer.chat("book 1 W1 Buyer")
     reply = json.loads(body).get("reply", "")
     check("buyer booked free", code == 200 and "Booked" in reply, reply[:60])

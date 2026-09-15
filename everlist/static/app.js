@@ -27,6 +27,37 @@ let BOARD = null;       // chat results mode: listing dicts in 'book <n>' order;
 let SIG = "";           // signature of rendered chat results (skips no-op re-renders)
 let openCard = null;    // currently expanded card element
 
+const TRANSCRIPT_CAP = 50000; /* chars of live transcript (~12k tokens; the
+  brain itself is stateless per message, so this bounds the DOM session) */
+let capNoticeShown = false;
+
+function transcriptChars() {
+  let n = 0;
+  chat.querySelectorAll(".bubble").forEach((b) => { n += (b.textContent || "").length; });
+  return n;
+}
+
+function trimTranscript() {
+  let total = transcriptChars();
+  if (total <= TRANSCRIPT_CAP) return;
+  for (const m of Array.from(chat.children)) {
+    if (total <= TRANSCRIPT_CAP) break;
+    const b = m.querySelector(".bubble");
+    total -= (b && b.textContent ? b.textContent.length : 0) + 16;
+    m.remove();
+  }
+  if (!capNoticeShown) {
+    capNoticeShown = true;
+    const wrap = document.createElement("div");
+    wrap.className = "msg think";
+    const b = document.createElement("div");
+    b.className = "bubble";
+    b.textContent = "\u00b7 older messages trimmed to keep the session fast";
+    wrap.appendChild(b);
+    chat.insertBefore(wrap, chat.firstChild);
+  }
+}
+
 /* ---------- chat (unchanged brain wiring) ---------- */
 function addMsg(cls, text) {
   const wrap = document.createElement("div");
@@ -36,6 +67,7 @@ function addMsg(cls, text) {
   bubble.textContent = text; /* XSS-safe by construction */
   wrap.appendChild(bubble);
   chat.appendChild(wrap);
+  trimTranscript();
   chat.scrollTop = chat.scrollHeight;
   return bubble;
 }
@@ -292,44 +324,64 @@ if (filters) filters.addEventListener("click", (e) => {
   if (b.dataset.q) { openChat(); send(b.dataset.q); }
 });
 
-/* ---------- smart expansion: clicked card grows, others glide aside ----------
-   FLIP over every card: measure before, mutate, invert, play. The expanded
-   card spans two columns (real growth); neighbors keep their exact size and
-   only translate — they never shrink, and motion stays proportional. */
-function flipAnimate(mutate) {
+/* ---------- smart expansion: grow/shrink with a no-overlap invariant ----------
+   Math: every animated box stays inside its own final footprint, so nothing
+   can ever cover a neighbor.
+   - The hero card (opening/closing) animates its REAL width/height (layout
+     box, no transform scale — text never smears) from old rect to new. Its
+     animated box is always within the union of old+new footprint.
+   - Every other card moves rigidly: translate-only, same easing. Pushed
+     neighbors share the hero's delta per grid lane, so the clearance between
+     the moving edge and the hero stays constant (= grid gap) at every frame.
+   - If the hero's top-left jumps (row crossing), it fades in place instead
+     of flying — no motion, no overlap. */
+const EASE = { duration: 340, easing: "cubic-bezier(.2,.7,.2,1)" };
+
+function animateBoardChange(mutate, hero) {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const before = new Map();
   Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
   mutate();
-  if (reduce) return;
   Array.from(grid.children).forEach((c) => {
     const f = before.get(c);
     if (!f) return;
     const l = c.getBoundingClientRect();
+    if (hero && c === hero) {
+      if (reduce) return;
+      const jumped = Math.abs(f.left - l.left) > 2 || Math.abs(f.top - l.top) > 2;
+      if (jumped) { c.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 180 }); return; }
+      // grow/shrink the real box; content reflows inside, never overlaps
+      c.animate(
+        [{ width: f.width + "px", height: f.height + "px" },
+         { width: l.width + "px", height: l.height + "px" }],
+        EASE
+      );
+      return;
+    }
+    if (reduce) return;
     const dx = f.left - l.left, dy = f.top - l.top;
-    const sx = f.width / l.width, sy = f.height / l.height;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(1 - sx) < 0.01 && Math.abs(1 - sy) < 0.01) return;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
     c.animate(
-      [{ transformOrigin: "top left", transform: "translate(" + dx + "px," + dy + "px) scale(" + sx + "," + sy + ")" },
-       { transformOrigin: "top left", transform: "none" }],
-      { duration: 340, easing: "cubic-bezier(.2,.7,.2,1)" }
+      [{ transform: "translate(" + dx + "px," + dy + "px)" },
+       { transform: "none" }],
+      EASE
     );
   });
 }
 
 function expandCard(card) {
-  flipAnimate(() => {
+  animateBoardChange(() => {
     if (openCard && openCard !== card) openCard.classList.remove("open");
     card.classList.add("open");
     openCard = card;
-  });
+  }, card);
 }
 
 function collapseCard() {
   if (!openCard) return;
   const c = openCard;
   openCard = null;
-  flipAnimate(() => c.classList.remove("open"));
+  animateBoardChange(() => c.classList.remove("open"), c);
 }
 
 grid.addEventListener("click", (e) => {
