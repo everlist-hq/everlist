@@ -19,21 +19,20 @@ jobs:
           NLU_URL: ${{ secrets.EVERLIST_NLU_API_URL }}
           NLU_KEY: ${{ secrets.EVERLIST_NLU_API_KEY }}
           NLU_MODEL: ${{ secrets.EVERLIST_NLU_MODEL }}
-          KNOWN_HOSTS: "everlist.network ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFKc5w69IfRkVxN3sn0sVR5QXX1VC83dDQ9NvjlWzQlv"
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n' "155.94.165.200 $KNOWN_HOSTS" >> ~/.ssh/known_hosts || true
+          KH='everlist.network ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFKc5w69IfRkVxN3sn0sVR5QXX1VC83dDQ9NvjlWzQlv'
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          printf '%s\n' "155.94.165.200 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFKc5w69IfRkVxN3sn0sVR5QXX1VC83dDQ9NvjlWzQlv" >> ~/.ssh/known_hosts
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          SSH="ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes root@155.94.165.200"
+          SSH="ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes root@everlist.network"
           $SSH 'cd /home/deploy/everlist && git pull --ff-only'
           printf 'EVERLIST_NLU_API_URL=%s\nEVERLIST_NLU_API_KEY=%s\nEVERLIST_NLU_MODEL=%s\n' "$NLU_URL" "$NLU_KEY" "$NLU_MODEL" \
             | $SSH 'mkdir -p /home/deploy/everlist/.secrets && cat > /home/deploy/everlist/.secrets/llm.env && chmod 600 /home/deploy/everlist/.secrets/llm.env'
           $SSH 'systemctl restart everlist-webchat'
-          echo 'deployed:'
-          $SSH 'cd /home/deploy/everlist && git rev-parse --short HEAD'
+          echo deployed: $($SSH 'cd /home/deploy/everlist && git rev-parse --short HEAD')
 
       - name: Verify live
         run: |
