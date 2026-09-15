@@ -194,11 +194,27 @@ class Handler(BaseHTTPRequestHandler):
         else:
             body, ctype = static_bytes(path.lstrip("/"))
         if body is None:
-            return self.reply(404, {"error": "not found"})
+            if path.startswith("/api/"):
+                return self.reply(404, {"error": "not found"})
+            # Human-facing miss: branded 404 page (W0); API stays JSON.
+            body, ctype = static_bytes("404.html")
+            if body is None:
+                return self.reply(404, {"error": "not found"})
+            self.send_response(404)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.common_headers()
+            self.send_header("Content-Security-Policy", CSP)
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
+        # HTML must revalidate (dock/session state); other assets get a short
+        # cache so deploys land within minutes (no content hashing yet, W0).
+        self.send_header("Cache-Control", "no-cache" if ctype.startswith("text/html") else "max-age=300")
         self.common_headers()
         if ctype.startswith("text/html"):
             self.send_header("Content-Security-Policy", CSP)
