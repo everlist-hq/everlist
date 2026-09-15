@@ -1451,6 +1451,14 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         except Exception:
             return "Sorry — the EverList hub is unreachable right now. Try again shortly."
         if status == 201:
+            # W1: keep the cancel token server-side so the web dashboard can
+            # offer one-click cancel without exposing tokens to the browser.
+            try:
+                _s = _SESSIONS.get(sender)
+                if _s is not None and res.get("cancel_token") and res.get("id"):
+                    _s.setdefault("cancel_tokens", {})[res["id"]] = res["cancel_token"]
+            except Exception:
+                pass
             return (f"✅ Booked! '{target.get('title')}' — booking {res.get('id')} "
                     f"(escrow {res.get('escrow')}, amount {res.get('amount')}).\n"
                     f"🔑 Booking secret (shown ONCE — view your private details with it): {res.get('booking_secret')}\n"

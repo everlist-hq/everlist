@@ -14,13 +14,14 @@
   <header class="top">
     <div class="brand"><img src="/favicon.svg" alt="" width="30" height="30"><span>EverList</span></div>
     <nav class="nav">
-      <a href="#" class="on">Browse</a>
+      <a href="#" class="on" id="nav-browse">Browse</a>
+      <a href="#" id="nav-dash">Bookings</a>
       <a href="#" id="nav-post">Post a listing</a>
     </nav>
     <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting&#8230;</span></div>
   </header>
 
-  <section class="discover">
+  <section class="discover" id="browse">
     <div class="dhead">
       <h1>Discover</h1>
       <span class="cnt" id="count">loading&#8230;</span>
@@ -36,6 +37,27 @@
     </div>
     <div class="grid" id="grid"></div>
     <p class="empty" id="empty" hidden>Nothing here yet &#8212; be the first. Type <b>list &#8230;</b> in the chat below, or tap <b>+ list a thing</b>.</p>
+  </section>
+
+  <section class="discover" id="dash" hidden>
+    <div class="dhead">
+      <h1>Bookings</h1>
+      <span class="cnt" id="dash-acct"></span>
+      <span class="flex"></span>
+      <button class="linkbtn" id="dash-refresh" type="button">refresh</button>
+      <button class="linkbtn" id="dash-logout" type="button" hidden>log out</button>
+    </div>
+    <div class="dashwrap">
+      <div class="dashcol">
+        <h2 class="dh2">My bookings</h2>
+        <div id="mybookings"></div>
+      </div>
+      <div class="dashcol">
+        <h2 class="dh2">Incoming orders</h2>
+        <div id="myorders"></div>
+      </div>
+    </div>
+    <div class="empty" id="dash-login" hidden></div>
   </section>
 
   <div class="spacer"></div>

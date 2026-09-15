@@ -28,6 +28,8 @@ import secrets
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +41,9 @@ import chatlib  # noqa: E402
 PORT = int(os.environ.get("WEBCHAT_PORT", "8804"))
 BIND = os.environ.get("WEBCHAT_BIND", "127.0.0.1")
 HUB_URL = os.environ.get("WEBCHAT_HUB_URL", "http://localhost:8802")
+# W1: confirm-token minting follows the hub's documented owner path
+# (POST /admin/tokens act=confirm). Operator sets WEBCHAT_ADMIN_KEY = HUB_ADMIN_KEY.
+ADMIN_KEY = os.environ.get("WEBCHAT_ADMIN_KEY", "dev-admin-key-change-me")
 STATIC_DIR = os.path.join(HERE, "static")
 BODY_CAP = 32 * 1024          # bytes; matches hub 413 discipline
 TEXT_CAP = 8000               # chars per message (UI maxlength mirrors this)
@@ -48,6 +53,74 @@ SID_RE = re.compile(r"^[A-Za-z0-9_-]{32}$")
 
 # chatlib brain serialization (see docstring)
 BRAIN_LOCK = threading.Lock()
+
+# ---- W1: account-aware dashboard -----------------------------------------
+# Session discipline: the sid cookie doubles as the chatlib sender, so hub
+# login tokens live ONLY server-side (chatlib._SESSIONS) — the browser never
+# sees one. Escrow transitions go through the hub's existing single-use
+# token endpoints (/book/{id}/cancel, /book/{id}/confirm); no new money paths.
+BID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Whitelist projection: hub GET /bookings returns raw booking records;
+# the dashboard only needs these fields (no secrets exist in them).
+BOOKING_FIELDS = ("id", "listing_id", "vertical", "escrow", "amount", "hub_fee",
+                  "owner_payout", "quantity", "created", "escrow_ref", "payment_terms")
+ORDER_FIELDS = ("id", "listing_id", "vertical", "escrow", "amount", "hub_fee",
+                "owner_payout", "quantity", "created", "booked_by", "escrow_ref")
+_TITLES = {"ts": 0.0, "map": {}}
+_TITLES_LOCK = threading.Lock()
+
+
+def hub_fetch(path, token=None, payload=None):
+    """Tiny hub JSON client for W1 proxy routes. Returns (status, dict).
+    status 0 means the hub was unreachable."""
+    url = HUB_URL.rstrip("/") + path
+    if payload is None:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        if token:
+            req.add_header("X-Hub-Token", token)
+        try:
+            with urllib.request.urlopen(req, timeout=8) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode())
+            except Exception:
+                return e.code, {}
+        except Exception:
+            return 0, {}
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    if token:
+        req.add_header("X-Hub-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode())
+        except Exception:
+            return e.code, {}
+    except Exception:
+        return 0, {}
+
+
+def listing_titles():
+    """id -> title map (30s cache) so the dashboard shows names, not bare ids."""
+    now = time.time()
+    with _TITLES_LOCK:
+        if _TITLES["map"] and now - _TITLES["ts"] < 30:
+            return _TITLES["map"]
+    st, data = hub_fetch("/listings?limit=200")
+    m = {}
+    if st == 200:
+        m = {l.get("id"): (l.get("title") or l.get("id"))
+             for l in (data.get("listings") or []) if l.get("id")}
+    with _TITLES_LOCK:
+        if m:
+            _TITLES["map"] = m
+            _TITLES["ts"] = now
+        return _TITLES["map"]
 
 # ---- token-bucket rate limiting (per sender + per IP) --------------------
 RL_LOCK = threading.Lock()
@@ -244,13 +317,95 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if path == "/api/me":
+            sid = self.sid()
+            sess = chatlib._session("web-" + sid)
+            acct = None
+            if sess:
+                acct = {"account_id": sess.get("account_id"),
+                        "verified": bool(sess.get("verified")),
+                        "has_payout": bool(sess.get("payout_pk"))}
+            return self.reply(200, {"ok": True, "account": acct},
+                              cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+        if path == "/api/dashboard":
+            return self.api_dashboard()
         return self.reply(404, {"error": "not found"})
 
+    def api_dashboard(self):
+        """W1: bookings + merchant orders for this session, projected through
+        a whitelist (hub records carry internal fields the UI never needs).
+        Tokens stay server-side; the browser gets exactly the dashboard view."""
+        sid = self.sid()
+        sess = chatlib._session("web-" + sid)
+        if not sess:
+            return self.reply(200, {"ok": True, "account": None, "bookings": [], "orders": []},
+                              cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+        titles = listing_titles()
+        book_tok = (sess.get("tokens") or {}).get("book")
+        list_tok = (sess.get("tokens") or {}).get("list")
+        cancels = sess.get("cancel_tokens") or {}
+        bookings, orders, expired = [], [], False
+        if book_tok:
+            st, res = hub_fetch("/bookings", token=book_tok)
+            if st == 200:
+                for b in (res.get("bookings") or []):
+                    proj = {k: b.get(k) for k in BOOKING_FIELDS if k in b}
+                    proj["title"] = titles.get(b.get("listing_id"), b.get("listing_id"))
+                    proj["can_cancel"] = b.get("escrow") in ("HELD", "WAIVED") and b.get("id") in cancels
+                    bookings.append(proj)
+            elif st == 401:
+                expired = True
+        if list_tok and not expired:
+            st, res = hub_fetch("/orders", token=list_tok)
+            if st == 200:
+                for o in (res.get("orders") or []):
+                    proj = {k: o.get(k) for k in ORDER_FIELDS if k in o}
+                    proj["title"] = titles.get(o.get("listing_id"), o.get("listing_id"))
+                    proj["can_confirm"] = o.get("escrow") in ("HELD", "WAIVED")
+                    orders.append(proj)
+            elif st == 401:
+                expired = True
+        acct = {"account_id": sess.get("account_id"),
+                "verified": bool(sess.get("verified")),
+                "has_payout": bool(sess.get("payout_pk"))}
+        return self.reply(200, {"ok": True, "account": acct, "expired": expired,
+                                "bookings": bookings, "orders": orders},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
     # ---- POST ----
+    def json_body(self):
+        """Parse a bounded application/json body. Returns (data, err_response).
+        On error err_response is a reply() result and data is None."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            length = -1
+        if length < 0 or length > BODY_CAP:
+            return None, self.reply(413, {"error": "body too large"})
+        raw = self.rfile.read(length) if length else b""
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip()
+        if ctype != "application/json":
+            return None, self.reply(415, {"error": "expected application/json"})
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None, self.reply(400, {"error": "invalid JSON"})
+        if not isinstance(data, dict):
+            return None, self.reply(400, {"error": "invalid JSON"})
+        return data, None
+
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if path == "/api/reset":
             return self.reply(200, {"ok": True}, cookie=self.cookie_attr(0) % "")
+        if path == "/api/login":
+            return self.api_login()
+        if path == "/api/logout":
+            return self.api_logout()
+        if path == "/api/cancel":
+            return self.api_cancel()
+        if path == "/api/confirm":
+            return self.api_confirm()
         if path != "/api/chat":
             return self.reply(404, {"error": "not found"})
         try:
@@ -299,6 +454,115 @@ class Handler(BaseHTTPRequestHandler):
                 502, {"error": "chat brain error — try again"},
                 cookie=self.set_sid(sid))
         return self.reply(200, {"reply": reply, "results": results}, cookie=self.set_sid(sid))
+
+    # ---- W1: account endpoints (session = sid, tokens stay server-side) ----
+    def api_login(self):
+        data, err = self.json_body()
+        if err:
+            return err
+        sid = self.sid()
+        ok, retry = allow("login:" + sid, burst=5, per_minute=5)
+        if not ok:
+            return self.reply(429, {"error": "too many login attempts, retry in %ds" % retry},
+                              cookie=self.set_sid(sid), extra={"Retry-After": str(retry)})
+        seed = str(data.get("seed", "")).strip()
+        code = str(data.get("code", "")).strip()
+        if not seed and not code:
+            return self.reply(400, {"error": "seed or code required"}, cookie=self.set_sid(sid))
+        if seed and not re.fullmatch(r"[0-9a-f]{64}", seed.removeprefix("elseed-")):
+            return self.reply(400, {"error": "seed must be 64 hex chars (from signup)"}, cookie=self.set_sid(sid))
+        if code and len(code) > 128:
+            return self.reply(400, {"error": "code too long"}, cookie=self.set_sid(sid))
+        # One brain, proven functions: chatlib does the hub calls and mints the
+        # session. The reply text is spoken in chat; the UI gets the account id.
+        try:
+            with BRAIN_LOCK:
+                reply = chatlib._login_seed(HUB_URL, "web-" + sid, seed) if seed \
+                    else chatlib._login(HUB_URL, "web-" + sid, code)
+                sess = chatlib._session("web-" + sid)
+        except Exception:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        acct = None
+        if sess:
+            acct = {"account_id": sess.get("account_id"),
+                    "verified": bool(sess.get("verified")),
+                    "has_payout": bool(sess.get("payout_pk"))}
+            # B10 discipline: a failed login must not leave a stale session
+            if not sess.get("account_id"):
+                chatlib._SESSIONS.pop("web-" + sid, None)
+                acct = None
+        return self.reply(200, {"ok": acct is not None, "account": acct, "reply": reply},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
+    def api_logout(self):
+        sid = self.sid()
+        with BRAIN_LOCK:
+            popped = chatlib._SESSIONS.pop("web-" + sid, None)
+        return self.reply(200, {"ok": True, "logged_out": popped is not None},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
+    def api_cancel(self):
+        """Buyer cancel via the booking-time cancel_token (stashed server-side
+        at booking). Token never leaves the server; hub enforces the refund."""
+        data, err = self.json_body()
+        if err:
+            return err
+        sid = self.sid()
+        bid = str(data.get("booking_id", ""))
+        if not BID_RE.fullmatch(bid):
+            return self.reply(400, {"error": "booking_id invalid"}, cookie=self.set_sid(sid))
+        sess = chatlib._session("web-" + sid)
+        tok = ((sess or {}).get("cancel_tokens") or {}).get(bid)
+        if not tok:
+            return self.reply(403, {"error": "no cancel token for this booking in this session"},
+                              cookie=self.set_sid(sid))
+        st, res = hub_fetch("/book/%s/cancel" % urllib.parse.quote(bid), token=tok, payload={})
+        if st == 0:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        if st == 200:
+            sess.get("cancel_tokens", {}).pop(bid, None)
+        return self.reply(st, {"ok": st == 200, "booking_id": bid, "escrow": res.get("escrow"),
+                               "error": res.get("error")}, cookie=self.set_sid(sid))
+
+    def api_confirm(self):
+        """Owner confirm for incoming orders: hub /orders proves ownership,
+        then a single-use confirm token (hub's documented /admin/tokens path)
+        drives the existing /book/{id}/confirm endpoint. I2: no new money path."""
+        data, err = self.json_body()
+        if err:
+            return err
+        sid = self.sid()
+        bid = str(data.get("booking_id", ""))
+        if not BID_RE.fullmatch(bid):
+            return self.reply(400, {"error": "booking_id invalid"}, cookie=self.set_sid(sid))
+        sess = chatlib._session("web-" + sid)
+        list_tok = (sess or {}).get("tokens", {}).get("list")
+        if not list_tok:
+            return self.reply(401, {"error": "login required"}, cookie=self.set_sid(sid))
+        st, res = hub_fetch("/orders", token=list_tok)
+        if st == 0:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        if st != 200:
+            return self.reply(st, {"ok": False, "error": res.get("error", "orders unavailable")},
+                              cookie=self.set_sid(sid))
+        mine = next((o for o in (res.get("orders") or []) if o.get("id") == bid), None)
+        if not mine:
+            return self.reply(403, {"error": "booking not in your merchant orders"}, cookie=self.set_sid(sid))
+        if mine.get("escrow") not in ("HELD", "WAIVED"):
+            return self.reply(409, {"error": "escrow is %s" % mine.get("escrow")}, cookie=self.set_sid(sid))
+        # /admin/tokens expects the admin key in the X-Hub-Token header —
+        # hub_fetch puts token there, so pass ADMIN_KEY directly.
+        st2, mt = hub_fetch("/admin/tokens", token=ADMIN_KEY, payload={"act": "confirm", "booking_id": bid})
+        if st2 != 201:
+            return self.reply(502, {"error": "could not mint confirm token", "detail": mt.get("error")},
+                              cookie=self.set_sid(sid))
+        st3, cres = hub_fetch("/book/%s/confirm" % urllib.parse.quote(bid),
+                              token=mt.get("token"), payload={})
+        if st3 == 0:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        return self.reply(st3, {"ok": st3 == 200, "booking_id": bid, "escrow": cres.get("escrow"),
+                                "owner_received": cres.get("owner_received"),
+                                "error": cres.get("error")}, cookie=self.set_sid(sid))
 
 
 def main():

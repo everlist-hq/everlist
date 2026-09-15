@@ -236,7 +236,15 @@ function makeCard(l, featured, n) {
     cta.addEventListener("click", (ev) => {
       ev.stopPropagation();
       openChat();
-      send(n != null ? ("book " + n) : ("book " + (l.title || "")));
+      if (n != null) {
+        send("book " + n);
+      } else {
+        /* featured card: prefill with the listing id — the brain resolves ids,
+           not titles; the user just adds their name and sends */
+        input.value = "book " + (l.id || "") + " ";
+        input.focus();
+        autosize();
+      }
     });
     foot.appendChild(cta);
   }
@@ -332,6 +340,190 @@ grid.addEventListener("click", (e) => {
   else expandCard(card);
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") collapseCard(); });
+
+/* ---------- W1 dashboard: bookings + orders (tokens stay server-side) ---------- */
+const browseSec = document.getElementById("browse");
+const dashSec = document.getElementById("dash");
+const navBrowse = document.getElementById("nav-browse");
+const navDash = document.getElementById("nav-dash");
+const dashAcct = document.getElementById("dash-acct");
+const dashLogin = document.getElementById("dash-login");
+const myBookings = document.getElementById("mybookings");
+const myOrders = document.getElementById("myorders");
+const dashRefresh = document.getElementById("dash-refresh");
+const dashLogout = document.getElementById("dash-logout");
+
+const ESCROW_LABEL = { HELD: "escrow held", WAIVED: "free (no payment)", RELEASED: "released to owner", REFUNDED: "refunded", DIRECT: "instant — settled" };
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function showView(dash) {
+  browseSec.hidden = dash;
+  dashSec.hidden = !dash;
+  navBrowse.classList.toggle("on", !dash);
+  navDash.classList.toggle("on", dash);
+  if (dash) loadDashboard();
+}
+if (navBrowse) navBrowse.addEventListener("click", (e) => { e.preventDefault(); showView(false); });
+if (navDash) navDash.addEventListener("click", (e) => { e.preventDefault(); showView(true); });
+
+function escBadge(state) {
+  return el("span", "escbadge e-" + String(state || "x").toLowerCase(), ESCROW_LABEL[state] || String(state || "?"));
+}
+
+function when(ts) {
+  const d = new Date((ts || 0) * 1000);
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function bookingCard(b) {
+  const card = el("div", "card dashcard");
+  const r1 = el("div", "r1");
+  r1.appendChild(el("span", "vtag", String(b.vertical || "booking").toUpperCase()));
+  r1.appendChild(escBadge(b.escrow));
+  r1.appendChild(el("span", "flex"));
+  r1.appendChild(el("span", "meta", when(b.created)));
+  card.appendChild(r1);
+  card.appendChild(el("h3", null, b.title || b.listing_id));
+  const foot = el("div", "foot");
+  foot.appendChild(el("span", "price", b.amount ? "\u20ac" + b.amount : "Free"));
+  foot.appendChild(el("span", "esc", "#" + b.id));
+  if (b.can_cancel) {
+    foot.appendChild(el("span", "flex"));
+    const btn = el("button", "cta danger", "Cancel & refund");
+    btn.type = "button";
+    btn.addEventListener("click", () => act("/api/cancel", b.id));
+    foot.appendChild(btn);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+function orderCard(o) {
+  const card = el("div", "card dashcard");
+  const r1 = el("div", "r1");
+  r1.appendChild(el("span", "vtag", "ORDER"));
+  r1.appendChild(escBadge(o.escrow));
+  r1.appendChild(el("span", "flex"));
+  r1.appendChild(el("span", "meta", when(o.created)));
+  card.appendChild(r1);
+  card.appendChild(el("h3", null, o.title || o.listing_id));
+  const foot = el("div", "foot");
+  foot.appendChild(el("span", "price", o.amount ? "\u20ac" + o.amount : "Free"));
+  foot.appendChild(el("span", "esc", "#" + o.id));
+  if (o.can_confirm) {
+    foot.appendChild(el("span", "flex"));
+    const btn = el("button", "cta", "Confirm & release");
+    btn.type = "button";
+    btn.addEventListener("click", () => act("/api/confirm", o.id));
+    foot.appendChild(btn);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+async function act(url, id) {
+  openChat();
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking_id: id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      addMsg("agent", "\u2705 Booking " + id + " \u2014 escrow is now " + (data.escrow || "updated")
+        + (data.owner_received != null ? (". Owner receives \u20ac" + data.owner_received) : "."));
+    } else {
+      addMsg("err", "\u26a0\ufe0f " + (data.error || "action failed"));
+    }
+  } catch (e) {
+    addMsg("err", "network error \u2014 is the hub up?");
+  }
+  loadDashboard();
+}
+
+function renderLogin() {
+  dashLogin.innerHTML = "";
+  const p = el("p", null, "Log in with your account seed and your bookings + orders appear here. No seed? Say ");
+  p.appendChild(el("b", null, "signup"));
+  p.appendChild(document.createTextNode(" in the chat to create an account in one message."));
+  const form = el("form", "loginrow");
+  form.setAttribute("autocomplete", "off");
+  const inp = el("input", "loginseed");
+  inp.type = "password"; /* masked; the seed is never displayed or echoed */
+  inp.placeholder = "paste your account seed (shown once at signup)";
+  inp.maxLength = 80;
+  const btn = el("button", "cta", "Log in");
+  btn.type = "submit";
+  form.appendChild(inp);
+  form.appendChild(btn);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const seed = inp.value.trim();
+    if (!seed || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok) {
+        inp.value = "";
+        loadDashboard();
+      } else {
+        addMsg("err", "\u26a0\ufe0f " + (data.error || "login failed"));
+      }
+    } catch (e2) {
+      addMsg("err", "network error \u2014 is the hub up?");
+    }
+    btn.disabled = false;
+  });
+  dashLogin.appendChild(p);
+  dashLogin.appendChild(form);
+}
+
+async function loadDashboard() {
+  let data;
+  try {
+    const r = await fetch("/api/dashboard", { cache: "no-store" });
+    data = await r.json();
+  } catch (e) {
+    dashAcct.textContent = "offline";
+    return;
+  }
+  myBookings.innerHTML = "";
+  myOrders.innerHTML = "";
+  const acct = data.account;
+  dashLogout.hidden = !acct;
+  if (!acct || data.expired) {
+    dashAcct.textContent = "";
+    if (!dashLogin.childNodes.length) renderLogin();
+    dashLogin.hidden = false;
+    myBookings.appendChild(el("p", "empty", "Log in to see your bookings."));
+    myOrders.appendChild(el("p", "empty", "Orders for your listings appear here."));
+    return;
+  }
+  dashLogin.hidden = true;
+  dashAcct.textContent = acct.account_id + (acct.verified ? " \u00b7 human-verified" : "");
+  if (!data.bookings.length) myBookings.appendChild(el("p", "empty", "No bookings yet \u2014 search in the chat, then say \u201cbook 1\u201d."));
+  data.bookings.forEach((b) => myBookings.appendChild(bookingCard(b)));
+  if (!data.orders.length) myOrders.appendChild(el("p", "empty", "No orders yet \u2014 orders for your listings appear here."));
+  data.orders.forEach((o) => myOrders.appendChild(orderCard(o)));
+}
+
+if (dashRefresh) dashRefresh.addEventListener("click", loadDashboard);
+if (dashLogout) dashLogout.addEventListener("click", async () => {
+  try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
+  loadDashboard();
+});
 
 /* ---------- boot ---------- */
 if (window.innerWidth < 760) document.body.classList.add("min"); /* mobile: pill by default, tap to open */

@@ -11,6 +11,7 @@ Run: ./venv/bin/python test_webchat.py
 """
 import json
 import os
+import re
 import socket
 import subprocess
 
@@ -166,6 +167,83 @@ def main():
     code, _, body = c.chat("whoami")
     txt = json.loads(body).get("reply", "")
     check("session cleared", code == 200 and "acct-" not in txt)
+
+    # 6b. W1: dashboard + escrow actions (fresh clients; tokens stay server-side)
+    def wpost(cl, path, payload):
+        req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with cl.opener.open(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode())
+            except Exception:
+                return e.code, {}
+
+    def vouch(aid):
+        req = urllib.request.Request(f"http://localhost:{HUB_PORT}/accounts/vouch",
+            data=json.dumps({"account_id": aid}).encode(), method="POST",
+            headers={"Content-Type": "application/json", "X-Admin-Key": "dev-admin-key-change-me"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    anon = Client()
+    code, _, body = anon.get("/api/dashboard")
+    d = json.loads(body)
+    check("dashboard anonymous empty", code == 200 and d["account"] is None
+          and d["bookings"] == [] and d["orders"] == [])
+
+    seller = Client()
+    _, _, body = seller.chat("signup")
+    check("seller signup seed", bool(re.search(r"[0-9a-f]{64}", json.loads(body).get("reply", ""))))
+    aid_a = json.loads(seller.get("/api/me")[2])["account"]["account_id"]
+    check("seller me after signup", aid_a and aid_a.startswith("acct-"))
+    check("seller vouch", vouch(aid_a) == 200)
+    code, _, body = seller.chat("list Zebra Quiz Night | community | 2026-10-01 | 0 | Berlin | 5")
+    check("seller listed", code == 200 and "Zebra Quiz Night" in json.loads(body).get("reply", ""))
+
+    buyer = Client()
+    buyer.chat("signup")
+    aid_b = json.loads(buyer.get("/api/me")[2])["account"]["account_id"]
+    check("buyer vouch", vouch(aid_b) == 200)
+    code, _, body = buyer.chat("search zebra")
+    check("buyer found listing", code == 200 and chatlib._mb("Zebra Quiz Night") in json.loads(body).get("reply", ""))
+    code, _, body = buyer.chat("book 1 W1 Buyer")
+    reply = json.loads(body).get("reply", "")
+    check("buyer booked free", code == 200 and "Booked" in reply, reply[:60])
+
+    code, _, body = buyer.get("/api/dashboard")
+    d = json.loads(body)
+    check("buyer dashboard has booking", code == 200 and len(d["bookings"]) == 1)
+    bk = d["bookings"][0]
+    check("booking projection safe", bk.get("title") == "Zebra Quiz Night"
+          and "cancel_token" not in bk and "booking_secret" not in bk)
+    check("booking can_cancel", bk.get("can_cancel") is True and bk.get("escrow") == "WAIVED")
+
+    code, res = wpost(buyer, "/api/cancel", {"booking_id": bk["id"]})
+    check("cancel refunds", code == 200 and res.get("escrow") == "REFUNDED")
+
+    buyer.chat("search zebra")
+    buyer.chat("book 1 W1 Buyer")
+    code, _, body = buyer.get("/api/dashboard")
+    bk2 = next(b for b in json.loads(body)["bookings"] if b["escrow"] == "WAIVED")
+    code, _, body = seller.get("/api/dashboard")
+    d = json.loads(body)
+    check("seller sees order", code == 200 and any(o["id"] == bk2["id"] for o in d["orders"]))
+    od = next(o for o in d["orders"] if o["escrow"] == "WAIVED")
+    check("order can_confirm", od.get("can_confirm") is True)
+    code, res = wpost(seller, "/api/confirm", {"booking_id": od["id"]})
+    check("confirm releases", code == 200 and res.get("escrow") == "RELEASED")
+    code, res = wpost(seller, "/api/confirm", {"booking_id": od["id"]})
+    check("confirm single-use 409", code == 409)
+
+    code, _ = wpost(buyer, "/api/logout", {})
+    code, _, body = buyer.get("/api/dashboard")
+    check("logout clears dashboard", code == 200 and json.loads(body)["account"] is None)
 
     # 7. protocol walls
     # 413
