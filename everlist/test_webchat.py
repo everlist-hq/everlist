@@ -132,6 +132,35 @@ def main():
     check("js 200", code == 200)
     code, _, _ = c.get("/favicon.svg")
     check("favicon 200", code == 200)
+
+    # 1b. W2 discovery + SEO: SSR detail pages, ics, sitemap, robots
+    code, hdrs, body = c.get("/l/evt-1")
+    check("detail 200", code == 200 and b"AI Builders Meetup" in body)
+    check("detail og:title", b"og:title" in body)
+    check("detail ld+json", b"application/ld+json" in body and b"startDate" in body)
+    check("detail CSP", "content-security-policy" in {k.lower() for k in hdrs})
+    check("detail no-false-escrow", b"held in escrow" not in body)  # evt-1 has no payment_terms
+    # escrow note renders when the listing actually has escrow terms (in-process render)
+    _l = {"id": "t1", "title": "T", "description": "d", "date": "2026-10-01",
+          "payment_terms": {"rail": "escrow", "refund_window_hours": 72}}
+    _body = webchat._pages.detail_html(_l, webchat.HUB_URL)
+    check("detail escrow note", b"held in escrow" in _body and b"72h" in _body)
+    check("detail deep link", b"/?book=evt-1" in body)
+    code, hdrs, body = c.get("/l/evt-1.ics")
+    check("ics 200", code == 200 and b"BEGIN:VCALENDAR" in body and b"evt-1@everlist.network" in body)
+    check("ics ctype", hdrs.get("Content-Type", "").startswith("text/calendar"))
+    code, _, body = c.get("/sitemap.xml")
+    check("sitemap 200", code == 200 and b"<loc>" in body and b"/l/evt-1" in body)
+    code, _, body = c.get("/robots.txt")
+    check("robots 200", code == 200 and b"Sitemap:" in body)
+    code, _, _ = c.get("/l/does-not-exist")
+    check("detail 404 unknown", code == 404)
+    code, _, _ = c.get("/l/../app.py")
+    check("detail traversal blocked", code in (403, 404))
+    code, _, body = c.get("/app.js")
+    check("cards link details", b"/l/" in body and b"details" in body)
+    check("book deep-link wired", b"searchParams.get(\"book\")" in body)
+    check("q deep-link wired", b"searchParams.get(\"q\")" in body)
     code, _, _ = c.get("/../app.py")
     check("traversal blocked", code in (403, 404))
 

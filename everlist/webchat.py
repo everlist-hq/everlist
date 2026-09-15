@@ -45,6 +45,7 @@ HUB_URL = os.environ.get("WEBCHAT_HUB_URL", "http://localhost:8802")
 # (POST /admin/tokens act=confirm). Operator sets WEBCHAT_ADMIN_KEY = HUB_ADMIN_KEY.
 ADMIN_KEY = os.environ.get("WEBCHAT_ADMIN_KEY", "dev-admin-key-change-me")
 STATIC_DIR = os.path.join(HERE, "static")
+import pages as _pages  # W2: SSR detail pages, sitemap, robots, ics
 BODY_CAP = 32 * 1024          # bytes; matches hub 413 discipline
 TEXT_CAP = 8000               # chars per message (UI maxlength mirrors this)
 COOKIE = "sid"
@@ -221,6 +222,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
 
+    def _send_bytes(self, code, body, ctype, cache="max-age=300"):
+        """W2: send pre-rendered bytes (SSR pages, ics, xml) with CSP on HTML."""
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache)
+        self.common_headers()
+        if ctype.startswith("text/html"):
+            self.send_header("Content-Security-Policy", CSP)
+        self.end_headers()
+        self.wfile.write(body)
+
     def reply(self, code, obj, cookie=None, extra=None):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -264,6 +277,25 @@ class Handler(BaseHTTPRequestHandler):
             body, ctype = static_bytes("index.html")
         elif path.startswith("/api/"):
             return self.api_get(path)
+        elif path == "/robots.txt":
+            return self._send_bytes(200, _pages.ROBOTS, "text/plain; charset=utf-8", cache="max-age=3600")
+        elif path == "/sitemap.xml":
+            return self._send_bytes(200, _pages.sitemap_xml(HUB_URL), "application/xml; charset=utf-8", cache="max-age=3600")
+        elif path.startswith("/l/") and path.endswith(".ics"):
+            lid = path[3:-4]
+            l = _pages.listing(lid, HUB_URL) if lid else None
+            if not l:
+                return self.reply(404, {"error": "not found"})
+            ics = _pages.ics_body(l)
+            if not ics:
+                return self.reply(404, {"error": "no date"})
+            return self._send_bytes(200, ics, "text/calendar; charset=utf-8")
+        elif path.startswith("/l/"):
+            lid = path[3:]
+            l = _pages.listing(lid, HUB_URL) if lid else None
+            if not l:
+                return self.reply(404, {"error": "not found"})
+            return self._send_bytes(200, _pages.detail_html(l, HUB_URL), "text/html; charset=utf-8", cache="max-age=3600")
         else:
             body, ctype = static_bytes(path.lstrip("/"))
         if body is None:

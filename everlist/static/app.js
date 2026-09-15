@@ -260,6 +260,15 @@ function makeCard(l, featured, n) {
   const foot = document.createElement("div"); foot.className = "foot";
   const pr = priceOf(l);
   const price = document.createElement("span"); price.className = "price"; price.textContent = pr.txt; foot.appendChild(price);
+  /* W2: shareable, indexable detail page (server-rendered, no-JS surface) */
+  if (l.id) {
+    const dl = document.createElement("a"); dl.className = "dlink";
+    dl.href = "/l/" + encodeURIComponent(l.id);
+    dl.target = "_blank"; dl.rel = "noopener";
+    dl.textContent = "details";
+    dl.addEventListener("click", (ev) => ev.stopPropagation()); /* not an expansion click */
+    foot.appendChild(dl);
+  }
   const esc = document.createElement("span"); esc.className = "esc"; esc.textContent = pr.esc ? "escrow" : "no payment"; foot.appendChild(esc);
   if (featured || n != null) {
     const flex = document.createElement("span"); flex.className = "flex"; foot.appendChild(flex);
@@ -603,3 +612,19 @@ pollHealth();
 setInterval(pollHealth, 15000);
 loadListings();
 input.focus();
+/* W2 deep links: /?book=<id> from detail pages -> prefill (never auto-send:
+   booking stays a human confirm); /?q=<search> -> run the search in chat. */
+try {
+  const u = new URL(location.href);
+  const bid = u.searchParams.get("book");
+  const q = u.searchParams.get("q");
+  if (bid) {
+    openChat();
+    input.value = "book " + bid + " ";
+    input.focus();
+    autosize();
+  } else if (q) {
+    openChat();
+    send(q.slice(0, 200));
+  }
+} catch (e) {}
