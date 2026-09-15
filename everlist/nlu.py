@@ -263,10 +263,12 @@ def translate(text: str, sender: str = "") -> str | None:
         _STAT["errors"] += 1
         _STAT["last_error"] = ("%s: %s" % (type(e).__name__, e))[:120]
         return None
-    if not content:
+    if content is not None and not content.strip():
         _STAT["errors"] += 1
         _STAT["last_error"] = "empty completion"
         return None
+    if content is None:
+        return None  # every provider already counted its own failure
     d = _extract_json(content)
     if not isinstance(d, dict):
         return None
