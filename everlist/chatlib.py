@@ -1218,7 +1218,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         _LAST_RESULTS.clear()
     _LAST_RESULTS[sender] = listings
     n = len(listings)
-    head = "%s EverList · %d found%s" % (_G_MARK, n, qualifier)
+    head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
     tail = "\nTo book one, say 'book <n>' - $0 listings book without payment."
     if n <= _INLINE_LIMIT:
         return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail
@@ -1274,6 +1274,13 @@ _OFFTOPIC = (
     "else. Say 'help' for what I can do, or tell me what you're looking for — "
     "like 'free yoga this weekend'."
 )
+
+
+def last_results(sender: str, cap: int = 48) -> list:
+    """Public read-only view of a sender's stashed search results (raw dicts,
+    same order the 'book <n>' / 'rate <n>' indexes refer to). Web UI uses this
+    to open the results on the board; cap keeps payloads small."""
+    return list(_LAST_RESULTS.get(sender) or [])[:cap]
 
 
 def handle_text(hub_url: str, text: str, sender: str = "") -> str:
