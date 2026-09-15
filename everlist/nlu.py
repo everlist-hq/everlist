@@ -111,7 +111,7 @@ def _rate_ok(sender: str) -> bool:
 
 def _call(messages: list) -> str | None:
     body = json.dumps(
-        {"model": _MODEL, "messages": messages, "temperature": 0, "max_tokens": 1200}  # reasoning models spend tokens before content
+        {"model": _MODEL, "messages": messages, "temperature": 0, "max_tokens": int(os.environ.get("EVERLIST_NLU_MAX_TOKENS", "4000"))}  # mercury-2-5 reasoning burns ~1200 tokens before content; 1200 starved it to empty (finish=length)
     ).encode()
     req = urllib.request.Request(
         _API_URL.rstrip("/") + "/chat/completions",

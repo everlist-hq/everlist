@@ -22,8 +22,10 @@ const postBtn = document.getElementById("postBtn") || document.getElementById("p
 const navPost = document.getElementById("nav-post");
 
 let busy = false;
-let ALL = [];           // cached listings
-let FILTER = "all";
+let ALL = [];           // default board: all live listings
+let BOARD = null;       // chat results mode: listing dicts in 'book <n>' order; null = default board
+let SIG = "";           // signature of rendered chat results (skips no-op re-renders)
+let openCard = null;    // currently expanded card element
 
 /* ---------- chat (unchanged brain wiring) ---------- */
 function addMsg(cls, text) {
@@ -67,6 +69,20 @@ async function send(text) {
       const data = await res.json().catch(() => ({}));
       think.remove();
       addMsg("agent", data.reply || "(empty response)");
+      // chat-first board: search replies open their results on screen
+      if (Array.isArray(data.results)) {
+        const sig = data.results.map((l) => l.id).join(",");
+        if (sig !== SIG || BOARD == null) {
+          SIG = sig;
+          BOARD = data.results.length ? data.results : null;
+          renderGrid();
+          if (BOARD) {
+            grid.classList.remove("boardin");
+            void grid.offsetWidth; // restart entrance animation
+            grid.classList.add("boardin");
+          }
+        }
+      }
       const meta = document.createElement("div");
       meta.className = "msg think";
       const m = document.createElement("div");
@@ -162,17 +178,10 @@ function spotsLeft(l) {
   return null;
 }
 
-function matchFilter(l, f) {
-  if (f === "all") return true;
-  const hay = [l.vertical, l.category].join(" ").toLowerCase();
-  const tags = (l.tags || []).join(" ").toLowerCase();
-  if (f === "classes") return /class|workshop|course|lesson/.test(hay + " " + tags);
-  return hay.indexOf(f) >= 0 || tags.indexOf(f) >= 0;
-}
-
-function makeCard(l, featured) {
+function makeCard(l, featured, n) {
   const card = document.createElement("article");
   card.className = "card" + (featured ? " feat" : "");
+  if (n != null) card.dataset.idx = String(n);
 
   const r1 = document.createElement("div"); r1.className = "r1";
   const dt = fmtDate(l.date);
@@ -190,6 +199,11 @@ function makeCard(l, featured) {
   const vtag = document.createElement("span"); vtag.className = "vtag";
   vtag.textContent = ((l.category || l.vertical || "listing").toUpperCase());
   r1.appendChild(vtag);
+  if (n != null) {
+    const bN = document.createElement("span"); bN.className = "bkn";
+    bN.textContent = "book " + n;
+    r1.appendChild(bN);
+  }
   if (featured) {
     const sp = spotsLeft(l);
     if (sp) { const cap = document.createElement("span"); cap.className = "cap"; cap.textContent = sp; r1.appendChild(cap); }
@@ -198,7 +212,7 @@ function makeCard(l, featured) {
 
   const h3 = document.createElement("h3"); h3.textContent = l.title || "Untitled"; card.appendChild(h3);
 
-  if (featured && l.description) {
+  if (l.description) {
     const desc = document.createElement("p"); desc.className = "desc";
     desc.textContent = String(l.description).slice(0, 220) + (String(l.description).length > 220 ? "\u2026" : "");
     card.appendChild(desc);
@@ -215,11 +229,15 @@ function makeCard(l, featured) {
   const pr = priceOf(l);
   const price = document.createElement("span"); price.className = "price"; price.textContent = pr.txt; foot.appendChild(price);
   const esc = document.createElement("span"); esc.className = "esc"; esc.textContent = pr.esc ? "escrow" : "no payment"; foot.appendChild(esc);
-  if (featured) {
+  if (featured || n != null) {
     const flex = document.createElement("span"); flex.className = "flex"; foot.appendChild(flex);
     const cta = document.createElement("button"); cta.className = "cta"; cta.type = "button";
-    cta.textContent = "Ask AI to book";
-    cta.addEventListener("click", () => { openChat(); input.value = "book " + (l.title || ""); input.focus(); autosize(); });
+    cta.textContent = n != null ? ("Book \u00b7 " + n) : "Ask AI to book";
+    cta.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openChat();
+      send(n != null ? ("book " + n) : ("book " + (l.title || "")));
+    });
     foot.appendChild(cta);
   }
   card.appendChild(foot);
@@ -227,10 +245,16 @@ function makeCard(l, featured) {
 }
 
 function renderGrid() {
+  openCard = null;
   grid.innerHTML = "";
-  const list = ALL.filter((l) => matchFilter(l, FILTER));
-  list.forEach((l, i) => grid.appendChild(makeCard(l, i === 0)));
-  countEl.textContent = ALL.length + (ALL.length === 1 ? " live listing" : " live listings");
+  if (BOARD) {
+    BOARD.forEach((l, i) => grid.appendChild(makeCard(l, false, i + 1)));
+    countEl.textContent = BOARD.length + " result" + (BOARD.length === 1 ? "" : "s") + " \u00b7 from your chat";
+  } else {
+    ALL.forEach((l, i) => grid.appendChild(makeCard(l, i === 0)));
+    countEl.textContent = ALL.length + (ALL.length === 1 ? " live listing" : " live listings");
+  }
+  const list = BOARD || ALL;
   emptyEl.hidden = list.length > 0;
   grid.hidden = list.length === 0;
 }
@@ -250,10 +274,64 @@ async function loadListings() {
 if (filters) filters.addEventListener("click", (e) => {
   const b = e.target.closest(".chip");
   if (!b) return;
-  FILTER = b.dataset.f || "all";
-  filters.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c === b));
-  renderGrid();
+  if (b.dataset.reset) {
+    BOARD = null;
+    SIG = "";
+    grid.classList.remove("boardin");
+    renderGrid();
+    return;
+  }
+  if (b.dataset.q) { openChat(); send(b.dataset.q); }
 });
+
+/* ---------- smart expansion: clicked card grows, others glide aside ----------
+   FLIP over every card: measure before, mutate, invert, play. The expanded
+   card spans two columns (real growth); neighbors keep their exact size and
+   only translate — they never shrink, and motion stays proportional. */
+function flipAnimate(mutate) {
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const before = new Map();
+  Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
+  mutate();
+  if (reduce) return;
+  Array.from(grid.children).forEach((c) => {
+    const f = before.get(c);
+    if (!f) return;
+    const l = c.getBoundingClientRect();
+    const dx = f.left - l.left, dy = f.top - l.top;
+    const sx = f.width / l.width, sy = f.height / l.height;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(1 - sx) < 0.01 && Math.abs(1 - sy) < 0.01) return;
+    c.animate(
+      [{ transformOrigin: "top left", transform: "translate(" + dx + "px," + dy + "px) scale(" + sx + "," + sy + ")" },
+       { transformOrigin: "top left", transform: "none" }],
+      { duration: 340, easing: "cubic-bezier(.2,.7,.2,1)" }
+    );
+  });
+}
+
+function expandCard(card) {
+  flipAnimate(() => {
+    if (openCard && openCard !== card) openCard.classList.remove("open");
+    card.classList.add("open");
+    openCard = card;
+  });
+}
+
+function collapseCard() {
+  if (!openCard) return;
+  const c = openCard;
+  openCard = null;
+  flipAnimate(() => c.classList.remove("open"));
+}
+
+grid.addEventListener("click", (e) => {
+  if (e.target.closest(".cta")) return; /* CTA routes to chat itself */
+  const card = e.target.closest(".card");
+  if (!card) { collapseCard(); return; }
+  if (openCard === card) collapseCard();
+  else expandCard(card);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") collapseCard(); });
 
 /* ---------- boot ---------- */
 if (window.innerWidth < 760) document.body.classList.add("min"); /* mobile: pill by default, tap to open */

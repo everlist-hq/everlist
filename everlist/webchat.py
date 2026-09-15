@@ -275,11 +275,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with BRAIN_LOCK:
                 reply = chatlib.handle_text(HUB_URL, text, sender="web-" + sid)
+                # chat-first UI: hand the board the same results the brain
+                # stashed for this sender (raw dicts, 'book <n>' order).
+                results = chatlib.last_results("web-" + sid)
         except Exception:
             return self.reply(
                 502, {"error": "chat brain error — try again"},
                 cookie=self.set_sid(sid))
-        return self.reply(200, {"reply": reply}, cookie=self.set_sid(sid))
+        return self.reply(200, {"reply": reply, "results": results}, cookie=self.set_sid(sid))
 
 
 def main():
