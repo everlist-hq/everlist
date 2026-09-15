@@ -19,6 +19,9 @@ jobs:
           NLU_URL: ${{ secrets.EVERLIST_NLU_API_URL }}
           NLU_KEY: ${{ secrets.EVERLIST_NLU_API_KEY }}
           NLU_MODEL: ${{ secrets.EVERLIST_NLU_MODEL }}
+          FB_URL: ${{ secrets.EVERLIST_FALLBACK_API_URL }}
+          FB_KEY: ${{ secrets.EVERLIST_FALLBACK_API_KEY }}
+          FB_MODEL: ${{ secrets.EVERLIST_FALLBACK_MODEL }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -29,7 +32,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           SSH="ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes root@everlist.network"
           $SSH 'cd /home/deploy/everlist && git pull --ff-only'
-          printf 'EVERLIST_NLU_API_URL=%s\nEVERLIST_NLU_API_KEY=%s\nEVERLIST_NLU_MODEL=%s\n' "$NLU_URL" "$NLU_KEY" "$NLU_MODEL" \
+          printf 'EVERLIST_NLU_API_URL=%s\nEVERLIST_NLU_API_KEY=%s\nEVERLIST_NLU_MODEL=%s\nEVERLIST_FALLBACK_API_URL=%s\nEVERLIST_FALLBACK_API_KEY=%s\nEVERLIST_FALLBACK_MODEL=%s\n' "$NLU_URL" "$NLU_KEY" "$NLU_MODEL" "$FB_URL" "$FB_KEY" "$FB_MODEL" \
             | $SSH 'mkdir -p /home/deploy/everlist/.secrets && cat > /home/deploy/everlist/.secrets/llm.env && chmod 600 /home/deploy/everlist/.secrets/llm.env'
           $SSH 'systemctl restart everlist-webchat'
           echo deployed: $($SSH 'cd /home/deploy/everlist && git rev-parse --short HEAD')
