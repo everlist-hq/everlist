@@ -51,11 +51,18 @@ _TIMEOUT = float(os.environ.get("EVERLIST_NLU_TIMEOUT", "8"))
 _FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://openrouter.ai/api/v1")
 _FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
 _FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "inception/mercury-2.5")
-_PROVIDERS: list[dict] = []
-if _API_KEY:
-    _PROVIDERS.append({"name": "primary", "url": _API_URL, "key": _API_KEY, "model": _MODEL})
-if _FB_KEY:
-    _PROVIDERS.append({"name": "fallback", "url": _FB_URL, "key": _FB_KEY, "model": _FB_MODEL})
+
+
+def _providers() -> list[dict]:
+    """Resolve the provider chain from CURRENT module values (not import-time
+    copies) so tests can patch _API_KEY/_FB_KEY at runtime and deployments can
+    change env without code edits."""
+    chain: list[dict] = []
+    if _API_KEY:
+        chain.append({"name": "primary", "url": _API_URL, "key": _API_KEY, "model": _MODEL})
+    if _FB_KEY:
+        chain.append({"name": "fallback", "url": _FB_URL, "key": _FB_KEY, "model": _FB_MODEL})
+    return chain
 
 # Tiny per-sender rate limit: NLU is the only external call in the chat path.
 # C9h: router health visibility - counters so /api/health can report the
@@ -75,12 +82,12 @@ def _perr(p: dict, err: str) -> None:
 
 def status() -> dict:
     """Router health snapshot for /api/health. Never includes key material."""
-    return {"configured": bool(_PROVIDERS), "model": _MODEL if _API_KEY else None,
+    return {"configured": bool(_providers()), "model": _MODEL if _API_KEY else None,
             "ok": _STAT["ok"], "no_search": _STAT["no_search"],
             "errors": _STAT["errors"], "last_error": _STAT["last_error"],
             "providers": [{"name": p["name"], "model": p["model"],
                            **_PSTAT.get(p["name"], {"ok": 0, "errors": 0, "last_error": ""})}
-                          for p in _PROVIDERS]}
+                          for p in _providers()]}
 
 _RL: dict = {}
 _RL_WINDOW = 300.0
@@ -150,7 +157,7 @@ def _call(messages: list) -> str | None:
     A provider failure (quota 403, timeout, empty content) falls through to
     the next one; only when ALL fail do we return None (fail-open upstream)."""
     max_tokens = int(os.environ.get("EVERLIST_NLU_MAX_TOKENS", "4000"))
-    for p in _PROVIDERS:
+    for p in _providers():
         body = json.dumps(
             {"model": p["model"], "messages": messages, "temperature": 0, "max_tokens": max_tokens}  # mercury reasoning burns ~1200 tokens before content
         ).encode()
