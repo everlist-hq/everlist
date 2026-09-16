@@ -257,6 +257,7 @@ function spotsLeft(l) {
 function makeCard(l, featured, n) {
   const card = document.createElement("article");
   card.className = "card" + (featured ? " feat" : "");
+  card.dataset.listing = JSON.stringify(l);
   if (n != null) card.dataset.idx = String(n);
 
   const r1 = document.createElement("div"); r1.className = "r1";
@@ -325,7 +326,6 @@ function makeCard(l, featured, n) {
     dl.href = "/l/" + encodeURIComponent(l.id);
     dl.target = "_blank"; dl.rel = "noopener";
     dl.textContent = "details";
-    dl.addEventListener("click", (ev) => ev.stopPropagation()); /* not an expansion click */
     foot.appendChild(dl);
   }
   const esc = document.createElement("span"); esc.className = "esc"; esc.textContent = pr.esc ? "escrow" : "no payment"; foot.appendChild(esc);
@@ -353,7 +353,7 @@ function makeCard(l, featured, n) {
 }
 
 function renderGrid() {
-  openCard = null;
+  resetBoardState();
   grid.innerHTML = "";
   if (BOARD) {
     BOARD.forEach((l, i) => grid.appendChild(makeCard(l, false, i + 1)));
@@ -392,92 +392,286 @@ if (filters) filters.addEventListener("click", (e) => {
   if (b.dataset.q) { openChat(); send(b.dataset.q); }
 });
 
-/* ---------- smart expansion: grow/shrink with a no-overlap invariant ----------
-   Math: every animated box stays inside its own final footprint, so nothing
-   can ever cover a neighbor.
-   - The hero card (opening/closing) animates its REAL width/height (layout
-     box, no transform scale — text never smears). Its animated box is always
-     within the union of old+new footprint.
-   - Every other card moves rigidly, translate-only, same easing. Layout-wise
-     each card shifts exactly ONE flow slot; the only long moves are "wrap"
-     cards (row-end -> next-row-start). Those never slide across the board:
-     they fade out at the old slot and fade in at the new one, so no card ever
-     VISIBLY travels more than one position (owner call: no big jumps). */
-const EASE = { duration: 320, easing: "cubic-bezier(.2,.7,.2,1)" };
+/* ---------- board motion: everything slides, nothing fades ----------
+   Owner call (2026-09-16): no card may ever appear or disappear during a
+   reflow. Every non-expanding card moves as a rigid translate, including
+   corner moves (row+column changes) — one straight line, no opacity tricks.
+   The peek-hero animates its real width/height together with a translate,
+   so text reflows inside a moving box and never overlaps a neighbor. */
+const EASE = "cubic-bezier(.2,.7,.2,1)";
+const REDUCE = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-function gridPitch() {
-  const cs = getComputedStyle(grid);
-  const w = parseFloat(cs.gridTemplateColumns.split(" ")[0]) || 0;
-  const gap = parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0;
-  return (w + gap) || 320;
+function slideBack(f, l, c) {
+  const dx = f.left - l.left, dy = f.top - l.top;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+  if (REDUCE()) return;
+  c.animate(
+    [{ transform: "translate(" + dx + "px," + dy + "px)" },
+     { transform: "none" }],
+    { duration: 340, easing: EASE }
+  );
 }
 
 function animateBoardChange(mutate, hero) {
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const before = new Map();
   Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
   mutate();
-  const pitch = gridPitch();
   Array.from(grid.children).forEach((c) => {
     const f = before.get(c);
-    if (!f) return;
+    if (!f) return;                 // inserted node: panel animates itself
     const l = c.getBoundingClientRect();
     if (hero && c === hero) {
-      if (reduce) return;
-      const jumped = Math.abs(f.left - l.left) > 2 || Math.abs(f.top - l.top) > 2;
-      if (jumped) { c.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 180 }); return; }
-      // grow/shrink the real box; content reflows inside, never overlaps
+      const dx = f.left - l.left, dy = f.top - l.top;
+      const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1 ||
+                    Math.abs(f.width - l.width) > 1 || Math.abs(f.height - l.height) > 1;
+      if (!moved || REDUCE()) return;
       c.animate(
-        [{ width: f.width + "px", height: f.height + "px" },
-         { width: l.width + "px", height: l.height + "px" }],
-        EASE
+        [{ transform: "translate(" + dx + "px," + dy + "px)", width: f.width + "px", height: f.height + "px" },
+         { transform: "none", width: l.width + "px", height: l.height + "px" }],
+        { duration: 340, easing: EASE }
       );
       return;
     }
-    const dx = f.left - l.left, dy = f.top - l.top;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-    if (reduce) return;
-    if (Math.abs(dy) > 2 && Math.abs(dx) > pitch * 0.5) {
-      /* corner move (changes row AND column): fade out where it was, fade in
-         where it lands — never sweep across the board */
-      c.animate(
-        [{ transform: "translate(" + dx + "px," + dy + "px)", opacity: 1 },
-         { transform: "translate(" + dx + "px," + dy + "px)", opacity: 0, offset: 0.35 },
-         { transform: "none", opacity: 0, offset: 0.65 },
-         { transform: "none", opacity: 1 }],
-        { duration: 380, easing: "ease-in-out" }
-      );
-      return;
-    }
-    c.animate(
-      [{ transform: "translate(" + dx + "px," + dy + "px)" },
-       { transform: "none" }],
-      EASE
-    );
+    slideBack(f, l, c);            // rigid slide for everyone else — incl. corner moves
   });
 }
+
+/* ---------- detail panel: full-row expansion with a hole ----------
+   "details" expands a full-width panel in the row BELOW the clicked card.
+   Above stays above; same-row neighbors keep their slots (the clicked slot
+   becomes a dashed ghost "hole"); everything below slides down. Open: the
+   panel drops out of the hole straight down, THEN widens inside its own
+   empty band — it never sweeps across same-row neighbors. Close: reverse —
+   narrow in the band, then rise back into the hole while the board closes
+   up. The URL mirrors /l/{id} via pushState; /l/{id} stays a real server
+   page for crawlers, no-JS visitors and deep links, but in-app we never
+   navigate. One generation counter (detailGen) serializes everything: a
+   switch first closes the old panel, then opens the new one when that
+   finishes; a popstate mid-flight force-closes, cancelling in-flight
+   animations so state and URL can never desync. */
+let openDetailCard = null;   // card currently holed
+let detailPanel = null;      // panel element (in flow while open)
+let detailGen = 0;          // generation counter: +1 invalidates in-flight work
+
+function cardListing(card) {
+  try { return JSON.parse(card.dataset.listing || "null"); } catch (e) { return null; }
+}
+
+function resetBoardState() {
+  /* Board re-rendered (search/filter): no cross-board animation is defined,
+     so any open detail/peek is torn down silently and the URL returns home.
+     Called by renderGrid BEFORE innerHTML is cleared. */
+  detailGen++;
+  openDetailCard = null;
+  openCard = null;
+  if (detailPanel) { detailPanel.remove(); detailPanel = null; }
+  if (history.state && history.state.detail) history.replaceState(null, "", "/");
+}
+
+function rowsOfGrid() {
+  const rows = [];
+  let cur = null, top = -1e9;
+  Array.from(grid.children).forEach((el) => {
+    if (el.classList && el.classList.contains("card")) {
+      const t = el.offsetTop;
+      if (!cur || Math.abs(t - top) > 2) { cur = []; rows.push(cur); top = t; }
+      cur.push(el);
+    }
+  });
+  return rows;
+}
+
+function buildDetailPanel(l) {
+  const d = document.createElement("section");
+  d.className = "detail-panel";
+  const close = document.createElement("button");
+  close.className = "dclose"; close.type = "button"; close.setAttribute("aria-label", "close");
+  close.textContent = "\u00d7";
+  close.addEventListener("click", (ev) => { ev.stopPropagation(); closeDetail(false); });
+  d.appendChild(close);
+
+  const r1 = document.createElement("div"); r1.className = "r1";
+  const dt = fmtDate(l.date);
+  const date = document.createElement("span"); date.className = "date";
+  const db = document.createElement("b"); db.textContent = dt ? dt.big : "\u221e";
+  const ds = document.createElement("s"); ds.textContent = dt ? (dt.small || "") : "any";
+  date.appendChild(db); date.appendChild(ds); r1.appendChild(date);
+  const vtag = document.createElement("span"); vtag.className = "vtag";
+  vtag.textContent = ((l.category || l.vertical || "listing").toUpperCase());
+  r1.appendChild(vtag);
+  if (l.owner_public) { const o = document.createElement("span"); o.className = "meta"; o.textContent = "by " + l.owner_public; r1.appendChild(o); }
+  d.appendChild(r1);
+
+  const h2 = document.createElement("h2"); h2.className = "dtitle"; h2.textContent = l.title || "Untitled"; d.appendChild(h2);
+  if (l.description) { const de = document.createElement("p"); de.className = "ddesc"; de.textContent = String(l.description); d.appendChild(de); }
+
+  const g = document.createElement("div"); g.className = "dgrid";
+  const bits = [];
+  if (l.location) bits.push(["Location", l.location]);
+  const sp = spotsLeft(l);
+  if (sp) bits.push(["Capacity", sp]);
+  const pr = priceOf(l);
+  bits.push(["Price", pr.txt + (pr.esc ? " (escrow)" : "")]);
+  if ((l.rating_count | 0) > 0) {
+    let avg = (l.rating_wtot || 0) > 0 ? (l.rating_wsum || 0) / l.rating_wtot
+            : (l.rating_avg != null ? l.rating_avg : (l.rating_sum || 0) / l.rating_count);
+    bits.push(["Paid reviews", "\u2605 " + (Math.round(avg * 10) / 10) + "/5 (" + l.rating_count + ")"]);
+  }
+  if ((l.free_rating_count | 0) > 0) {
+    bits.push(["Free class", (Math.round((l.free_rating_sum || 0) / l.free_rating_count * 10) / 10) + "/5 (" + l.free_rating_count + ")"]);
+  }
+  bits.forEach((pair) => {
+    const item = document.createElement("div"); item.className = "ditem";
+    const k = document.createElement("span"); k.className = "dk"; k.textContent = pair[0]; item.appendChild(k);
+    const v = document.createElement("span"); v.className = "dv"; v.textContent = pair[1]; item.appendChild(v);
+    g.appendChild(item);
+  });
+  d.appendChild(g);
+
+  if (l.id) {
+    const cta = document.createElement("button"); cta.className = "cta"; cta.type = "button";
+    cta.textContent = "Ask AI to book";
+    cta.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openChat();
+      input.value = "book " + l.id + " ";
+      input.focus(); autosize();
+    });
+    d.appendChild(cta);
+  }
+  return d;
+}
+
+function openDetail(card) {
+  if (openDetailCard) return;
+  const l = cardListing(card);
+  if (!l) return;
+  const gen = ++detailGen;
+  const rows = rowsOfGrid();
+  let anchor = card;
+  for (const row of rows) { if (row.indexOf(card) !== -1) { anchor = row[row.length - 1]; break; } }
+  animateBoardChange(() => {
+    if (openCard) { openCard.classList.remove("open"); openCard = null; }  // peek yields to detail
+    card.classList.add("ghost");
+    detailPanel = buildDetailPanel(l);
+    anchor.after(detailPanel);
+  }, null);
+  // two-phase morph: drop out of the hole into the empty band, then widen
+  const hole = card.getBoundingClientRect();
+  const pr = detailPanel.getBoundingClientRect();
+  if (!REDUCE()) {
+    const dxa = hole.left - pr.left;
+    detailPanel.animate(
+      [{ transform: "translate(" + dxa + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 },
+       { transform: "translate(" + dxa + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.45 },
+       { transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 }],
+      { duration: 420, easing: EASE }
+    );
+  }
+  openDetailCard = card;
+  if (l.id && location.pathname !== "/l/" + l.id) {
+    history.pushState({ detail: l.id }, "", "/l/" + encodeURIComponent(l.id));
+  }
+  detailPanel.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
+}
+
+function closeDetail(viaPop) {
+  if (!openDetailCard || !detailPanel) return;
+  const card = openDetailCard, panel = detailPanel;
+  openDetailCard = null; detailPanel = null;
+  const gen = ++detailGen;
+  // capture BEFORE-positions while the panel still holds the row open
+  const before = new Map();
+  Array.from(grid.children).forEach((c) => { if (c !== panel) before.set(c, c.getBoundingClientRect()); });
+  // freeze the panel out of flow (fixed): row collapses, panel stays on screen
+  const pr = panel.getBoundingClientRect();
+  panel.style.position = "fixed";
+  panel.style.left = pr.left + "px"; panel.style.top = pr.top + "px";
+  panel.style.width = pr.width + "px"; panel.style.height = pr.height + "px";
+  panel.style.margin = "0"; panel.style.zIndex = "6";
+  // refill the hole: the card never left, it just un-dims (CSS transition)
+  card.classList.remove("ghost");
+  requestAnimationFrame(() => {
+    // everyone slides back up into the closed row
+    Array.from(grid.children).forEach((c) => {
+      if (c === panel) return;
+      const f = before.get(c);
+      if (f) slideBack(f, c.getBoundingClientRect(), c);
+    });
+    // panel narrows in its band, then docks back into the hole
+    const hole = card.getBoundingClientRect();
+    if (!REDUCE()) {
+      const dxa = hole.left - pr.left;
+      const finish = () => { if (gen === detailGen) { panel.remove(); } };
+      panel.animate(
+        [{ transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 },
+         { transform: "translate(" + dxa() + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.55 },
+         { transform: "translate(" + dxa() + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 }],
+        { duration: 400, easing: EASE }
+      ).onfinish = finish;
+      panel.getAnimations().forEach((a) => a.finished.catch(() => finish()));
+    } else { panel.remove(); }
+  });
+  if (!viaPop && history.state && history.state.detail) history.back();
+}
+
+window.addEventListener("popstate", () => {
+  if (openDetailCard && !(history.state && history.state.detail)) closeDetail(true);
+  else if (!openDetailCard && history.state && history.state.detail) {
+    // forward button: re-open the panel for the listing in the URL
+    const id = history.state.detail;
+    const card = Array.from(grid.children).find((c) => {
+      const l = cardListing(c); return l && l.id === id;
+    });
+    if (card) openDetail(card);
+  }
+});
 
 function expandCard(card) {
   animateBoardChange(() => {
     if (openCard && openCard !== card) openCard.classList.remove("open");
-    card.classList.add("open");
     openCard = card;
+    card.classList.add("open");
   }, card);
 }
 
 function collapseCard() {
+  if (openDetailCard) { closeDetail(false); return; }
   if (!openCard) return;
   const c = openCard;
   openCard = null;
   animateBoardChange(() => c.classList.remove("open"), c);
 }
 
+/* one handler, ordered: CTA / details link first (their own behavior),
+   then detail-close gestures, then peek expand */
 grid.addEventListener("click", (e) => {
-  if (e.target.closest(".cta")) return; /* CTA routes to chat itself */
+  const dl = e.target.closest(".dlink");
+  if (dl) {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; /* native: open /l page */
+    e.preventDefault();
+    const card = dl.closest(".card");
+    if (!card) return;
+    if (openDetailCard === card) { closeDetail(false); return; }
+    if (openDetailCard) {
+      closeDetail(false);
+      const gen = detailGen;
+      setTimeout(() => { if (gen === detailGen) openDetail(card); }, 430);
+    } else {
+      openDetail(card);
+    }
+    return;
+  }
+  if (e.target.closest(".cta")) return;             /* CTA routes to chat itself */
+  if (e.target.closest(".detail-panel")) {
+    if (e.target === detailPanel) closeDetail(false); /* bg/padding click = close; text/buttons keep focus */
+    return;
+  }
   const card = e.target.closest(".card");
+  if (openDetailCard) { closeDetail(false); return; }  /* any board click while detail open closes it */
   if (!card) { collapseCard(); return; }
-  if (openCard === card) collapseCard();
-  else expandCard(card);
+  if (openCard === card) { collapseCard(); return; }
+  expandCard(card);
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") collapseCard(); });
 

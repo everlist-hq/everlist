@@ -817,3 +817,22 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - Shipped: static/og/default.jpg = approved nano card (byte-identical); per-vertical og:image logic collapsed to single card in pages.py; OG_VERTICALS removed; 5 scene files deleted (static/og/ now default.jpg only)
 - test_webchat: 2 assertions reworked (detail og:image brand card; og brand card jpg); suite 115/115
 - Lessons: small diffusion models garble small symbols (painters not draftsmen); pro-class + reference logo fixes it; hybrid AI-backdrop+vector-icons was prepared but pure-AI large model won
+
+## 2026-09-16 — Board motion v2: slide-only + full-row detail panel (owner call)
+- Owner: boxes must never appear/disappear — everything slides. Corner-move fade hack removed; every reflow is a rigid FLIP translate (incl. row+column moves)
+- Peek expand (span-2) kept on card click; hero animates translate+real width/height together (no smear, no overlap)
+- 'details' no longer navigates: full-row panel opens in the row BELOW the clicked card; same-row slots stay, clicked slot becomes dashed ghost hole; below slides down
+- Open morph: drops out of the hole straight down, then widens in its own band (never sweeps over same-row neighbors); close = reverse retreat into the hole
+- URL mirrors /l/{id} via pushState + popstate (back/forward + Escape + panel bg + holed-card click all close); /l/{id} server page kept for crawlers/no-JS/deep links
+- panel freeze on close: fixed-position CSSOM (CSP style-src 'self' allows el.style writes), FLIP others up while panel retreats in parallel
+- cards carry dataset.listing (CSP-safe JSON); buildDetailPanel renders textContent-only
+- sw.js is network-first, no cache-bust needed; verified live: open/close/Escape/×/URL sync/peek on 8804; make test ALL PASSED; synced to .staging-repo/everlist
+
+## 2026-09-16 — Board motion v2.1: polish pass (owner call: make it really clean)
+- renderGrid now resets board state (detail/peek torn down, URL back to /) before re-rendering — search-while-open can't leave a dangling panel or stale /l/ URL
+- Generation counter (detailGen) serializes open/close/switch; chained switch closes first, then opens — no races, no busy-boolean dead zones
+- popstate force-closes even mid-animation (in-flight WAAPI cancelled via finished.catch); back/URL can never desync from panel state
+- Panel close = background/padding click only (e.target === panel); text/buttons no longer close; modifier clicks (ctrl/cmd/shift) on details link keep native /l navigation for power users
+- Ghost hole: hover-lift disabled while holed (dashed slot shouldn't rise); panel got depth (shadow) + scroll-margin breathing room
+- Dead code removed: gridPitch, cssText-after-remove, no-op WAAPI un-dim (CSS transition covers it), unused handler merged into one ordered grid click handler
+- Full gate: make test ALL PASSED (E2E escrow HELD); live re-verified on 8804 (open/close/back/URL); shipped via CI to everlist.network

@@ -129,6 +129,48 @@ body {
 .card.open .desc { display: block; }
 @media (max-width: 1080px) { .card.open { grid-column: span 2; } }
 @media (max-width: 860px) { .card.open { grid-column: span 1; } }
+/* ---- detail panel: full-row expansion with a ghost hole (W5) ---- */
+.card.ghost {
+  border-style: dashed;
+  border-color: var(--accent-dim);
+  opacity: .35;
+  pointer-events: auto;      /* clicking the hole closes the panel */
+  filter: saturate(.4);
+  transition: opacity .18s, filter .18s;
+}
+.card.ghost:hover { transform: none; box-shadow: none; border-color: var(--accent-dim); }
+.detail-panel {
+  grid-column: 1 / -1;       /* full row */
+  background: var(--bg2);
+  border: 1px solid var(--accent-dim);
+  border-radius: 16px;
+  padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 12px;
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 14px 40px var(--shadow);
+  scroll-margin: 24px;       /* breathing room when scrolled into view */
+}
+.detail-panel .dtitle { margin: 0; font-size: 22px; font-weight: 640; letter-spacing: -.3px; }
+.detail-panel .ddesc { margin: 0; color: var(--text2); font-size: 14px; line-height: 1.55; }
+.detail-panel .dgrid {
+  display: grid; gap: 10px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--line-soft);
+}
+.detail-panel .ditem { display: flex; flex-direction: column; gap: 2px; }
+.detail-panel .dk { font-size: 10.5px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.detail-panel .dv { font-size: 14px; font-weight: 600; color: var(--text2); }
+.detail-panel .cta { align-self: flex-start; }
+.dclose {
+  position: absolute; top: 10px; right: 12px;
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font-size: 15px; line-height: 1;
+  width: 30px; height: 30px; cursor: pointer; font-family: inherit;
+}
+.dclose:hover { color: var(--text2); border-color: var(--accent-dim); }
+
 .boardin { animation: boardin .38s cubic-bezier(.2,.7,.2,1); }
 @keyframes boardin {
   from { opacity: 0; transform: translateY(10px) scale(.985); }
