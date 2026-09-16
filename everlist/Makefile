@@ -58,10 +58,18 @@ down: ## graceful TERM then KILL after timeout — ONLY recorded PIDs
 # C12 review lesson: the gate stack is FULLY isolated from the live stack —
 # own rundir (state + lock + pids), own port, no wrapper (test_client embeds
 # one with a throwaway seed). make test can never kill or collide with `make up`.
+
 gate-up: ## start the ISOLATED gate hub (used by make test only)
 	@mkdir -p $(GATE_RUNDIR)
+	@# C12 enforced (2026-09-16): gate state used to persist forever, so the
+	@# demo listing hit 30/30 capacity and the A2A E2E failed after dozens of
+	@# runs. Every gate run now starts fresh; the hub auto-seeds its built-in
+	@# demo listings on empty state.
+	@if [ -s $(GATE_RUNDIR)/state.json ]; then \
+		mkdir -p $(GATE_RUNDIR)/stale; \
+		mv $(GATE_RUNDIR)/state.json $(GATE_RUNDIR)/stale/state.json.$$(date +%s); \
+		echo "[gate-up] archived stale gate state -> stale/"; fi
 	@if (exec 3<>/dev/tcp/127.0.0.1/$(GATE_PORT)) 2>/dev/null; then \
-		exec 3>&- 3<&-; \
 		echo "FATAL: gate port $(GATE_PORT) already in use."; exit 1; fi
 	@HUB_STATE_FILE=$$PWD/$(GATE_RUNDIR)/state.json nohup $(PYTHON) app.py $(GATE_PORT) > $(GATE_RUNDIR)/hub.log 2>&1 & echo $$! > $(GATE_RUNDIR)/hub.pid
 	@ok=""; for i in $$(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$(GATE_PORT)) 2>/dev/null && { exec 3>&- 3<&-; ok=1; break; }; sleep 0.2; done; \

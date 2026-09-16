@@ -798,3 +798,15 @@ Shipped: /network reworded to curated positioning (title, meta, intro +
 honest one-hub line; old "anyone can run a hub" line removed); suite lock
 "network curated positioning" added (94 checks now); strategy §8 + worklog
 synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
+
+## 2026-09-16 — W5 growth/agent-face shipped (gate ALL PASSED)
+- /how escrow explainer: covers/does-not-cover, per SPEC 19c defaults, fee from manifest (no hardcode), SIMULATED banner flows from manifest `payments.mode` (new I4 declaration in app.py)
+- /agents page: real endpoints, real SDK flow (signup_keypair/search/book/bookings), rules of the road, curated /network pointer
+- OG share images: 6 vertical FLUX images (fal.ai) -> 1200x630 JPEG in static/og/, per-vertical og:image on detail pages, summary_large_image twitter cards
+- PWA: manifest.webmanifest + logo-512 + sw.js (network-first runtime cache); theme.js: pre-paint light/dark (localStorage -> OS preference -> dark), toggle button; 12 hardcoded white-tints -> --tintN vars + light palette + --surface finally defined (was always falling back)
+- a11y: :focus-visible, skip link, color-scheme dark light
+- deploy.sh Caddy matcher: restored /nacl-fast.min.js + /booking/* (regressed in 1eaed2c) + /transparency /network /how /agents /og/* /theme.js /sw.js /manifest.webmanifest /logo-512.png
+- Makefile gate-up: archives stale gate state (true C12 isolation; evt-2 was 30/30 sold out after dozens of runs -> A2A failures) — own patch accident (gutted gate-up target) caught by parse+standalone proof before rerun
+- test_webchat: +21 W5 checks (115 passed, 0 failed); fixed vacuous fake-stars check (invalid b"\u2605" escape never matched anything); removed dead code after sys.exit
+- tools/gen_og.py: env-key only (scrubbed; key never committed)
+- Full make test: ALL PASSED incl A2A E2E escrow=HELD

@@ -181,6 +181,10 @@ TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webmanifest": "application/manifest+json",
 }
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -292,6 +296,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/network":
             # W4: open hub registry page (window over GET /registry)
             return self._send_bytes(200, _pages.network_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=300")
+        elif path == "/how":
+            # W5: escrow explainer — what it covers, and honestly what it does not
+            return self._send_bytes(200, _pages.how_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=300")
+        elif path == "/agents":
+            # W5: agent face — manifest, OpenAPI, SDK flow, rules of the road
+            return self._send_bytes(200, _pages.agents_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=300")
         elif path.startswith("/booking/"):
             # W3: participant-gated booking page. The session's server-side
             # token decides visibility; the hub answers an indistinguishable

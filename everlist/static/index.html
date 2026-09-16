@@ -3,13 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <title>EverList — discover anything, book it in one message</title>
 <meta name="description" content="A listing is something with a date where a human is needed or wanted. Browse manually or ask the AI — the same brain our agents use.">
+<meta property="og:site_name" content="EverList">
+<meta property="og:title" content="EverList — discover anything, book it in one message">
+<meta property="og:description" content="A listing is something with a date where a human is needed or wanted. Ask the chat; escrow holds the payment until it is done.">
+<meta property="og:url" content="https://everlist.network/">
+<meta property="og:image" content="https://everlist.network/og/default.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/logo-512.png">
+<script src="/theme.js"></script>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<a class="skip" href="#browse">Skip to listings</a>
 <div class="page">
   <header class="top">
     <div class="brand"><img src="/favicon.svg" alt="" width="30" height="30"><span>EverList</span></div>
@@ -19,6 +32,7 @@
       <a href="#" id="nav-post">Post a listing</a>
     </nav>
     <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting&#8230;</span></div>
+    <button class="linkbtn" id="theme-btn" type="button" aria-label="Toggle colour theme">theme</button>
   </header>
 
   <section class="discover" id="browse">
@@ -58,6 +72,7 @@
         <button class="cta" type="submit">Post via chat &#8599;</button>
         <span class="cnt">the brain validates and replies with your listing id &amp; manage code</span>
       </div>
+    <p class="wfull cnt">Listing is free — a flat 1% fee applies only when a booking is paid (declared in our public <a href="/.well-known/agent-hub.json">manifest</a>).</p>
     </form>
   </section>
   <section class="discover" id="dash" hidden>
@@ -122,7 +137,7 @@ Or try help for everything I can do: signup, search, book, my-bookings, rate, an
     </form>
     <footer class="foot">
       <span>no account needed to look &#183; escrow holds payment until the event ends</span>
-      <span class="footlinks"><a href="/transparency">transparency</a> &#183; <a href="/network">network</a></span>
+      <span class="footlinks"><a href="/how">how it works</a> &#183; <a href="/agents">agents</a> &#183; <a href="/transparency">transparency</a> &#183; <a href="/network">network</a></span>
       <button class="linkbtn" id="reset" type="button">new session</button>
     </footer>
   </div>

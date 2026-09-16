@@ -9,6 +9,7 @@ from datetime import datetime as _dt, timedelta as _td
 # plus a small .ldetail block appended there.
 
 BASE = "https://everlist.network"
+OG_VERTICALS = ("events", "food", "services", "classes", "p2p")
 HUB = "http://127.0.0.1:8802"
 _TIMEOUT = 6
 
@@ -94,7 +95,13 @@ def _page_head(title, desc, canon):
     a("<meta property=\"og:type\" content=\"website\">")
     a("<meta property=\"og:title\" content=\"" + esc(title) + "\">")
     a("<meta property=\"og:description\" content=\"" + esc(desc) + "\">")
+    a("<meta property=\"og:url\" content=\"" + BASE + canon + "\">")
+    a("<meta property=\"og:image\" content=\"" + BASE + "/og/default.jpg\">")
+    a("<meta property=\"og:image:width\" content=\"1200\">")
+    a("<meta property=\"og:image:height\" content=\"630\">")
+    a("<meta name=\"theme-color\" content=\"#0d1117\">")
     a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
+    a("<script src=\"/theme.js\"></script>")
     a("<link rel=\"stylesheet\" href=\"/style.css\">")
     return h
 
@@ -260,7 +267,12 @@ def detail_html(l, hub=None):
     a("<meta property=\"og:title\" content=\"" + esc(title) + "\">")
     a("<meta property=\"og:description\" content=\"" + esc((l.get("description") or "")[:200]) + "\">")
     a("<meta property=\"og:url\" content=\"" + BASE + "/l/" + esc(lid) + "\">")
-    a("<meta name=\"twitter:card\" content=\"summary\">")
+    _vert = str(l.get("vertical") or "default")
+    _img = "/og/" + (_vert if _vert in OG_VERTICALS else "default") + ".jpg"
+    a("<meta property=\"og:image\" content=\"" + BASE + _img + "\">")
+    a("<meta property=\"og:image:width\" content=\"1200\">")
+    a("<meta property=\"og:image:height\" content=\"630\">")
+    a("<meta name=\"twitter:card\" content=\"summary_large_image\">")
     a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
     a("<link rel=\"alternate\" type=\"text/calendar\" href=\"/l/" + esc(lid) + ".ics\">")
     a("<link rel=\"stylesheet\" href=\"/style.css\">")
@@ -404,7 +416,7 @@ def ics_body(l):
 
 
 def sitemap_xml(hub=None):
-    urls = ([BASE + "/", BASE + "/transparency", BASE + "/network"]
+    urls = ([BASE + "/", BASE + "/transparency", BASE + "/network", BASE + "/how", BASE + "/agents"]
             + [BASE + "/l/" + str(l.get("id")) for l in all_listings(hub)])
     body = "".join("<url><loc>" + esc(u) + "</loc></url>" for u in urls)
     return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -412,3 +424,131 @@ def sitemap_xml(hub=None):
 
 
 ROBOTS = ("User-agent: *\nAllow: /\n\nSitemap: " + BASE + "/sitemap.xml\n").encode("utf-8")
+
+
+def _manifest(hub=None):
+    """W5: the hub's self-declared manifest (or None when unreachable)."""
+    try:
+        return _get((hub or HUB) + "/.well-known/agent-hub.json")
+    except Exception:
+        return None
+
+
+def _find_mode(d):
+    """Honest pay-mode label: recurse for the hub's declared verification mode."""
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if k == "mode" and isinstance(v, str):
+                return v
+            f = _find_mode(v)
+            if f:
+                return f
+    elif isinstance(d, list):
+        for v in d:
+            f = _find_mode(v)
+            if f:
+                return f
+    return None
+
+
+def _pay_banner(man):
+    """I4: never imply real money moved when it did not."""
+    mode = _find_mode(man or {})
+    if mode == "simulated":
+        return ("<div class=\"note\">Payments on this hub currently run in <strong>SIMULATED</strong> mode: "
+                "the escrow and settlement machinery is real code under test, but <strong>no real money moves yet</strong>. "
+                "This label updates automatically when the rails go live.</div>")
+    if mode:
+        return ("<div class=\"note\">Payment verification mode on this hub: <strong>" + esc(mode) + "</strong>. "
+                "Check the manifest for what that means before moving real value.</div>")
+    return ""
+
+
+def _fee_pct(man, default="1"):
+    try:
+        return str((man or {})["fairness"]["fee_policy"]["actual_fee_pct"]).rstrip("0").rstrip(".")
+    except Exception:
+        return default
+
+
+def how_html(hub=None):
+    """W5 /how: the escrow explainer — what escrow covers, and honestly what it does not."""
+    man = _manifest(hub)
+    fee = _fee_pct(man)
+    h = _page_head("How it works", "Search, book, and list in one chat message — escrow holds the payment until it is done. What escrow covers, and what it does not.", "/how")
+    a = h.append
+    _page_open(h, "<a href=\"/agents\">For agents</a>")
+    a("<h1>How EverList works</h1>")
+    a("<p class=\"ldesc\">EverList is listing-first: <strong>a listing is something with a date where a human is needed or wanted</strong> \u2014 a concert, a dinner, a repair slot, a class. Ask the chat below (or send an agent); escrow keeps the money honest in between.</p>")
+    a("<h2>The loop</h2>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><strong>1 \u00b7 Ask.</strong> Type what you want: \u201cfree yoga this weekend\u201d. Matches open on the board.</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><strong>2 \u00b7 Book.</strong> Say \u201cbook 1\u201d. Your payment goes into <strong>escrow</strong> \u2014 held by the hub, not handed to the organizer.</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><strong>3 \u00b7 It happens.</strong> You attend, eat, get repaired, learn.</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><strong>4 \u00b7 Money moves.</strong> Survive the refund window and the organizer is paid (you can watch every settlement on the <a href=\"/transparency\">public ledger</a>). Cancelled inside the window? It refunds to you.</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><strong>5 \u00b7 Rate.</strong> Buyers rate paid bookings; ratings are weighted so fake volume buys nothing.</p></div>")
+    a("<h2>Escrow, plainly</h2>")
+    a("<p class=\"ldesc\"><strong>What it covers:</strong></p>")
+    a("<p class=\"ldesc\">\u00b7 The organizer cannot take the money and disappear \u2014 it is held until the window closes.<br>"
+      "\u00b7 Cancel inside the listing\u2019s refund window and it comes back to you.<br>"
+      "\u00b7 Default windows: <strong>events</strong> \u2014 event end + 72h \u00b7 <strong>services</strong> \u2014 fulfillment + 72h \u00b7 <strong>goods</strong> \u2014 delivery + 7 days (organizers can set their own, shown before you book).<br>"
+      "\u00b7 Every release and refund is published on the public ledger \u2014 nothing moves in the dark.</p>")
+    a("<p class=\"ldesc\"><strong>What it does not:</strong></p>")
+    a("<p class=\"ldesc\">\u00b7 It is <strong>not insurance or a quality guarantee</strong> \u2014 it holds money honestly; it cannot judge whether the jazz was good. Ratings are the quality signal.<br>"
+      "\u00b7 Each hub operator is responsible for the legality of their own listings.<br>"
+      "\u00b7 Disputes: a mutual refund exists, but the hub does not adjudicate one-sided complaints.</p>")
+    banner = _pay_banner(man)
+    if banner:
+        a(banner)
+    a("<h2>What it costs</h2>")
+    a("<p class=\"ldesc\">Browsing and chatting: <strong>free</strong>, no account needed. Listing: <strong>free</strong>. "
+      "A flat <strong>" + esc(fee) + "% booking fee</strong> is taken from the payment \u2014 the organizer receives price minus fee, "
+      "and the hub\u2019s declared fee policy is public in its <a href=\"/.well-known/agent-hub.json\">manifest</a>.</p>")
+    a("<h2>For organizers</h2>")
+    a("<p class=\"ldesc\">List in one message \u2014 \u201clist | Rooftop Jazz Night | 15 | 2026-10-01 | Berlin\u201d \u2014 or use the <a href=\"/\">Post a listing</a> form. "
+      "Incoming bookings, confirmations and payouts appear in your Bookings view. No monthly anything.</p>")
+    a("</article></div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")
+
+
+def agents_html(hub=None):
+    """W5 /agents: the agent face \u2014 real endpoints, real SDK flow, honest rules."""
+    man = _manifest(hub)
+    fee = _fee_pct(man)
+    h = _page_head("For agents", "EverList is agent-native: open manifest, OpenAPI contract, public ledger, stdlib SDK. Everything the website does, agents do too.", "/agents")
+    a = h.append
+    _page_open(h, "<a href=\"/how\">How it works</a>")
+    a("<h1>For agents</h1>")
+    a("<p class=\"ldesc\">EverList is <strong>agent-native</strong>: this website is just a client of the same open API agents use. No wall, no key to read listings.</p>")
+    a("<h2>Machine-readable entry points</h2>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><code>GET /.well-known/agent-hub.json</code> \u2014 manifest: protocol version, fairness declarations, identity, payments</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><code>GET /openapi.json</code> \u2014 OpenAPI 3.1 contract &nbsp;\u00b7&nbsp; <code>GET /verticals</code> \u2014 field schemas + category vocab</p></div>")
+    a("<div class=\"lcard\"><p class=\"ldesc\"><code>GET /search?q=\u2026</code> \u00b7 <code>GET /listings</code> \u00b7 <code>GET /ledger</code> \u2014 public reads, no auth</p></div>")
+    a("<h2>Public reads with curl</h2>")
+    a("<pre class=\"seedbox\">curl -s https://everlist.network/search?q=jazz</pre>")
+    a("<h2>Do the whole flow with the SDK</h2>")
+    a("<p class=\"ldesc\">Copy the <code>sdk/agenthub</code> directory from the public repo (github.com/everlist-hq/everlist) next to your code, then:</p>")
+    a("<pre class=\"seedbox\">from agenthub import AgentHub\n"
+      "\n"
+      "hub = AgentHub(&quot;https://everlist.network&quot;)\n"
+      "acct = hub.signup_keypair(&quot;my-agent&quot;)  # Ed25519; seed shown once, stored nowhere\n"
+      "\n"
+      "for l in hub.search(&quot;jazz&quot;):             # public read\n"
+      "    print(l.id, l.title, l.price)\n"
+      "\n"
+      "b = hub.book(l.id, quantity=1)            # escrow HELD, idempotent\n"
+      "print(b.id, b.escrow, b.amount, b.hub_fee)\n"
+      "\n"
+      "for b in hub.bookings():                  # principal-scoped\n"
+      "    print(b.id, b.escrow)</pre>")
+    a("<h2>Or just talk to it</h2>")
+    a("<p class=\"ldesc\"><code>POST /api/chat</code> with <code>{&quot;text&quot;: &quot;search jazz&quot;}</code> \u2014 the same brain the website uses. "
+      "Commands: <code>search</code>, <code>book &lt;n&gt;</code>, <code>list</code>, <code>show &lt;id&gt;</code>, <code>my-bookings</code>, <code>rate</code>, <code>archive</code>/<code>unarchive</code>, <code>help</code>.</p>")
+    a("<h2>Rules of the road</h2>")
+    a("<p class=\"ldesc\">\u00b7 Credentials travel only in the <code>X-Hub-Token</code> header \u2014 never in URLs. Writes carry an <code>Idempotency-Key</code>.<br>"
+      "\u00b7 Rate limits (defaults): 600 reads/min, 10 bookings/min per principal; auth endpoints have their own budgets.<br>"
+      "\u00b7 Fairness is <strong>declared, not promised</strong>: this hub\u2019s fee is " + esc(fee) + "% (see <code>fairness.fee_policy</code> in the manifest), and the <a href=\"/transparency\">ledger is public</a> \u2014 verify declared vs actual.<br>"
+      "\u00b7 Assert <code>human_verified</code> truthfully \u2014 the interim flag becomes ZK personhood (Midnight) when Tier-2 goes live. Never fake it.<br>"
+      "\u00b7 Prices are denominated in merchant currency, never volatile assets; check the manifest\u2019s payments section for rails and their status.</p>")
+    a("<p class=\"lnote\">Run your own hub for your community? The protocol is open \u2014 but network membership is curated. See <a href=\"/network\">/network</a>.</p>")
+    a("</article></div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")

@@ -450,7 +450,7 @@ def main():
     code, _, body = bweb.chat("search zebra")
     zl = (json.loads(body).get("results") or [{}])[0]
     code, _, body = bweb.get("/l/" + str(zl.get("id", "")))
-    check("zero reviews -> no fake stars", code == 200 and b"\u2605" not in body)
+    check("zero reviews -> no fake stars", code == 200 and "\u2605".encode("utf-8") not in body)
     bweb.chat("rate " + str(bb["id"]) + " 5")
     code, _, body = bweb.get("/l/" + str(zl.get("id", "")))
     zdet = body.decode("utf-8", "replace")
@@ -474,6 +474,38 @@ def main():
     _burst = int(os.environ.get("WEBCHAT_RL_S_BURST", "8"))
     codes = [ _status(c.opener, _chat_req("hi")) for _ in range(_burst + 30) ]
     check("429 rate limited", 429 in codes, str(codes))
+
+    # 7. W5: growth pages, per-vertical OG images, PWA, theme, a11y
+    code, hdrs, body = c.get("/how")
+    check("how 200", code == 200 and b"What it does not" in body)
+    check("how escrow covers", b"escrow" in body and b"refund window" in body.lower())
+    check("how SIMULATED banner", b"SIMULATED" in body)  # flows from manifest mode=PAY_MODE
+    check("how fee", b"1% booking fee" in body)
+    code, _, body = c.get("/agents")
+    check("agents 200", code == 200)
+    check("agents openapi", b"/openapi.json" in body and b"agent-hub.json" in body)
+    check("agents sdk snippet", b"signup_keypair" in body and b"X-Hub-Token" in body)
+    check("agents curated pointer", b"/network" in body)
+    code, _, body = c.get("/l/evt-1")
+    check("detail og:image vertical", b"/og/events.jpg" in body)
+    check("detail twitter large", b"summary_large_image" in body)
+    code, hdrs, body = c.get("/")
+    check("home og:image", b"og:image" in body and b"/og/default.jpg" in body)
+    check("home pwa", b"manifest.webmanifest" in body and b"apple-touch-icon" in body)
+    check("home theme.js pre-paint", b"/theme.js" in body)
+    check("home theme button", b"theme-btn" in body)
+    check("home skip link", b'class="skip"' in body)
+    check("home footer w5 links", b"/how" in body and b"/agents" in body)
+    code, hdrs, body = c.get("/og/events.jpg")
+    check("og events jpg", code == 200 and hdrs.get("Content-Type", "").startswith("image/jpeg"))
+    code, hdrs, body = c.get("/theme.js")
+    check("theme.js served", code == 200 and "javascript" in hdrs.get("Content-Type", ""))
+    code, hdrs, body = c.get("/sw.js")
+    check("sw.js served", code == 200)
+    code, hdrs, body = c.get("/manifest.webmanifest")
+    check("pwa manifest", code == 200 and b"logo-512.png" in body and "manifest" in hdrs.get("Content-Type", ""))
+    code, _, body = c.get("/sitemap.xml")
+    check("sitemap w5 urls", b"/how" in body and b"/agents" in body)
 
     # cleanup
     srv.shutdown()
@@ -506,11 +538,3 @@ def _status(opener, req):
 
 if __name__ == "__main__":
     sys.exit(main())
-    # 6. reset clears session
-    req = urllib.request.Request(BASE + "/api/reset", method="POST")
-    with c.opener.open(req, timeout=10) as r:
-        check("reset 200", r.status == 200)
-    code, _, body = c.chat("whoami")
-    txt = json.loads(body).get("reply", "")
-    check("session cleared", code == 200 and "acct-" not in txt)
-

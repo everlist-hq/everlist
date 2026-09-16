@@ -888,6 +888,7 @@ class Handler(BaseHTTPRequestHandler):
                                   {"scheme": "email-or-phone-attestation", "status": "interim stub until Midnight contract is live"}],
                               "disputes": "selective disclosure to auditors via ZK (Midnight)"},
                 "payments": {
+                    "mode": PAY_MODE,  # I4: honest self-declaration (simulated|testnet)
                     "protocol": "x402",
                     "pricing": {"unit": "merchant fiat (EUR/USD) or USDC",
                                  "rule": "prices are NEVER denominated in volatile assets"},

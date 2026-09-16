@@ -1,0 +1,14 @@
+{
+  "name": "EverList — discover anything, book it in one message",
+  "short_name": "EverList",
+  "description": "A listing is something with a date where a human is needed or wanted. Ask the chat; escrow holds the payment.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    { "src": "/logo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/logo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
