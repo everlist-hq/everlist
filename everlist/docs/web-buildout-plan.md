@@ -121,7 +121,7 @@ Legend: ✅ live · 🟡 planned here · 🔒 gated (owner GO required) · ⏳ l
 | Booking inbox (orders) + confirm button | chat only | W1 |
 | Payment-terms fields on listing (per SPEC §12/§19: rail, refund window, deposit) | partial | W3 |
 | Capacity/availability view | capacity shown | W3 |
-| Organizer public page `/org/{account}` (their live listings) | — | W5 ⏳ |
+| Organizer public page `/org/{account}` (their live listings) | — | W5 table straggler — NOT built (honest) |
 
 ### 4.4 Trust & transparency (the moat, made visible)
 
@@ -148,7 +148,7 @@ Legend: ✅ live · 🟡 planned here · 🔒 gated (owner GO required) · ⏳ l
 
 | Feature | Phase |
 | --- | --- |
-| "For agents" page: open API doc, manifest link, skill guide, copy-paste flows | W5 |
+| "For agents" page: open API doc, manifest link, skill guide, copy-paste flows | W5 ✅ 2026-09-16 (/agents live) |
 | MCP server endpoint | 🔒 W7 (owner GO) |
 | Registry federation dashboards | W4 (read-only page) |
 
@@ -159,9 +159,9 @@ Legend: ✅ live · 🟡 planned here · 🔒 gated (owner GO required) · ⏳ l
 | Caddy route expansion + Cache-Control for static + slim favicon headers | W0/W2 |
 | Demo-fixture hygiene gate (no example.com/Bad Tatzmannsdorf on public pages) | W0 |
 | Sitemap.xml + robots.txt (webchat-generated from live listings) | W2 |
-| PWA manifest + icons (installable, logo) | W5 |
-| Accessibility pass (focus, contrast, reduced-motion, labels) | W5 |
-| Light/dark toggle (palette tokens already proven by A4/A6) | W5 |
+| PWA manifest + icons (installable, logo) | W5 ✅ 2026-09-16 (manifest.webmanifest + sw.js + logo-512) |
+| Accessibility pass (focus, contrast, reduced-motion, labels) | W5 ✅ 2026-09-16 (:focus-visible, skip link, color-scheme, light palette) |
+| Light/dark toggle (palette tokens already proven by A4/A6) | W5 ✅ 2026-09-16 (theme.js pre-paint, OS-preference fallback, persists) |
 | Self-hosted hit counter | W2 |
 | Status page (health + escrow-sync freshness) | W5 ⏳ |
 | Email notifications (booking events, digest) | 🔒 W6 (SMTP creds) |
@@ -273,3 +273,6 @@ Hub keeps: `/search`, `/book`, `/listings`, `/ledger`, `/registry`, `/verticals`
 ## 11. Total effort estimate
 
 ~8–12 focused sessions for W0–W5 (the ungated buildout), each session ending gate-green and deployable. Gated phases (W6/W7) sized separately after owner GO.
+## W5 completion (2026-09-16)
+
+Shipped: /how explainer (honest covers/does-not-cover + SIMULATED banner from manifest `payments.mode`), /agents page (real endpoints + SDK flow), per-vertical OG images (FLUX), PWA + light/dark + a11y, Caddy matcher repaired+extended, gate-up state isolation. **Open stragglers from the W5 tag:** organizer public page `/org/{account}`, per-listing "book with your agent" snippet (needs hub account-page data or a public account-listings endpoint). CI: tests + deploy green on `4a890ef`.
