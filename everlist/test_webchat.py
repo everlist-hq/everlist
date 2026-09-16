@@ -436,6 +436,25 @@ def main():
     code, _, body = buyer.get("/api/dashboard")
     check("logout clears dashboard", code == 200 and json.loads(body)["account"] is None)
 
+    # 6b. W4: trust pages + honest ratings (S6 aggregates, no fake stars)
+    code, _, body = c.get("/transparency")
+    tb = body.decode("utf-8", "replace")
+    check("transparency page served", code == 200 and "Transparency" in tb and "hub fees collected" in tb)
+    check("transparency honest state", ("Entries (" in tb) or ("No settled bookings yet" in tb))
+    code, _, body = c.get("/network")
+    nb = body.decode("utf-8", "replace")
+    check("network page served", code == 200 and "Network" in nb and "community-reviewed" in nb and "universal-commerce" in nb)
+    code, _, body = c.get("/sitemap.xml")
+    check("sitemap has trust pages", code == 200 and b"/transparency" in body and b"/network" in body)
+    code, _, body = bweb.chat("search zebra")
+    zl = (json.loads(body).get("results") or [{}])[0]
+    code, _, body = bweb.get("/l/" + str(zl.get("id", "")))
+    check("zero reviews -> no fake stars", code == 200 and b"\u2605" not in body)
+    bweb.chat("rate " + str(bb["id"]) + " 5")
+    code, _, body = bweb.get("/l/" + str(zl.get("id", "")))
+    zdet = body.decode("utf-8", "replace")
+    check("free feedback line after rate", code == 200 and "free-class feedback" in zdet and "5.0/5 (1)" in zdet)
+
     # 7. protocol walls
     # 413
     check("413 body cap", _status(c.opener, urllib.request.Request(

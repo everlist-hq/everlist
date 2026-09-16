@@ -301,6 +301,21 @@ function makeCard(l, featured, n) {
   if (l.owner_public) metaBits.push(l.owner_public);
   if (metaBits.length) { const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = metaBits.join(" \u00b7 "); card.appendChild(meta); }
 
+  /* W4: honest ratings from the hub's S6 aggregates — paid reviews are
+     amount-weighted server-side, free-class feedback is a separate channel.
+     No reviews -> render nothing; we never fake stars. */
+  const rateBits = [];
+  if ((l.rating_count | 0) > 0) {
+    let avg = 0;
+    if ((l.rating_wtot || 0) > 0) avg = (l.rating_wsum || 0) / l.rating_wtot;
+    else avg = (l.rating_avg != null) ? l.rating_avg : ((l.rating_sum || 0) / l.rating_count);
+    rateBits.push("\u2605 " + (Math.round(avg * 10) / 10) + "/5 (" + l.rating_count + ")");
+  }
+  if ((l.free_rating_count | 0) > 0) {
+    rateBits.push("free-class " + (Math.round((l.free_rating_sum || 0) / l.free_rating_count * 10) / 10) + "/5 (" + l.free_rating_count + ")");
+  }
+  if (rateBits.length) { const rl = document.createElement("div"); rl.className = "rline"; rl.textContent = rateBits.join(" \u00b7 "); card.appendChild(rl); }
+
   const foot = document.createElement("div"); foot.className = "foot";
   const pr = priceOf(l);
   const price = document.createElement("span"); price.className = "price"; price.textContent = pr.txt; foot.appendChild(price);

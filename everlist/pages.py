@@ -40,6 +40,165 @@ def all_listings(hub=None):
         return []
 
 
+def ratings_bits(l):
+    """W4/S6: honest rating display. Paid reviews are amount-weighted by the
+    hub; free-class feedback lives in its own channel. Empty list = no reviews
+    yet — we never render fake stars."""
+    out = []
+    try:
+        pc = int(l.get("rating_count") or 0)
+    except (TypeError, ValueError):
+        pc = 0
+    if pc:
+        try:
+            wt = float(l.get("rating_wtot") or 0)
+        except (TypeError, ValueError):
+            wt = 0.0
+        if wt > 0:
+            avg = float(l.get("rating_wsum") or 0) / wt
+            out.append("\u2605 %.1f/5 paid reviews (%d, amount-weighted)" % (avg, pc))
+        else:
+            try:
+                out.append("\u2605 %.1f/5 (%d)" % (float(l.get("rating_avg") or (float(l.get("rating_sum") or 0) / pc)), pc))
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+    try:
+        fc = int(l.get("free_rating_count") or 0)
+    except (TypeError, ValueError):
+        fc = 0
+    if fc:
+        try:
+            out.append("free-class feedback %.1f/5 (%d)" % (float(l.get("free_rating_sum") or 0) / fc, fc))
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    return out
+
+
+def _fmt_ts(ts):
+    try:
+        return _dt.utcfromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _page_head(title, desc, canon):
+    h = []
+    a = h.append
+    a("<!doctype html>")
+    a("<html lang=\"en\"><head>")
+    a("<meta charset=\"utf-8\">")
+    a("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    a("<title>" + esc(title) + " \u2014 EverList</title>")
+    a("<meta name=\"description\" content=\"" + esc(desc) + "\">")
+    a("<link rel=\"canonical\" href=\"" + BASE + canon + "\">")
+    a("<meta property=\"og:type\" content=\"website\">")
+    a("<meta property=\"og:title\" content=\"" + esc(title) + "\">")
+    a("<meta property=\"og:description\" content=\"" + esc(desc) + "\">")
+    a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
+    a("<link rel=\"stylesheet\" href=\"/style.css\">")
+    return h
+
+
+def _page_open(h, nav_extra=""):
+    a = h.append
+    a("<body><div class=\"page ldetail\">")
+    a("<header class=\"top\"><div class=\"brand\"><img src=\"/favicon.svg\" alt=\"\" width=\"30\" height=\"30\"><span>EverList</span></div>"
+      "<nav class=\"nav\"><a href=\"/\">Browse</a>" + nav_extra + "</nav></header>")
+    a("<article class=\"lmain\">")
+
+
+def ledger_html(hub=None):
+    """W4 /transparency: the hub's append-only settlement ledger, public.
+    Honest zeros stay zeros — this page never invents activity."""
+    h = _page_head("Transparency ledger",
+                   "Every settlement on EverList — escrow releases, refunds, fees — in a public append-only ledger.",
+                   "/transparency")
+    a = h.append
+    _page_open(h, "<a href=\"/network\">Network</a>")
+    a("<h1>Transparency</h1>")
+    a("<p class=\"ldesc\">Every settlement on this hub lands in an <strong>append-only ledger</strong>: releases, refunds, fees. "
+      "Nothing is edited out \u2014 what you see is what the hub has.</p>")
+    try:
+        d = _get((hub or HUB) + "/ledger")
+    except Exception:
+        d = None
+    if not d:
+        a("<div class=\"note\">The ledger is unreachable right now \u2014 try again shortly.</div>")
+    else:
+        t = d.get("totals") or {}
+        a("<div class=\"ltot\">")
+        for label, val in (("total settled volume", "\u20ac %.2f" % float(t.get("total_volume") or 0)),
+                           ("hub fees collected", "\u20ac %.2f" % float(t.get("total_hub_fees") or 0)),
+                           ("x402 settlements", str(t.get("x402_settlements") or 0))):
+            a("<div class=\"lcard\"><div class=\"lmeta\">" + esc(label) + "</div><h3>" + esc(val) + "</h3></div>")
+        a("</div>")
+        entries = d.get("ledger") or []
+        a("<h2>Entries (" + str(len(entries)) + ")</h2>")
+        if entries:
+            a("<table class=\"ltable\"><thead><tr><th>when</th><th>booking</th><th>amount</th><th>state</th><th>flow</th></tr></thead><tbody>")
+            for e in entries:
+                if e.get("refunded_to"):
+                    flow = "refunded to " + str(e.get("refunded_to"))
+                else:
+                    try:
+                        po = float(e.get("owner_payout") or 0)
+                    except (TypeError, ValueError):
+                        po = 0.0
+                    flow = "owner payout \u20ac%.2f" % po if po else ""
+                amt = "\u20ac " + ("%.2f" % float(e.get("amount") or 0))
+                a("<tr><td>" + esc(_fmt_ts(e.get("ts"))) + "</td><td>" + esc(str(e.get("booking") or ""))
+                  + "</td><td>" + esc(amt) + "</td>"
+                  + "<td><span class=\"chip stat\">" + esc(str(e.get("escrow") or "")) + "</span></td>"
+                  + "<td>" + esc(flow) + "</td></tr>")
+            a("</tbody></table>")
+        else:
+            a("<div class=\"note\">No settled bookings yet. When money moves \u2014 release, refund, fee \u2014 it shows up here. "
+              "Honest zeros, no invented activity.</div>")
+    a("<div class=\"lnote\">Agents read the same ledger at <code>GET /ledger</code> \u2014 this page is just a window over the public API.</div>")
+    a("</article></div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")
+
+
+def network_html(hub=None):
+    """W4 /network: the open hub registry \u2014 tiers, responsibility line, hubs."""
+    h = _page_head("Network \u2014 the open hub registry",
+                   "The open registry of EverList commerce hubs: tiers, responsibilities, and how to run your own.",
+                   "/network")
+    a = h.append
+    _page_open(h, "<a href=\"/transparency\">Transparency</a>")
+    a("<h1>Network</h1>")
+    a("<p class=\"ldesc\">EverList is a protocol of independent hubs, not one walled garden. The registry is open \u2014 "
+      "anyone can run a hub and get listed; agents filter by tier.</p>")
+    try:
+        d = _get((hub or HUB) + "/registry")
+    except Exception:
+        d = None
+    if not d:
+        a("<div class=\"note\">The registry is unreachable right now \u2014 try again shortly.</div>")
+    else:
+        tiers = d.get("tiers") or {}
+        a("<h2>Tiers</h2>")
+        for name, desc in tiers.items():
+            a("<div class=\"lcard\"><div class=\"lmeta tier tier-" + esc(name) + "\">" + esc(name) + "</div>"
+              "<p class=\"ldesc\">" + esc(desc) + "</p></div>")
+        hubs = d.get("hubs") or []
+        a("<h2>Registered hubs (" + str(len(hubs)) + ")</h2>")
+        if hubs:
+            a("<table class=\"ltable\"><thead><tr><th>hub</th><th>type</th><th>tier</th><th>policy</th></tr></thead><tbody>")
+            for x in hubs:
+                pol = x.get("content_policy") or ""
+                pol_cell = ("<a href=\"" + esc(pol) + "\" rel=\"noopener\">policy</a>") if pol else ""
+                a("<tr><td>" + esc(str(x.get("url") or "")) + "</td><td>" + esc(str(x.get("type") or ""))
+                  + "</td><td><span class=\"chip stat\">" + esc(str(x.get("tier") or "")) + "</span></td><td>" + pol_cell + "</td></tr>")
+            a("</tbody></table>")
+        resp = d.get("responsibility")
+        if resp:
+            a("<div class=\"note\">" + esc(resp) + "</div>")
+    a("<div class=\"lnote\">Agents browse the registry at <code>GET /registry</code>.</div>")
+    a("</article></div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")
+
+
 def _fmt_price(p):
     try:
         v = float(p or 0)
@@ -116,6 +275,9 @@ def detail_html(l, hub=None):
     tags = l.get("tags") or []
     if tags:
         a("<div>" + "".join("<span class=\"chip stat\">" + esc(t) + "</span>" for t in tags[:8]) + "</div>")
+    rb = ratings_bits(l)
+    if rb:
+        a("<div class=\"lmeta rline\">" + " &middot; ".join(esc(x) for x in rb) + "</div>")
     pt = l.get("payment_terms") or {}
     if pt.get("rail") == "escrow":
         a("<div class=\"esc note\">&#128274; Price held in escrow &mdash; released only when you confirm completion. "
@@ -238,7 +400,8 @@ def ics_body(l):
 
 
 def sitemap_xml(hub=None):
-    urls = [BASE + "/"] + [BASE + "/l/" + str(l.get("id")) for l in all_listings(hub)]
+    urls = ([BASE + "/", BASE + "/transparency", BASE + "/network"]
+            + [BASE + "/l/" + str(l.get("id")) for l in all_listings(hub)])
     body = "".join("<url><loc>" + esc(u) + "</loc></url>" for u in urls)
     return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
             "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">" + body + "</urlset>").encode("utf-8")

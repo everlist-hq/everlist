@@ -286,6 +286,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(200, _pages.ROBOTS, "text/plain; charset=utf-8", cache="max-age=3600")
         elif path == "/sitemap.xml":
             return self._send_bytes(200, _pages.sitemap_xml(HUB_URL), "application/xml; charset=utf-8", cache="max-age=3600")
+        elif path == "/transparency":
+            # W4: public append-only settlement ledger (window over GET /ledger)
+            return self._send_bytes(200, _pages.ledger_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=60")
+        elif path == "/network":
+            # W4: open hub registry page (window over GET /registry)
+            return self._send_bytes(200, _pages.network_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=300")
         elif path.startswith("/booking/"):
             # W3: participant-gated booking page. The session's server-side
             # token decides visibility; the hub answers an indistinguishable

@@ -744,3 +744,40 @@ anon 404, noindex). Full `make test` gate: ALL PASSED (A2A chain escrow=HELD).
 **Ops**: hub_fetch gains token= (W1 proxy path); dead signup-pow.js worker
 removed (PoW solved inline). Synced to .staging-repo/everlist (byte-verified),
 commit + push → CI deploys.
+
+## 2026-09-16 (later) — W4: trust & transparency
+
+**Shipped**
+- `/transparency` (SSR, pages.ledger_html): public window over hub GET /ledger —
+  totals cards (volume / hub fees / x402 settlements) + full entries table
+  (ts, booking, amount, escrow-state chip, refund/payout flow). Honest zeros
+  stay zeros; empty state says so. cache 60s.
+- `/network` (SSR, pages.network_html): window over GET /registry — tier cards
+  (open/verified descriptions verbatim), registered-hubs table with policy
+  link, hub's responsibility line quoted verbatim. cache 300s.
+- Ratings display (S6 aggregates, server-computed): SSR detail line + board
+  card line (app.js, CSP-safe textContent). Paid reviews amount-weighted
+  (rating_wsum/rating_wtot with rating_avg fallback), free-class feedback
+  separate channel. ZERO REVIEWS RENDER NOTHING — no fake stars.
+- Sitemap: /transparency + /network added (16 URLs live after deploy).
+- Footer trust links (transparency · network); W4 CSS block.
+
+**Honest scope call**: report/flag deferred — the hub has no /report endpoint;
+a UI button would be a dead promise. Needs hub-side endpoint first (owner call).
+Verified badges: registry-tier badge on /network only; hub deliberately keeps
+per-owner verification server-side (M14 provenance law).
+
+**Bugs caught**
+- Unterminated string literal in ledger table rows (multi-line py string) —
+  ast.parse caught it before any run; fixed into proper concatenation.
+- CSS specificity: `.ldetail .lmeta` out-cascaded `.tier-verified` — VERIFIED
+  label rendered gray. Fixed with matching-specificity rule; re-screenshot
+  verified green.
+
+**Deploy law applied proactively this time**: /transparency + /network added
+to the Caddy @chat matcher on the box AND in tools/deploy.sh BEFORE pushing
+(no 404-at-first-load repeat of W2/W3b).
+
+**Tests**: webchat 87→93 (pages served w/ real hub data, sitemap entries,
+zero-reviews->no-stars honesty check, rate -> free-feedback-line E2E on the
+SSR page). Full `make test` gate: ALL PASSED (A2A chain escrow=HELD).

@@ -128,11 +128,11 @@ Legend: ✅ live · 🟡 planned here · 🔒 gated (owner GO required) · ⏳ l
 | Feature | Today | Phase |
 | --- | --- | --- |
 | Escrow timeline component (chat + pages) | badge only | W1 |
-| Ratings display: weighted average + verified-booking reviews on cards/detail | stored, not shown | W4 |
-| /ledger transparency page (append-only, pseudonymous) | API only | W4 |
-| /registry network page (open hub federation) | API only | W4 |
-| Vouch/verified badge display | server-side only | W4 |
-| Report/flag listing (routes into admin review-queue via chat command first) | — | W4 |
+| Ratings display: weighted average + verified-booking reviews on cards/detail | ✅ W4 shown: SSR detail line + board-card line (paid = amount-weighted, free-class separate channel); zero reviews → no fake stars; integrity internals stay server-only | — |
+| /ledger transparency page (append-only, pseudonymous) | ✅ W4: `/transparency` — totals + full entries table, honest zero state, agents-note points at GET /ledger | — |
+| /registry network page (open hub federation) | ✅ W4: `/network` — tiers + hubs + responsibility verbatim from GET /registry | — |
+| Vouch/verified badge display | ✅ W4 (honest scope): registry-tier badge on /network only — hub deliberately keeps per-owner verification server-side (provenance law) | — |
+| Report/flag listing (routes into admin review-queue via chat command first) | deferred: hub has no report endpoint — a UI button would be a dead promise; needs hub-side `/report` first (owner call) | W5? |
 
 ### 4.5 Chat upgrades (stays the main window, gets stronger)
 

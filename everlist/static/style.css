@@ -269,3 +269,19 @@ body.min .pill { display: flex; }
 
 .seedbox { background: var(--surface, #161a1d); border: 1px solid rgba(255,255,255,.18); border-radius: 8px; padding: 10px 12px; font-size: 13px; letter-spacing: .3px; word-break: break-all; user-select: all; }
 a.esc:hover { text-decoration: underline; }
+
+/* ---------- W4: ratings + transparency + network ---------- */
+.rline { color: var(--accent, #4ade80); font-size: 12.5px; margin-top: 6px; }
+.ldetail .rline { margin-top: 8px; }
+.foot .footlinks { opacity: .85; }
+.foot .footlinks a { color: var(--muted, #9aa4a9); text-decoration: underline; }
+.foot .footlinks a:hover { color: var(--accent, #4ade80); }
+.ltot { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0 22px; max-width: 760px; }
+.ltable { width: 100%; max-width: 860px; border-collapse: collapse; font-size: 13px; margin: 10px 0 18px; }
+.ltable th { text-align: left; color: var(--muted, #9aa4a9); font-weight: 500; font-size: 12px; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,.14); }
+.ltable td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,.06); vertical-align: top; overflow-wrap: anywhere; }
+.ltable tr:hover td { background: rgba(255,255,255,.03); }
+.tier { text-transform: uppercase; letter-spacing: .8px; font-size: 11.5px; }
+.tier-verified { color: var(--accent, #4ade80); }
+.tier-open { color: var(--muted, #9aa4a9); }
+.ldetail .tier-verified { color: var(--accent, #4ade80); }
