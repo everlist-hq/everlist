@@ -160,15 +160,19 @@ def ledger_html(hub=None):
 
 
 def network_html(hub=None):
-    """W4 /network: the open hub registry \u2014 tiers, responsibility line, hubs."""
-    h = _page_head("Network \u2014 the open hub registry",
-                   "The open registry of EverList commerce hubs: tiers, responsibilities, and how to run your own.",
+    """W4 /network: the hub registry page \u2014 curated partner positioning,
+    tiers, responsibility line, hubs."""
+    h = _page_head("Network \u2014 the EverList hub registry",
+                   "EverList is a curated network of partner commerce hubs \u2014 open protocol, gated membership.",
                    "/network")
     a = h.append
     _page_open(h, "<a href=\"/transparency\">Transparency</a>")
     a("<h1>Network</h1>")
-    a("<p class=\"ldesc\">EverList is a protocol of independent hubs, not one walled garden. The registry is open \u2014 "
-      "anyone can run a hub and get listed; agents filter by tier.</p>")
+    a("<p class=\"ldesc\">EverList is an open <strong>protocol</strong> \u2014 but a <strong>curated network</strong>. "
+      "The software is inspectable by anyone; running a hub <em>in the EverList network</em> is a partnership: "
+      "verified status is granted by EverList after review, never self-service. Agents filter by tier.</p>")
+    a("<p class=\"lnote\">Today the network runs one hub \u2014 this one. Partner operation is by application; "
+      "the door is open to the right partners, not to everyone.</p>")
     try:
         d = _get((hub or HUB) + "/registry")
     except Exception:

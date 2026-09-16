@@ -444,6 +444,7 @@ def main():
     code, _, body = c.get("/network")
     nb = body.decode("utf-8", "replace")
     check("network page served", code == 200 and "Network" in nb and "community-reviewed" in nb and "universal-commerce" in nb)
+    check("network curated positioning", "curated network" in nb and "never self-service" in nb and "anyone can run a hub and get listed" not in nb)
     code, _, body = c.get("/sitemap.xml")
     check("sitemap has trust pages", code == 200 and b"/transparency" in body and b"/network" in body)
     code, _, body = bweb.chat("search zebra")
