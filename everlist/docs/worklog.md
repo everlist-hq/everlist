@@ -781,3 +781,20 @@ to the Caddy @chat matcher on the box AND in tools/deploy.sh BEFORE pushing
 **Tests**: webchat 87→93 (pages served w/ real hub data, sitemap entries,
 zero-reviews->no-stars honesty check, rate -> free-feedback-line E2E on the
 SSR page). Full `make test` gate: ALL PASSED (A2A chain escrow=HELD).
+
+## 2026-09-16 (evening) — Federation owner call: curated partner network (§8)
+
+Owner call mid-W4-review: "I don't think just anybody could make their own hub"
++ follow-up: unaffiliated use of the open tech might be interesting but worried
+about internet-vs-darkweb split. Persisted as strategy-boundaries.md §8:
+- Listed = partner (verified granted/revoked solely by owner; no self-service)
+- Software stays open (MIT); separator is a TRUST GRADIENT (signed registry,
+  conformance checks, tier labels), not two webs
+- Partner scenario = north star (owner's Eventbrite example); profit: own-hub
+  fees now, protocol fee + trust-rails + aggregator in partner era
+- Federation building PAUSED (registry stays prototype); focus = pilot + W5
+
+Shipped: /network reworded to curated positioning (title, meta, intro +
+honest one-hub line; old "anyone can run a hub" line removed); suite lock
+"network curated positioning" added (94 checks now); strategy §8 + worklog
+synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
