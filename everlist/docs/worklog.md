@@ -810,3 +810,10 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - test_webchat: +21 W5 checks (115 passed, 0 failed); fixed vacuous fake-stars check (invalid b"\u2605" escape never matched anything); removed dead code after sys.exit
 - tools/gen_og.py: env-key only (scrubbed; key never committed)
 - Full make test: ALL PASSED incl A2A E2E escrow=HELD
+
+## 2026-09-16 — OG share images: one honest brand card (owner call)
+- Owner rejected per-vertical AI scenes: a generic jazz scene misrepresents real listings (honesty brand)
+- Iteration trail: emoji-idea 4 candidates -> logo-seeded Kontext 4 -> m-rerolls (small-model artifacts: garbled icons) -> owner: 'pure ai only but bigger model' -> nano-banana-pro (largest avail) + logo reference -> clean: logo + calendar/pin/briefcase/cup connected by circuit traces, zero artifacts
+- Shipped: static/og/default.jpg = approved nano card (byte-identical); per-vertical og:image logic collapsed to single card in pages.py; OG_VERTICALS removed; 5 scene files deleted (static/og/ now default.jpg only)
+- test_webchat: 2 assertions reworked (detail og:image brand card; og brand card jpg); suite 115/115
+- Lessons: small diffusion models garble small symbols (painters not draftsmen); pro-class + reference logo fixes it; hybrid AI-backdrop+vector-icons was prepared but pure-AI large model won

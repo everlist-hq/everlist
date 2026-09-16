@@ -9,7 +9,6 @@ from datetime import datetime as _dt, timedelta as _td
 # plus a small .ldetail block appended there.
 
 BASE = "https://everlist.network"
-OG_VERTICALS = ("events", "food", "services", "classes", "p2p")
 HUB = "http://127.0.0.1:8802"
 _TIMEOUT = 6
 
@@ -267,9 +266,9 @@ def detail_html(l, hub=None):
     a("<meta property=\"og:title\" content=\"" + esc(title) + "\">")
     a("<meta property=\"og:description\" content=\"" + esc((l.get("description") or "")[:200]) + "\">")
     a("<meta property=\"og:url\" content=\"" + BASE + "/l/" + esc(lid) + "\">")
-    _vert = str(l.get("vertical") or "default")
-    _img = "/og/" + (_vert if _vert in OG_VERTICALS else "default") + ".jpg"
-    a("<meta property=\"og:image\" content=\"" + BASE + _img + "\">")
+    # one honest brand card on every share (owner call 2026-09-16): per-vertical
+    # AI scenes retired - a generic scene could misrepresent a real listing
+    a("<meta property=\"og:image\" content=\"" + BASE + "/og/default.jpg\">")
     a("<meta property=\"og:image:width\" content=\"1200\">")
     a("<meta property=\"og:image:height\" content=\"630\">")
     a("<meta name=\"twitter:card\" content=\"summary_large_image\">")
