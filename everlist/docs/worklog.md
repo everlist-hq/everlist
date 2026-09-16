@@ -543,3 +543,163 @@ default, corner only when minimised), and supplied a swatch strip to replace neo
 - Live E2E on :8804 (fresh session): typed 'book 2' with no prior search - page answered exactly 'No result 2 - you have no last search here. Run one first (e.g. search jazz), then book <n> <name>.' Verified in page content.
 - Surfaces restarted on the C9i build: hub + wrapper + webchat all RUNNING.
 - Patch-script lesson (repeat of the heredoc rule in new clothes): triple-single-quoted strings containing apostrophes broke the patch script itself (SyntaxError, nothing executed - files untouched). Fixed by wrapping text in triple-double quotes and using comments instead of docstrings. Nothing was corrupted this time; caught at parse.
+
+## 2026-09-15 — Chat-first board + mercury 2.5 wired + smart card expansion
+- Owner directives: (1) chat IS the search — results open as UI on screen, no manual search; (2) wire mercury 2.5; (3) clicked card grows, neighbors pushed aside, nothing may shrink.
+- Mercury 2.5 diagnosis: llm.env already had EVERLIST_NLU_MODEL=mercury-2-5; it served 200s but nlu.translate() intermittently returned None. Root cause: mercury reasoning burned 1182 tokens of the 1200 budget → finish=length, EMPTY content → fail-open None ('cheap sushi tomorrow', 'free yoga this weekend'). Fix: nlu.py max_tokens 1200→4000 via EVERLIST_NLU_MAX_TOKENS (env-tunable). Verified 4/4: 'jazz under 15'→under+date, 'cheap sushi tomorrow'→from 2026-09-16 cheapest, 'free yoga this weekend'→free+from, off-topic→'' sentinel (C9d boundary intact — mercury never speaks).
+- API: chatlib.last_results(sender) public accessor over _LAST_RESULTS stash (same order as 'book <n>'); webchat /api/chat now returns {reply, results} — backward compatible (tests assert .reply only).
+- UI (static/): app.js BOARD mode — search replies re-render the grid as numbered result cards ('book <n>' badges) so chat indexes are visually obvious; SIG dedupes no-op re-renders; header chips became sample searches routed THROUGH chat + 'show all' reset (no manual filtering); default board preserved. Expansion: FLIP over ALL cards — clicked card gains .open (spans 2 cols, description reveals), every displaced card animates from its old rect (translate+scale), neighbors keep EXACT size — nothing shrinks; Esc/click-outside collapses; prefers-reduced-motion respected in JS+CSS. style.css: .bkn badge, .card.open, .boardin entrance, media queries (mobile open = 1 col).
+- Verified live: real chip click 'jazz berlin' → transcript framed reply + board switched to '2 results · from your chat' with badges + Book buttons (chatboard-results.png); real click on compact card → green ring, wider span, neighbors mid-glide captured (expansion-live2.png); harness with real stylesheet proves settled end-state (expansion-harness.png: open card 2-col + description, others compact).
+- Gate: first run died 'deps missing' — container was RECREATED since morning (hostname changed) and /opt/venv lost cryptography; Makefile documents the override → `make test PYTHON=venv/bin/python VPY=venv/bin/python`. Detached runs must cd with ABSOLUTE paths inside bash -c (relative cwd broke once). Final: make test ALL PASSED, GATE_EXIT=0 (webchat 20/20, C2 30/30, M8 17/17 live sim).
+- Browser-automation lessons (recurring cost): tabs close between calls; viewport resets between turns; evaluate() silently no-ops in this setup. Fix that works: ONE atomic browser multi batch (navigate→click→screenshot), refs for buttons, coordinates only for card bodies.
+
+## 2026-09-15 — Web buildout W0 (hygiene) shipped
+- Plan APPROVED by owner; directives (chat-first, mercury 2.5, smart expansion) recorded as §0 in web-buildout-plan.md
+- W0 done + verified on local :8814: branded 404 page (static/404.html, real class vocab .page/.card/.cta; API 404 stays JSON), Cache-Control assets max-age=300 / HTML no-cache, demo_listings.json locations neutralized (Bad Tatzmannsdorf→Berlin; chatlib.py:815 is help-text only)
+- test_webchat.py 20/20 PASS after W0
+- Ops lesson re-learned: TWO webchat instances were running (8814 canonical old code + stray 8804 from nohup default); 'serving on 8804' in log was the tell. Always restart via explicit port + check log line + curl the exact port
+- HEAD /static returns 501 (no do_HEAD) — pre-existing, curl -D- with GET used for header verification
+- VPS deploy still blocked: SSH key died with container recreation; owner must authorize new key or run git pull
+
+## 2026-09-15 — Web buildout W1 (accounts + escrow visible) shipped
+- W0 done earlier same day (branded 404, cache headers, fixture cleanup; commit 1b0653a)
+- W1 architecture decision: ONE server-side session — the sid cookie doubles as the chatlib sender; hub tokens NEVER reach the browser (supersedes plan D5's localStorage; strictly safer). Login/logout reuses chatlib._login/_login_seed under BRAIN_LOCK so UI and chat share auth state
+- webchat.py new endpoints: /api/me, /api/dashboard (whitelist projection of hub /bookings + /orders; no tokens/secrets leak), /api/login (seed masked, never in transcript), /api/logout, /api/cancel (booking-time cancel_token stashed server-side in chatlib at booking), /api/confirm (hub /orders ownership check → single-use admin-minted confirm token → existing /confirm; I2 intact)
+- chatlib.py: cancel_tokens stashed into _SESSIONS at booking time (server-side only)
+- Frontend: Bookings nav view + dashboard (My bookings / Incoming orders), escrow badges (HELD/WAIVED/RELEASED/REFUNDED/DIRECT), Cancel & refund + Confirm & release buttons speaking results into the chat, masked seed login form
+- Bug found+fixed during visual test: featured-card CTA sent 'book <title>' which the brain can't resolve → now prefills composer with 'book <id> ' (verified: composer shows 'book even-1', focused)
+- Tests: test_webchat.py 20→37 checks incl. full W1 escrow E2E (signup→vouch→list→search→book→dashboard projection security→cancel REFUNDED→order confirm RELEASED→single-use 409→logout). Test fixture bug: 'game' is not a valid category (taxonomy!) — use valid ones
+- Ops: gate deps (cryptography, httpx) vanished from /opt/venv with overnight container recreation — reinstalled from requirements.txt; stale pid file pointed at dead pid while old instance still held :8814 — check /proc cmdline, not pid files
+- Full make test gate: ALL PASSED (incl. A2A E2E escrow=HELD)
+- Visual verification (browser, live :8814): signup → vouch → search free yoga → book → dashboard WAIVED badge + Cancel → escrow REFUNDED; screenshots in docs/design-concepts/2026-09-14/applied/shots/w1-*.png
+- VPS deploy still blocked: SSH key died with container recreation; owner must authorize new key or run git pull+restart
+
+## 2026-09-15 (evening) — Chat boundary hardening + board-only replies + expansion rewrite
+
+Owner directives: (1) chat declines ALL off-topic, (2) teach it how to reply,
+(3) cap chat at 50k, (4) search replies show UI only, not the text wall,
+(5) fix expansion overlap with real math, (6) security review of cookie auth.
+
+### What changed
+- **Deterministic off-topic screen** (`chatlib._boundary_or_none`): regex chit-chat
+  screen BEFORE the LLM router — pure conversation now declines even when mercury
+  flakes (the fail-open path previously ran a keyword search on 'tell me a joke').
+  EverList-shaped text + >120-char texts always bypass the screen.
+- **Identity reply**: 'who are you' now gets a branded `_WHOAMI` intro, not the
+  cold boundary. Boundary wording warmed per new decline template.
+- **`docs/chat-replies.md`**: binding voice contract for all chat prose
+  (one law, decline template, escrow-adjacent honesty, emoji-as-status).
+- **Board-only search replies** (webchat): search-result frames are replaced by
+  one short line ('I found N matches — they're open on the board…'); the ASCII
+  wall stays for agents/CLI. my-listings/booking frames untouched (keyed on the
+  'To book one' tail, not the box glyphs).
+- **Transcript cap**: 50 000 chars, oldest-first trim + one-time notice
+  (the brain is stateless per message; this bounds only the DOM session).
+- **Expansion rewrite** (`app.js`): no-overlap invariant. Hero card animates its
+  real width/height (no transform scale — text never smears); all other cards
+  move translate-only with matched easing, so clearance to the growing edge is
+  constant (= grid gap) every frame. Row-crossing heroes fade in place.
+  Verified on the REAL site by mouse click: full-row card w/ description,
+  neighbors reflowed cleanly (shots: expansion-real-site-final.png).
+- **Security fixes from the cookie review**: `/api/reset` now also pops the
+  server-side session (old sid could previously still act); successful login
+  ROTATES the sid (fixation hardening) and moves the search stash so 'book 1'
+  positional refs survive login.
+
+### Verification
+- webchat suite: 46/46 (added boundary decline x2, identity intro, real-search
+  not-screened, reset-purge, sid-rotation, old-sid-dead, new-sid-authenticated).
+- Search assertions updated to the board-only contract (results array carries
+  the data; reply is the short line).
+- Live browser proof of the expansion on 127.0.0.1:8814 (result-card click).
+- Harness lesson (3rd time): trust NOTHING until rendered — harness bugs found
+  by screenshot were duplicate global consts killing app.js, and fixture field
+  names not matching app.js's priceOf/spotsLeft readers.
+
+### Deploy
+- GATE: ALL PASSED (.run/gate-1951.log, exit 0; M8 E2E escrow=HELD)
+- GATE: ALL PASSED (gate-1951.log, GATE_EXIT=0; M8 E2E escrow=HELD)
+
+## 2026-09-15 — noVNC paste button (ops tool) + key rotation incident
+- Agent Zero container rebuilt overnight -> deploy key rotated; server (key-only SSH) rejected the new key (both A0 chats locked out; site stayed up, verified via HTTPS).
+- Owner built a Tampermonkey userscript injecting a Paste button into the cloudserver noVNC console (types via window.rfb.sendKey). Saved: docs/ops/novnc-paste.user.js + README.
+- Current deploy key backed up persistently at /a0/usr/ssh/ (use ssh -i /a0/usr/ssh/everlist_deploy); old agent0-everlist-deploy key is DEAD.
+- Pending: owner pastes key-install line via new button; then deploy origin/main (W0+W1+voice contract) + run 46-check suite + restart webchat + remove dead key from authorized_keys.
+
+## 2026-09-15 (late) — Expansion polish: no more full-board sweeps
+
+Owner feedback on the live site: expansion is good but tiles slide "all the way
+left to all the way right one lane higher/lower" — wrap/corner moves sweep the
+whole board.
+
+### Fix (static/app.js)
+Layout was already minimal (every tile shifts exactly ONE flow slot); the long
+sweeps were the ANIMATION PATH of corner-crossing tiles (row-end -> next-row-
+start). Now animateBoardChange classifies each moved tile via measured grid
+pitch: pure vertical/local shifts still slide (320ms); corner moves (|dy|>2 AND
+|dx|>0.5*pitch) fade-teleport — fade out at the old slot, fade in at the new —
+so no tile ever VISIBLY travels more than one position.
+
+### Verification
+- node --check OK; webchat suite 46/46; nlu OK.
+- Slow-motion harness (durations x12.5) on the real app.js: hero row-jump
+  expands with fade-in-place (mid-frame: description revealing, slot vacated
+  cleanly); corner switch mid-frame shows the displaced hero SEMI-TRANSPARENT
+  at its landing slot — no sweep, no overlap. Settled state correct.
+  Shots: docs/design-concepts/2026-09-14/applied/shots/expansion-*fade-*.jpg
+- Lesson reinforced: prod-speed 380ms animation can't be caught by tool
+  screenshots — stretch durations in a test-only copy to prove paths.
+
+## 2026-09-15 · Chat brain: quota diagnosis + deterministic conversation repairs (C9e–C9g)
+- **Root cause found (owner action needed):** mercury 2.5 routing was verified working earlier today (4/4 probes), but the A0 Venice proxy account is now **out of quota** — `403 User has no quota left` on `mercury-2-5` *and every other model*. `nlu.translate()` fails open to keyword search, so the live chat silently degraded (0.2–0.8s replies = no LLM in the path). Config in `.secrets/llm.env` is correct; no code change needed once quota is restored. Server also needs `.secrets/llm.env` created on-box (gitignored by design) to enable the router there at all.
+- Deterministic repairs (work with or without the LLM), driven by the owner's live transcript:
+  - dismissals (`nah never mind`, `i decided differently`) → acknowledgment, board state kept (never keyword-searched)
+  - negations (`i dont want yoga show me something else`) → browse-all minus the excluded term, stash updated so the board follows (9/10 shown)
+  - `show me the main page again` → board reset (stash cleared)
+  - `show all` / `show everything` → full board instead of `Usage: show <id>` error
+  - math gate: `what is 2+2` → boundary decline; `party for 4-6 people` still searches (fullmatch guard)
+- **Gate-caught regression fixed:** the dismissal strip ate pure numeric replay handles ('2', '7', '2-6') → added letter-guard; test_nlu 26/26 again.
+- Verification: transcript replay all green · webchat 46/46 · full `make test` **ALL PASSED** (A2A E2E `escrow=HELD`). Pushed `24e3d1c`.
+- Lesson: a silent fail-open path hid the quota exhaustion; considered adding router status to /api/health (deferred — do it next session, don't edit while the gate runs).
+
+## 2026-09-15 · Favicon corrected to the chosen FINAL logo
+- Owner reported the tab-bar icon didn't match the chosen logo. Diagnosis: favicon.svg/logo-512.png were an over-cropped variant (mark edge-to-edge, no designed margins) — pixel-diff proved the embed was a re-encode of that crop, not the keeper.
+- Rebuilt both faithfully from `docs/logo-prototypes/keepers/FINAL-EverlistLogo.png` (1409² → 512² LANCZOS, native framing; favicon.svg embeds the same bytes). Verified by eye at 512 and 32px tab size; served bytes cmp-verified after local restart.
+- Pushed `de4bda5`. Deploy = same one-liner; browsers may need a hard refresh to drop the cached icon.
+
+## 2026-09-15 · CI/CD shipped: push-to-deploy with mercury key as GitHub secret (Option B)
+- Owner asked the right question: hand-placed llm.env (Option A) would not survive server redeploys. Built Option B: GitHub Actions `deploy` workflow at repo ROOT (GitHub ignores everlist/.github — first push silently did nothing).
+- Set 4 repo secrets via API (sealed box): DEPLOY_SSH_KEY (new dedicated ed25519 keypair, .secrets/deploy_ed25519), EVERLIST_NLU_API_URL/_API_KEY/_MODEL. Key material never printed.
+- Authorized the CI key on the server myself via the restored SSH path; verified CI key authenticates.
+- Two more real bugs caught: (1) PAT lacks `workflow` scope → used dedicated EVERLIST_GITHUB_TOKEN via Contents API to create/update the workflow file; (2) known_hosts IP line format was malformed → host key verification failed in the runner; reproduced locally, fixed, ssh by hostname.
+- **Deploy run 36d3ec8: ALL GREEN** — pull + llm.env rewrite + webchat restart + live health assert. LIVE /api/health now reports nlu: configured=true, mercury-2-5.
+- Live chat probe: errors=1 `403 Forbidden` — confirms the ONLY remaining blocker is quota on the NLU key's account (same proxy serves my own runtime fine). When topped up, mercury routes with zero code/infra changes; future key swaps = update GitHub secret, applies on next deploy.
+- Deploy is now: `git push origin main`. Done by hand or by me.
+
+## 2026-09-15 · NLU provider fallback: OpenRouter inception/mercury-2.5 (C9i)
+- Owner directive: if the A0 Venice proxy quota is empty, fall back to OpenRouter with inception/mercury-2.5. Implemented as a provider chain in nlu.py `_call` (primary → fallback, first non-empty content wins); per-provider health in `/api/health`.
+- Local proof: primary 403 → fallback routed `cheap sushi tomorrow` → `search sushi from 2026-09-16 until 2026-09-16 cheapest` in 4.6s. Suites green (nlu OK, webchat 46/46).
+- **Deploy-gap caught by live verify:** deploy run 76ac3e6 wrote llm.env to the repo-ROOT secrets dir, but the service runs from the nested `/home/deploy/everlist/everlist/` and nlu.py reads `.secrets/llm.env` relative to its module → fallback silently absent (providers:[primary]). Fixed workflow to write BOTH paths (ec9afd3).
+- Also fixed: phantom `empty completion` error count when all providers fail with transport errors.
+- **LIVE PROOF on everlist.network:** probe reply carries parsed qualifiers (from/until/cheapest = LLM routing), health shows `providers: primary errors=2 (403 quota) | fallback inception/mercury-2.5 ok=2 errors=0`. The chat is smart again despite the dead primary account.
+- Secrets added: EVERLIST_FALLBACK_API_URL/_API_KEY/_MODEL (sealed via API, values never printed).
+- Follow-up: key-less CI (`tests` workflow) failed 2 nlu tests — tests patch `nlu._API_KEY` at runtime but `_PROVIDERS` was frozen at import. Fixed by resolving the provider chain dynamically per call (`_providers()`, 8c99f27); key-less simulation 26/26, suites green, deploy re-verified.
+- Final state: everlist.network chat routes via fallback when the primary quota is dead; `/api/health` shows both providers' health live. Deploy = `git push origin main`, verified by CI assert.
+- Follow-up: key-less CI (`tests` workflow) failed 2 nlu tests — tests patch `nlu._API_KEY` at runtime but `_PROVIDERS` was frozen at import. Fixed by resolving the provider chain dynamically per call (`_providers()`, 8c99f27); key-less simulation 26/26, suites green locally.
+- Final state: everlist.network chat routes via OpenRouter fallback when the primary quota is dead; `/api/health` shows both providers live. Deploy = `git push origin main`.
+
+## 2026-09-16 · W2 discovery + SEO shipped and live (C9j)
+- **New no-JS, indexable surface** (`pages.py`, hub-agnostic via hub param): `/l/{id}` SSR detail pages (canonical, OG, twitter card, schema.org Event/Service JSON-LD with escrow-offer description, capacity, related listings), `/l/{id}.ics` all-day VEVENTs (honest: hub dates are date-only), `/sitemap.xml` (home + public listings), `/robots.txt`.
+- **Frontend:** every board card got a CSP-safe `details` link; deep links `/?book=<id>` (prefills composer, never auto-sends — booking stays human-confirmed) and `/?q=<search>` (runs the chat search) make listings shareable.
+- **Tests:** webchat suite 46→62 (detail page, og/ld+json, ics content-type, sitemap, robots, 404s, traversal, escrow-note renders only when payment_terms exist — seed evt-1 has none, checked in-process). Full gate ALL PASSED.
+- **Deploy-gap caught by live verify (again):** CI deploy green but live 404s — Caddy `@chat` matcher didn't forward the new paths. Fixed on the box (validated + reloaded, backup kept) AND made durable in `tools/deploy.sh` — same lesson as the llm.env path: green deploy ≠ config landed; the live curl is the test.
+- **Visual QA:** detail page screenshot-checked; caught default-blue links unreadable on dark → accent-green CSS fix, re-verified.
+- Live: everlist.network/l/even-1 200 (og:title, ld+json, canonical), ics 200 text/calendar, sitemap 14 URLs, unknown id 404. CI tests+deploy green on 8e630e9.
+
+## 2026-09-16 · W3 organizer suite shipped + hub self-deadlock found and fixed
+- **The find (bigger than W3):** the new W3 E2E hit "hub unreachable" on every create, while the identical call in isolation succeeded. After hours of masked failures, a faulthandler SIGABRT thread dump showed the truth: two hub threads stuck **acquiring LOCK inside `_gen_check` while the GET /listings handler already held LOCK** — `threading.Lock` is non-reentrant, so any authenticated GET /listings self-deadlocked the hub and every later request queued behind it (client sees TimeoutError). Exactly what the new manage view does — **a latent production bug that would have wedged everlist.network on the first logged-in manage-view visit.** Fix: `LOCK = threading.RLock()` (app.py).
+- **Honesty fix:** chatlib `_create_listing` logged the real exception before the friendly "hub unreachable" fallback — the lie cost this session hours; now it can't hide again.
+- **webchat manage view (W3):** my-listings merges the owner-only archived fetch (`?archived=1`) so archived listings stay visible/manageable; archived rows project `available: false` (the hub refuses bookings on archived with 409 — its capacity-based `available` stays true); the titles cache is busted on create so fresh listings show real names in the dashboard immediately.
+- **Ops:** chat rate limits are env-tunable (`WEBCHAT_RL_*`, production defaults unchanged) so the CI suite can run at volume; the 429 test reads the configured burst instead of assuming 8.
+- **Tests:** webchat suite 62→**69** (wizard served/wired; W3 E2E: chat-list → my-listings → archive → unarchive with a projection whitelist); readable failure asserts ("signup reply had no seed: <reply>") instead of raw regex crashes; W3 block runs logged-in before the reset section. Full `make test` **ALL PASSED**.
+- **Honest scope:** the plan's booking detail page (`/booking/{id}`) and JS-PoW signup form did **not** ship this round — next.

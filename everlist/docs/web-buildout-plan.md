@@ -9,7 +9,8 @@ Supersedes nothing; complements docs/backlog-v3.md (hub track) and docs/strategy
 | --- | --- | --- | --- |
 | W0 hygiene | DONE + verified | 1b0653a | 2026-09-15 |
 | W1 accounts + escrow visible | DONE + verified (37-check suite, full gate ALL PASSED, visual money-loop E2E in browser) | 2311e96 | 2026-09-15 |
-| W2 discovery + SEO | next | — | — |
+| W2 discovery + SEO | DONE + verified (62-check suite, SSR detail pages, sitemap live, Caddy fix made durable; CI tests+deploy green on 8e630e9) | 8e630e9 | 2026-09-15 |
+| W3 organizer suite | DONE + verified (69-check suite, full gate ALL PASSED; hub self-deadlock found+fixed; booking detail page + JS-PoW signup form still open) | 94f794c | 2026-09-16 |
 
 ## 0. Owner directives (2026-09-15, binding — SHIPPED same day)
 
