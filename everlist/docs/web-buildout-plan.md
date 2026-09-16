@@ -107,8 +107,8 @@ Legend: ✅ live · 🟡 planned here · 🔒 gated (owner GO required) · ⏳ l
 | Login form (account_code) → tokens in UI | chat only | W1 |
 | Dashboard: my bookings (status, escrow timeline, cancel) | chat only | W1 |
 | Account settings: whoami, rotate, logout-all, email bind/recover, payout settings | chat only | W1 |
-| Signup form (JS-PoW worker) as fallback to chat signup | chat only | W3 |
-| Booking detail `/booking/{id}` (secret-gated link from dashboard/chat) | chat only | W3 |
+| Signup form (JS-PoW worker) as fallback to chat signup | ✅ W3b: in-browser keygen (tweetnacl, seed never leaves device) + PoW, stronger than chat path | — |
+| Booking detail `/booking/{id}` (session-token gated page, escrow timeline) | ✅ W3b | — |
 | Tier-2 Midnight verified badge display | 🔒 | W7 🔒 |
 
 ### 4.3 Organizer / merchant

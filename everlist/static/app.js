@@ -466,6 +466,103 @@ grid.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") collapseCard(); });
 
+/* ---------- W3: browser signup (PoW + keygen in-page; seed shown ONCE) ---------- */
+/* The keypair is generated IN THE BROWSER (vendored tweetnacl): the seed is
+   displayed once and never leaves this tab — the hub stores only the pubkey.
+   Crypto contract cross-checked against the hub's Python ed25519. */
+const _hex = (buf) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+async function solvePoW(challenge, difficulty, onTick) {
+  const enc = new TextEncoder();
+  const t0 = Date.now();
+  for (let nonce = 0; nonce <= 1e15; nonce++) {
+    const digest = await crypto.subtle.digest("SHA-256", enc.encode(challenge + nonce));
+    const b = new Uint8Array(digest);
+    let bits = 0;
+    for (let i = 0; i < 32; i++) {
+      if (b[i] === 0) { bits += 8; continue; }
+      bits += Math.clz32(b[i]) - 24;
+      break;
+    }
+    if (bits >= difficulty) return nonce;
+    if (onTick && (nonce & 16383) === 0 && Date.now() - t0 > 1500) onTick(nonce);
+  }
+  throw new Error("proof-of-work failed");
+}
+
+async function browserSignupFlow(name, statusEl) {
+  const ch = await fetch("/api/signup-challenge").then((r) => r.json());
+  if (!ch.challenge) throw new Error(ch.error || "challenge unavailable");
+  statusEl.textContent = "solving proof-of-work…";
+  const nonce = await solvePoW(ch.challenge, ch.difficulty, (n) => {
+    statusEl.textContent = "solving proof-of-work… " + n.toLocaleString();
+  });
+  statusEl.textContent = "generating your key in-browser…";
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const kp = nacl.sign.keyPair.fromSeed(seed);
+  const pubHex = _hex(kp.publicKey);
+  statusEl.textContent = "creating account…";
+  const res = await fetch("/api/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent: name, pubkey: pubHex, pow: { challenge: ch.challenge, nonce: nonce } }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status !== 201) throw new Error(data.error || "signup rejected");
+  statusEl.textContent = "signing you in…";
+  let logged = false;
+  try {
+    const lch = await fetch("/api/login-challenge?pubkey=" + pubHex).then((r) => r.json());
+    if (lch.challenge) {
+      const msg = new TextEncoder().encode("everlist-login:" + lch.challenge);
+      const sig = nacl.sign.detached(msg, kp.secretKey);
+      const lres = await fetch("/api/login-pubkey", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: name, pubkey: pubHex, sig: _hex(sig) }),
+      });
+      logged = !!((await lres.json().catch(() => ({}))).ok);
+    }
+  } catch (e2) { /* account created; seed login still works */ }
+  return { seedHex: _hex(seed), logged: logged };
+}
+
+const signupArea = document.getElementById("signup-area");
+const signupForm = document.getElementById("signup");
+const signupBtn = document.getElementById("s-go");
+const signupStatus = document.getElementById("s-status");
+
+function toggleSignup(show) { if (signupArea) signupArea.hidden = !show; }
+
+if (signupForm) signupForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (signupBtn.disabled) return;
+  const name = document.getElementById("s-name").value.trim();
+  if (!name) { signupStatus.textContent = "a name is required"; return; }
+  signupBtn.disabled = true;
+  signupStatus.textContent = "starting…";
+  try {
+    const out = await browserSignupFlow(name, signupStatus);
+    signupStatus.textContent = "";
+    signupForm.textContent = "";
+    const warn = el("p", null, "🔑 Your account SEED — shown ONCE, store it like a crypto seed phrase. It is your only way to log in elsewhere:");
+    const seedBox = document.createElement("pre");
+    seedBox.className = "seedbox";
+    seedBox.textContent = out.seedHex;
+    const ok = el("button", "cta", "I've saved it — continue");
+    ok.type = "button";
+    ok.addEventListener("click", () => { toggleSignup(false); loadDashboard(); });
+    signupForm.appendChild(warn);
+    signupForm.appendChild(seedBox);
+    signupForm.appendChild(ok);
+    if (out.logged) loadDashboard();
+    else addMsg("err", "account created — auto sign-in failed; log in with the seed above.");
+  } catch (err) {
+    signupStatus.textContent = "⚠️ " + (err && err.message ? err.message : "signup failed");
+  }
+  signupBtn.disabled = false;
+});
+
 /* ---------- W1 dashboard: bookings + orders (tokens stay server-side) ---------- */
 const browseSec = document.getElementById("browse");
 const dashSec = document.getElementById("dash");
@@ -520,7 +617,9 @@ function bookingCard(b) {
   card.appendChild(el("h3", null, b.title || b.listing_id));
   const foot = el("div", "foot");
   foot.appendChild(el("span", "price", b.amount ? "\u20ac" + b.amount : "Free"));
-  foot.appendChild(el("span", "esc", "#" + b.id));
+  const idLink = el("a", "esc", "#" + b.id);
+  idLink.href = "/booking/" + encodeURIComponent(b.id);
+  foot.appendChild(idLink);
   if (b.can_cancel) {
     foot.appendChild(el("span", "flex"));
     const btn = el("button", "cta danger", "Cancel & refund");
@@ -543,7 +642,9 @@ function orderCard(o) {
   card.appendChild(el("h3", null, o.title || o.listing_id));
   const foot = el("div", "foot");
   foot.appendChild(el("span", "price", o.amount ? "\u20ac" + o.amount : "Free"));
-  foot.appendChild(el("span", "esc", "#" + o.id));
+  const idLink = el("a", "esc", "#" + o.id);
+  idLink.href = "/booking/" + encodeURIComponent(o.id);
+  foot.appendChild(idLink);
   if (o.can_confirm) {
     foot.appendChild(el("span", "flex"));
     const btn = el("button", "cta", "Confirm & release");
@@ -578,9 +679,12 @@ async function act(url, id) {
 
 function renderLogin() {
   dashLogin.innerHTML = "";
-  const p = el("p", null, "Log in with your account seed and your bookings + orders appear here. No seed? Say ");
-  p.appendChild(el("b", null, "signup"));
-  p.appendChild(document.createTextNode(" in the chat to create an account in one message."));
+  const p = el("p", null, "Log in with your account seed and your bookings + orders appear here. No seed yet? ");
+  const su = el("a", null, "Create an account right here");
+  su.href = "#";
+  su.addEventListener("click", (e) => { e.preventDefault(); toggleSignup(true); });
+  p.appendChild(su);
+  p.appendChild(document.createTextNode(" — your key is generated in your browser and the seed is shown once."));
   const form = el("form", "loginrow");
   form.setAttribute("autocomplete", "off");
   const inp = el("input", "loginseed");
@@ -699,6 +803,8 @@ try {
   const u = new URL(location.href);
   const bid = u.searchParams.get("book");
   const q = u.searchParams.get("q");
+  const view = u.searchParams.get("view");
+  if (view === "dash") { showView("dash"); loadDashboard(); }
   if (bid) {
     openChat();
     input.value = "book " + bid + " ";

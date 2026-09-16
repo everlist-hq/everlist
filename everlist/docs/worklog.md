@@ -704,3 +704,43 @@ so no tile ever VISIBLY travels more than one position.
 - **Tests:** webchat suite 62→**69** (wizard served/wired; W3 E2E: chat-list → my-listings → archive → unarchive with a projection whitelist); readable failure asserts ("signup reply had no seed: <reply>") instead of raw regex crashes; W3 block runs logged-in before the reset section. Full `make test` **ALL PASSED**.
 - **Honest scope:** the plan's booking detail page (`/booking/{id}`) and JS-PoW signup form did **not** ship this round — next.
 - **Deploy-gap caught before it could bite:** the CI deploy restarted only `everlist-webchat` — the RLock fix lives in the **hub** process, so production would have kept running deadlocking code until the next manual restart. Restarted `everlist.service` on the box immediately (verified active, discovery + health 200), then made it durable: deploy workflow now restarts **hub + webchat** together.
+
+## 2026-09-16 — W3b: booking detail page + browser signup (plan remainder)
+
+**Shipped**
+- `/booking/{id}` SSR page (pages.booking_html): participant-gated via session's
+  server-side token; hub's indistinguishable 404 for strangers/anon; escrow
+  timeline (HELD→RELEASED / REFUNDED / single-state WAIVED/DIRECT), noindex,
+  no-store. Booking + order cards in the dashboard now link their #id to it.
+- Browser signup form (Bookings view → "Create an account right here"):
+  keypair generated IN THE BROWSER (vendored tweetnacl 1.0.3, self-hosted,
+  CSP-safe) — the seed is shown ONCE and never leaves the device; only the
+  pubkey reaches hub/webchat. Strictly stronger than the chat path.
+  Flow: webchat GET proxies /api/signup-challenge + /api/login-challenge →
+  browser solves PoW (SubtleCrypto) + signs everlist-login:<challenge> →
+  POST /api/signup (creation-only) → POST /api/login-pubkey (session minted
+  server-side, sid rotation on success, rate-limited like api_login).
+- Crypto contract cross-checked: tweetnacl keygen+sig verifies byte-identical
+  against the hub's Python ed25519 (caught a Uint8Array.toString('hex') bug
+  in the process — silently produces comma-decimals, not hex).
+
+**Tests**: webchat suite 69→87 (browser flow E2E through the real webchat
+routes: challenge proxies, signup 201, dup-pubkey 409, login-pubkey ok, bad
+sig 403, session live, booking page buyer 200 / unknown 404 / stranger 404 /
+anon 404, noindex). Full `make test` gate: ALL PASSED (A2A chain escrow=HELD).
+
+**Bugs caught on the way**
+- My own webchat patch had deleted the `/api/login` dispatch (anchor drift) —
+  the suite caught it at 'login 200'. Restored; lesson: never regex-splice
+  dispatch tables, verify with the suite not the compiler.
+- First W3b test run failed on booking: browser-created account wasn't
+  vouched — correct hub behavior, test-flow omission. Fixed in test.
+- Harness quirks documented: browser evaluate only executes self-calling
+  functions; refs go stale when dashboard timers re-render; keyboard action
+  needs `text` (not `input`). Visual E2E done via real mouse coords +
+  screenshots: signup form open/validating, chat-signup → vouch → search →
+  book → /booking/ page with escrow timeline verified by eye.
+
+**Ops**: hub_fetch gains token= (W1 proxy path); dead signup-pow.js worker
+removed (PoW solved inline). Synced to .staging-repo/everlist (byte-verified),
+commit + push → CI deploys.

@@ -286,6 +286,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(200, _pages.ROBOTS, "text/plain; charset=utf-8", cache="max-age=3600")
         elif path == "/sitemap.xml":
             return self._send_bytes(200, _pages.sitemap_xml(HUB_URL), "application/xml; charset=utf-8", cache="max-age=3600")
+        elif path.startswith("/booking/"):
+            # W3: participant-gated booking page. The session's server-side
+            # token decides visibility; the hub answers an indistinguishable
+            # 404 for strangers (no existence oracle). Private: no-store.
+            bid = path[len("/booking/"):]
+            body404, ctype404 = static_bytes("404.html")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", bid or ""):
+                return self._send_bytes(404, body404, ctype404, cache="no-store")
+            sess = chatlib._session("web-" + self.sid())
+            tok = (sess or {}).get("tokens", {}).get("book")
+            st, b = 0, None
+            if tok:
+                try:
+                    st, b = hub_fetch("/bookings/" + bid, token=tok)
+                except Exception:
+                    st, b = 0, None
+            if st != 200 or not isinstance(b, dict):
+                return self._send_bytes(404, body404, ctype404, cache="no-store")
+            l = _pages.listing(str(b.get("listing_id") or ""), HUB_URL)
+            return self._send_bytes(200, _pages.booking_html(b, l), "text/html; charset=utf-8", cache="no-store")
         elif path.startswith("/l/") and path.endswith(".ics"):
             lid = path[3:-4]
             l = _pages.listing(lid, HUB_URL) if lid else None
@@ -332,6 +352,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def api_get(self, path):
+        if path == "/api/signup-challenge":
+            # W3: proxy the hub's PoW challenge for the browser signup form
+            st, res = hub_fetch("/auth/challenge?kind=signup")
+            return self.reply(st if st else 502, res if st else {"error": "hub unreachable"})
+        if path == "/api/login-challenge":
+            # W3: proxy the hub's login challenge so the BROWSER key never
+            # needs server help (the browser signs everlist-login:<challenge>)
+            from urllib.parse import parse_qs
+            q = self.path.split("?", 1)[1] if "?" in self.path else ""
+            pub = (parse_qs(q).get("pubkey", [""])[0] or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", pub):
+                return self.reply(400, {"error": "pubkey query param required (64 hex)"})
+            st, res = hub_fetch("/auth/challenge?kind=login&pubkey=" + pub)
+            return self.reply(st if st else 502, res if st else {"error": "hub unreachable"})
         if path == "/api/health":
             try:
                 import nlu as _nlu
@@ -501,8 +535,12 @@ class Handler(BaseHTTPRequestHandler):
             with BRAIN_LOCK:
                 chatlib._SESSIONS.pop("web-" + old, None)
             return self.reply(200, {"ok": True}, cookie=self.cookie_attr(0) % "")
+        if path == "/api/signup":
+            return self.api_signup()
         if path == "/api/login":
             return self.api_login()
+        if path == "/api/login-pubkey":
+            return self.api_login_pubkey()
         if path == "/api/logout":
             return self.api_logout()
         if path == "/api/cancel":
@@ -622,6 +660,89 @@ class Handler(BaseHTTPRequestHandler):
                             chatlib._LAST_RESULTS["web-" + new_sid] = old_stash
                     sid = new_sid
         return self.reply(200, {"ok": acct is not None, "account": acct, "reply": reply},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
+    def api_signup(self):
+        """W3: browser signup with client-side PoW + client-side keygen.
+        The seed is generated IN THE BROWSER (vendored tweetnacl) and shown
+        ONCE; only the pubkey ever reaches hub or webchat — strictly stronger
+        than the chat path (which generates the seed server-side).
+        Login is a separate /api/login-pubkey call with its own rate limit."""
+        data, err = self.json_body()
+        if err:
+            return err
+        sid = self.sid()
+        ok, retry = allow("signup:" + sid, burst=3, per_minute=3)
+        if not ok:
+            return self.reply(429, {"error": "too many signup attempts, retry in %ds" % retry},
+                              cookie=self.set_sid(sid), extra={"Retry-After": str(retry)})
+        agent = str(data.get("agent", "")).strip()
+        pubkey = str(data.get("pubkey", "")).strip().lower()
+        pow_ = data.get("pow") if isinstance(data.get("pow"), dict) else None
+        if not agent or len(agent) > 64:
+            return self.reply(400, {"error": "a name is required (max 64 chars)"}, cookie=self.set_sid(sid))
+        if not re.fullmatch(r"[0-9a-f]{64}", pubkey):
+            return self.reply(400, {"error": "pubkey must be 64 hex chars"}, cookie=self.set_sid(sid))
+        if not pow_:
+            return self.reply(400, {"error": "pow required"}, cookie=self.set_sid(sid))
+        try:
+            code, res = chatlib._hub_post(HUB_URL, "/accounts/signup",
+                                          {"agent": agent, "pubkey": pubkey, "pow": pow_})
+        except Exception:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        if code != 201:
+            return self.reply(code, {"error": res.get("error", "signup rejected")}, cookie=self.set_sid(sid))
+        return self.reply(201, {"account_id": res.get("account_id"), "kind": res.get("kind")},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
+    def api_login_pubkey(self):
+        """W3: login with a BROWSER-held ed25519 key. Browser fetches the login
+        challenge (/api/login-challenge), signs everlist-login:<challenge> with
+        its own key, posts pubkey+agent+sig. Session discipline mirrors
+        api_login: hub tokens stay server-side, sid rotates on success."""
+        data, err = self.json_body()
+        if err:
+            return err
+        sid = self.sid()
+        ok, retry = allow("login:" + sid, burst=5, per_minute=5)
+        if not ok:
+            return self.reply(429, {"error": "too many login attempts, retry in %ds" % retry},
+                              cookie=self.set_sid(sid), extra={"Retry-After": str(retry)})
+        agent = str(data.get("agent", "")).strip()
+        pubkey = str(data.get("pubkey", "")).strip().lower()
+        sig = str(data.get("sig", "")).strip().lower()
+        if not agent or len(agent) > 64:
+            return self.reply(400, {"error": "agent name required (max 64 chars)"}, cookie=self.set_sid(sid))
+        if not re.fullmatch(r"[0-9a-f]{64}", pubkey):
+            return self.reply(400, {"error": "pubkey must be 64 hex chars"}, cookie=self.set_sid(sid))
+        if not re.fullmatch(r"[0-9a-f]{128}", sig):
+            return self.reply(400, {"error": "sig must be 128 hex chars"}, cookie=self.set_sid(sid))
+        try:
+            code, res = chatlib._hub_post(HUB_URL, "/accounts/login",
+                                          {"pubkey": pubkey, "agent": agent, "sig": sig})
+        except Exception:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        acct = None
+        if code == 200 and res.get("account_id"):
+            with BRAIN_LOCK:
+                chatlib._set_session("web-" + sid, res)
+            sess = chatlib._session("web-" + sid)
+            acct = {"account_id": sess.get("account_id"),
+                    "verified": bool(sess.get("verified")),
+                    "has_payout": bool(sess.get("payout_pk"))}
+            # SECURITY: rotate sid on privilege change (session fixation
+            # hardening), exactly like api_login; the search stash moves too.
+            new_sid = secrets.token_urlsafe(24)
+            if SID_RE.fullmatch(new_sid):
+                with BRAIN_LOCK:
+                    chatlib._SESSIONS["web-" + new_sid] = chatlib._SESSIONS.pop("web-" + sid)
+                    old_stash = chatlib._LAST_RESULTS.pop("web-" + sid, None)
+                    if old_stash is not None:
+                        chatlib._LAST_RESULTS["web-" + new_sid] = old_stash
+                sid = new_sid
+        return self.reply(200 if acct else (code if code else 502),
+                          {"ok": acct is not None, "account": acct,
+                           "error": None if acct else res.get("error", "login failed")},
                           cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
 
     def api_logout(self):

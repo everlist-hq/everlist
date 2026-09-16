@@ -68,6 +68,15 @@
       <button class="linkbtn" id="dash-refresh" type="button">refresh</button>
       <button class="linkbtn" id="dash-logout" type="button" hidden>log out</button>
     </div>
+    <div id="signup-area" hidden>
+      <h2 class="dh2">Create an account</h2>
+      <form id="signup" class="wiz" autocomplete="off">
+        <label class="wfull">Your name <input id="s-name" required maxlength="64" placeholder="Ana — shown to organizers, never a login key"></label>
+        <div class="wfull"><button class="cta" id="s-go" type="submit">Create my account</button>
+        <span class="cnt" id="s-status"></span></div>
+        <p class="wfull cnt">Your account key is generated <b>in your browser</b> and never leaves your device &#8212; the site stores only your public key. A one-time seed is shown after signup; keep it to log in elsewhere.</p>
+      </form>
+    </div>
     <div class="dashwrap">
       <div class="dashcol">
         <h2 class="dh2">My bookings</h2>
@@ -119,6 +128,7 @@ Or try help for everything I can do: signup, search, book, my-bookings, rate, an
 </div>
 <button class="pill" id="pill" type="button" aria-label="Open chat">&#128172; Ask EverList</button>
 
+<script src="/nacl-fast.min.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

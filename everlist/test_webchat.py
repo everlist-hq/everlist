@@ -355,6 +355,83 @@ def main():
     code, res = wpost(seller, "/api/confirm", {"booking_id": od["id"]})
     check("confirm single-use 409", code == 409)
 
+    # 6c. W3b: browser signup (real client-side flow through webchat proxies)
+    # + participant-gated /booking/{id} page.
+    def _pow_solve_local(kind):
+        import hashlib as _hl
+        with urllib.request.urlopen(BASE + "/api/signup-challenge", timeout=10) as r:
+            ch = json.loads(r.read().decode())
+        need = int(ch["difficulty"])
+        nonce = 0
+        while True:
+            d = _hl.sha256((ch["challenge"] + str(nonce)).encode()).digest()
+            bits = 0
+            for byte in d:
+                if byte == 0:
+                    bits += 8
+                    continue
+                bits += 8 - byte.bit_length()
+                break
+            if bits >= need:
+                return {"challenge": ch["challenge"], "nonce": nonce}
+            nonce += 1
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _Esk
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    bweb = Client()
+    code, _, body = bweb.get("/api/signup-challenge")
+    check("browser challenge proxy 200", code == 200 and "challenge" in json.loads(body))
+    pow_ = _pow_solve_local("signup")
+    seed_bytes = os.urandom(32)
+    sk = _Esk.from_private_bytes(seed_bytes)
+    pub = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+    code, res = wpost(bweb, "/api/signup", {"agent": "Browser Human", "pubkey": pub, "pow": pow_})
+    check("browser signup 201", code == 201 and res.get("account_id", "").startswith("acct-"), str(res)[:80])
+    aid_bweb = res.get("account_id")
+    check("browser human vouch", vouch(aid_bweb) == 200)
+    code, res = wpost(bweb, "/api/signup", {"agent": "Browser Human 2", "pubkey": pub, "pow": _pow_solve_local("signup")})
+    check("browser signup dup pubkey 409", code == 409)
+    code, _, body = bweb.get("/api/login-challenge?pubkey=" + pub)
+    lch = json.loads(body)
+    check("browser login-challenge proxy", code == 200 and "challenge" in lch)
+    code, res = wpost(bweb, "/api/login-pubkey", {
+        "agent": "Browser Human", "pubkey": pub,
+        "sig": sk.sign(("everlist-login:" + lch["challenge"]).encode()).hex()})
+    check("browser login-pubkey ok", code == 200 and res.get("ok") is True and (res.get("account") or {}).get("account_id", "").startswith("acct-"), str(res)[:80])
+    code, res = wpost(bweb, "/api/login-pubkey", {
+        "agent": "Browser Human", "pubkey": pub, "sig": "ab" * 64})
+    check("browser login-pubkey bad sig rejected", code in (400, 403), str(code))
+    code, _, body = bweb.get("/api/me")
+    check("browser session live after login", code == 200 and json.loads(body)["account"] is not None)
+    code, _, body = bweb.get("/")
+    check("signup form served", code == 200 and b"signup-area" in body and b"nacl-fast.min.js" in body)
+
+    # booking page gates: browser-human books the free zebra listing
+    code, _, body = bweb.chat("search zebra")
+    check("browser search ok", code == 200 and any(l.get("title") == "Zebra Quiz Night" for l in (json.loads(body).get("results") or [])))
+    code, _, body = bweb.chat("book 1 W3 Browser Human")
+    reply = json.loads(body).get("reply", "")
+    check("browser booked", code == 200 and "Booked" in reply, reply[:60])
+    code, _, body = bweb.get("/api/dashboard")
+    d = json.loads(body)
+    check("browser dashboard booking", code == 200 and len(d["bookings"]) >= 1)
+    bb = d["bookings"][0]
+    code, _, body = bweb.get("/booking/" + bb["id"])
+    check("booking page buyer 200", code == 200 and b"Booking #" in body and b"btl" in body)
+    check("booking page noindex", b"noindex" in body)
+    code, _, body = bweb.get("/booking/nope-123")
+    check("booking page unknown 404", code == 404)
+    web2 = Client()
+    _, _, body = web2.chat("signup")
+    aid_stranger = json.loads(web2.get("/api/me")[2])["account"]["account_id"]
+    check("stranger vouch", vouch(aid_stranger) == 200)
+    code, _, body = web2.get("/booking/" + bb["id"])
+    check("booking page stranger 404", code == 404)
+    anon_c = Client()
+    code, _, body = anon_c.get("/booking/" + bb["id"])
+    check("booking page anon 404", code == 404)
+
     code, _ = wpost(buyer, "/api/logout", {})
     code, _, body = buyer.get("/api/dashboard")
     check("logout clears dashboard", code == 200 and json.loads(body)["account"] is None)

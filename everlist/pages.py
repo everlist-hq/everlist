@@ -139,6 +139,84 @@ def detail_html(l, hub=None):
     return ("\n".join(h) + "\n").encode("utf-8")
 
 
+ESCROW_LABELS = {
+    "HELD": "escrow held",
+    "WAIVED": "free (no payment)",
+    "RELEASED": "released to owner",
+    "REFUNDED": "refunded",
+    "DIRECT": "instant — settled",
+}
+
+
+def booking_html(b, l=None):
+    """W3: participant-gated booking detail page. `b` is the hub's
+    /bookings/{id} projection (buyer or owner view); `l` the listing context
+    when still visible. CSP-safe: every dynamic value passes esc(); no inline
+    styles or scripts. Private page: noindex, served no-store by webchat."""
+    bid = str(b.get("id"))
+    esc_state = str(b.get("escrow") or "HELD")
+    created = b.get("created")
+    when = ""
+    if isinstance(created, (int, float)):
+        when = _dt.utcfromtimestamp(created).strftime("%Y-%m-%d %H:%M UTC")
+    title = (l or {}).get("title") or str(b.get("listing_id"))
+    amount = b.get("amount")
+    rows = [("State", esc_state)]
+    if when:
+        rows.append(("Booked at", when))
+    if amount:
+        rows.append(("Amount", "\u20ac" + str(amount)))
+    rail = str((b.get("payment_terms") or {}).get("rail") or "escrow")
+    rows.append(("Rail", rail))
+    view = b.get("view")
+    if view:
+        rows.append(("You are the", str(view)))
+    h = []
+    a = h.append
+    a("<!doctype html>")
+    a("<html lang=\"en\"><head>")
+    a("<meta charset=\"utf-8\">")
+    a("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    a("<meta name=\"robots\" content=\"noindex, nofollow\">")
+    a("<title>Booking #" + esc(bid) + " \u2014 EverList</title>")
+    a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
+    a("<link rel=\"stylesheet\" href=\"/style.css\">")
+    a("</head><body><div class=\"page ldetail\">")
+    a("<header class=\"top\"><div class=\"brand\"><img src=\"/favicon.svg\" alt=\"\" width=\"30\" height=\"30\"><span>EverList</span></div>"
+      "<nav class=\"nav\"><a href=\"/\">Browse</a> <a href=\"/?view=dash\">Bookings</a></nav></header>")
+    a("<article class=\"lmain\">")
+    a("<div class=\"lmeta\">" + esc(title) + "</div>")
+    a("<h1>Booking #" + esc(bid) + "</h1>")
+    # escrow timeline — the moat, made visible (labels mirror the W1 dashboard)
+    if esc_state in ("WAIVED", "DIRECT"):
+        timeline = [esc_state]
+    elif esc_state == "REFUNDED":
+        timeline = ["HELD", "REFUNDED"]
+    else:
+        timeline = ["HELD", "RELEASED"]
+    a("<div class=\"btl\" aria-label=\"escrow timeline\">")
+    for i, stp in enumerate(timeline):
+        cls = "btl-step"
+        if stp == esc_state:
+            cls += " now"
+        elif i < len(timeline) - 1:
+            cls += " done"
+        a("<div class=\"" + cls + "\"><span class=\"btl-dot\"></span>" + esc(ESCROW_LABELS.get(stp, stp)) + "</div>")
+    a("</div>")
+    a("<div class=\"bcard\">")
+    for k, v in rows:
+        a("<div class=\"brow\"><span class=\"bk\">" + esc(k) + "</span><span class=\"bv\">" + esc(v) + "</span></div>")
+    a("</div>")
+    if l:
+        lid = str(b.get("listing_id") or "")
+        a("<div class=\"lcta\"><a class=\"btn\" href=\"/l/" + esc(lid) + "\">View listing</a>"
+          " <a class=\"chip\" href=\"/?view=dash\">All bookings</a></div>")
+    a("<div class=\"lnote\">Only the buyer and the listing owner can see this page. "
+      "Actions (cancel / confirm) live in the Bookings view &mdash; tokens never touch the browser.</div>")
+    a("</article></div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")
+
+
 def ics_body(l):
     try:
         ymd = _dt.strptime(str(l.get("date")), "%Y-%m-%d").strftime("%Y%m%d")

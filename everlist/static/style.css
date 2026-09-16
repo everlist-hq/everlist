@@ -251,3 +251,21 @@ body.min .pill { display: flex; }
 .myrow .m { color: var(--muted, #9aa4a9); font-size: 12px; }
 .myrow .grow { flex: 1; }
 .myrow .linkbtn { cursor: pointer; }
+
+/* ---------- W3: booking detail + signup ---------- */
+.btl { display: flex; gap: 18px; align-items: center; margin: 14px 0 18px; flex-wrap: wrap; }
+.btl-step { display: flex; align-items: center; gap: 6px; color: var(--muted, #9aa4a9); font-size: 13px; }
+.btl-step .btl-dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.18); }
+.btl-step.done .btl-dot { background: var(--accent, #4ade80); opacity: .45; }
+.btl-step.now { color: var(--text, #e6edf2); font-weight: 600; }
+.btl-step.now .btl-dot { background: var(--accent, #4ade80); box-shadow: 0 0 8px var(--accent, #4ade80); }
+.bcard { background: var(--surface, #161a1d); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 14px 16px; max-width: 560px; }
+.brow { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+.brow:last-child { border-bottom: none; }
+.brow .bk { width: 110px; color: var(--muted, #9aa4a9); font-size: 12.5px; }
+.brow .bv { font-weight: 600; }
+#signup-area { margin: 0 0 18px; }
+#signup-area .cnt { margin-left: 10px; }
+
+.seedbox { background: var(--surface, #161a1d); border: 1px solid rgba(255,255,255,.18); border-radius: 8px; padding: 10px 12px; font-size: 13px; letter-spacing: .3px; word-break: break-all; user-select: all; }
+a.esc:hover { text-decoration: underline; }
