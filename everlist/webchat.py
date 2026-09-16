@@ -41,6 +41,11 @@ import chatlib  # noqa: E402
 PORT = int(os.environ.get("WEBCHAT_PORT", "8804"))
 BIND = os.environ.get("WEBCHAT_BIND", "127.0.0.1")
 HUB_URL = os.environ.get("WEBCHAT_HUB_URL", "http://localhost:8802")
+# G4 chat rate limits, env-tunable for load tests / CI (defaults = production)
+RL_S_BURST = int(os.environ.get("WEBCHAT_RL_S_BURST", "8"))
+RL_S_PER_MIN = int(os.environ.get("WEBCHAT_RL_S_PER_MIN", "4"))
+RL_IP_BURST = int(os.environ.get("WEBCHAT_RL_IP_BURST", "30"))
+RL_IP_PER_MIN = int(os.environ.get("WEBCHAT_RL_IP_PER_MIN", "20"))
 # W1: confirm-token minting follows the hub's documented owner path
 # (POST /admin/tokens act=confirm). Operator sets WEBCHAT_ADMIN_KEY = HUB_ADMIN_KEY.
 ADMIN_KEY = os.environ.get("WEBCHAT_ADMIN_KEY", "dev-admin-key-change-me")
@@ -366,6 +371,8 @@ class Handler(BaseHTTPRequestHandler):
                               cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
         if path == "/api/dashboard":
             return self.api_dashboard()
+        if path == "/api/my-listings":
+            return self.api_my_listings()
         return self.reply(404, {"error": "not found"})
 
     def api_dashboard(self):
@@ -407,6 +414,59 @@ class Handler(BaseHTTPRequestHandler):
                 "has_payout": bool(sess.get("payout_pk"))}
         return self.reply(200, {"ok": True, "account": acct, "expired": expired,
                                 "bookings": bookings, "orders": orders},
+                          cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+
+    def api_my_listings(self):
+        """W3: the session owner's own listings, whitelisted projection (same
+        discipline as api_dashboard). Ownership filtering is the HUB's — we ask
+        the hub who owns what via the session's list token; tokens stay
+        server-side, the browser gets exactly the manage view."""
+        sid = self.sid()
+        sess = chatlib._session("web-" + sid)
+        if not sess:
+            return self.reply(200, {"ok": True, "listings": []},
+                              cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+        titles = listing_titles()
+        me = sess.get("account_id")
+        if not me:
+            return self.reply(200, {"ok": True, "listings": []},
+                              cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+        try:
+            st, res = hub_fetch("/listings", token=(sess.get("tokens") or {}).get("list"))
+        except Exception:
+            return self.reply(502, {"error": "hub unreachable"}, cookie=self.set_sid(sid))
+        listings = []
+        if st == 200:
+            rows = list(res.get("listings") or [])
+            # W3 manage view: archived listings are OWNER-ONLY at the hub and
+            # hidden from the public catalog - fetch them separately so the
+            # owner still sees (and can unarchive) their hidden listings.
+            try:
+                st2, res2 = hub_fetch("/listings?archived=1",
+                                      token=(sess.get("tokens") or {}).get("list"))
+                if st2 == 200:
+                    _seen = {l.get("id") for l in rows}
+                    rows += [l for l in (res2.get("listings") or [])
+                             if l.get("id") not in _seen]
+            except Exception:
+                pass  # best-effort; the public view still renders
+            for l in rows:
+                if str(l.get("owner", "")) != str(me):
+                    continue  # hub returns the public catalog; keep only MINE
+                proj = {k: l.get(k) for k in ("id", "title", "date", "price", "location",
+                                               "capacity", "registered", "available", "url", "tags")
+                        if k in l}
+                proj["title"] = titles.get(l.get("id"), l.get("title", l.get("id")))
+                # hub semantics: POST /book refuses archived listings (409), so
+                # the manage view must never present one as bookable - the hub's
+                # capacity-based 'available' stays True even when archived
+                if l.get("archived"):
+                    proj["available"] = False
+                listings.append(proj)
+        elif st == 401:
+            return self.reply(200, {"ok": True, "expired": True, "listings": []},
+                              cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
+        return self.reply(200, {"ok": True, "listings": listings},
                           cookie=self.set_sid(sid), extra={"Cache-Control": "no-store"})
 
     # ---- POST ----
@@ -473,13 +533,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "text too long (max %d)" % TEXT_CAP})
 
         sid = self.sid()
-        ok, retry = allow("s:" + sid, burst=8, per_minute=4)
+        ok, retry = allow("s:" + sid, burst=RL_S_BURST, per_minute=RL_S_PER_MIN)
         if not ok:
             return self.reply(
                 429, {"error": "rate limited"},
                 cookie=self.set_sid(sid), extra={"Retry-After": str(retry)})
         ip = self.client_address[0]
-        ok, retry = allow("ip:" + ip, burst=30, per_minute=20)
+        ok, retry = allow("ip:" + ip, burst=RL_IP_BURST, per_minute=RL_IP_PER_MIN)
         if not ok:
             return self.reply(
                 429, {"error": "rate limited"},
@@ -492,6 +552,11 @@ class Handler(BaseHTTPRequestHandler):
                 # chat-first UI: hand the board the same results the brain
                 # stashed for this sender (raw dicts, 'book <n>' order).
                 results = chatlib.last_results("web-" + sid)
+            # fresh titles: a just-created listing must show its real name in
+            # the dashboard immediately, not after the 30s titles-cache TTL
+            if "(id: " in reply:
+                with _TITLES_LOCK:
+                    _TITLES["map"] = {}
         except Exception:
             return self.reply(
                 502, {"error": "chat brain error — try again"},

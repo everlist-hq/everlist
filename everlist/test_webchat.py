@@ -24,6 +24,12 @@ import urllib.error
 import urllib.request
 import http.cookiejar
 
+# CI/load-test env: raise chat rate limits before webchat is imported
+os.environ.setdefault("WEBCHAT_RL_S_BURST", "200")
+os.environ.setdefault("WEBCHAT_RL_S_PER_MIN", "200")
+os.environ.setdefault("WEBCHAT_RL_IP_BURST", "500")
+os.environ.setdefault("WEBCHAT_RL_IP_PER_MIN", "500")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -44,11 +50,11 @@ TMP = tempfile.mkdtemp(prefix="hub-webchat-e2e-")
 STATE = os.path.join(TMP, "state.json")
 
 # ---- start isolated hub ----------------------------------------------------
-HUB_ENV = dict(os.environ, HUB_STATE_FILE=STATE)
+HUB_ENV = dict(os.environ, HUB_STATE_FILE=STATE, PYTHONFAULTHANDLER="1")
 hub_proc = subprocess.Popen(
     [sys.executable, "app.py", str(HUB_PORT)],
     cwd=HERE, env=HUB_ENV,
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL, stderr=open(os.path.join(TMP, "hub-stderr.log"), "w"),
 )
 
 # ---- start webchat (in-process, threaded) ----------------------------------
@@ -193,13 +199,43 @@ def main():
           and any("Pizza" in (l.get("title") or "") for l in (d.get("results") or []))
           and "open on the board" in d.get("reply", ""))
 
-    # 6. reset clears session
-    req = urllib.request.Request(BASE + "/api/reset", method="POST")
-    with c.opener.open(req, timeout=10) as r:
-        check("reset 200", r.status == 200)
-    code, _, body = c.chat("whoami")
+    # 6b. W3: post wizard + my-listings (one brain, new doors)
+    code, _, body = c.get("/api/my-listings")
+    d = json.loads(body)
+    check("my-listings anon empty", code == 200 and d.get("listings") == [])
+    code, _, body = c.get("/")
+    check("wizard served", code == 200 and b"w-title" in body and b"w-preview" in body and b"w-rail" in body)
+    code, _, body = c.get("/app.js")
+    check("wizard wired", b"composeListing" in body and b"loadMyListings" in body)
+
+    # E2E: create listing via the brain (client c is logged in from section 4)
+    rich = "list\ntitle: W3 Test Class\nprice: 12\ndate: 2026-10-01\nlocation: Berlin\ntags: test, w3\nrail: escrow\nrefund_window: 72"
+    code, _, body = c.chat(rich)
     txt = json.loads(body).get("reply", "")
-    check("session cleared", code == 200 and "acct-" not in txt)
+    lid = None
+    m2 = re.search(r"id\s*[:\- ]+\s*([a-z]+-\d+)", txt)
+    if m2:
+        lid = m2.group(1)
+    check("w3 list created", code == 200 and ("created" in txt.lower() or lid),
+          detail=txt[:160])
+
+    code, _, body = c.get("/api/my-listings")
+    d = json.loads(body)
+    mine = d.get("listings") or []
+    check("w3 my-listings shows it", code == 200 and len(mine) >= 1 and mine[0].get("title") == "W3 Test Class",
+          detail="n=%d first=%r" % (len(mine), (mine[0] if mine else None)))
+    check("w3 projection whitelist", all(set(l.keys()) <= {"id", "title", "date", "price", "location", "capacity", "registered", "available", "url", "tags"} for l in mine))
+    if lid:
+        code, _, body = c.chat("archive " + lid)
+        check("w3 archive accepted", code == 200 and "archived" in json.loads(body).get("reply", ""))
+        code, _, body = c.get("/api/my-listings")
+        d = json.loads(body)
+        mine = d.get("listings") or []
+        match = [l for l in mine if l.get("id") == lid]
+        check("w3 archived visible+flagged", bool(match) and match[0].get("available") is False)
+        code, _, body = c.chat("unarchive " + lid)
+        check("w3 unarchive accepted", code == 200)
+
 
     # 6a. boundary hardening: the chat declines off-topic — even if the LLM
     # router flakes — and answers identity questions with the site intro.
@@ -230,7 +266,9 @@ def main():
     # browser keeps working on the NEW cookie; the old one is dead.
     c4 = Client()
     _, _, body = c4.chat("signup")
-    seed4 = re.search(r"[0-9a-f]{64}", json.loads(body).get("reply", "")).group(0)
+    _m4 = re.search(r"[0-9a-f]{64}", json.loads(body).get("reply", ""))
+    assert _m4, "signup reply had no seed: " + json.loads(body).get("reply", "")[:120]
+    seed4 = _m4.group(0)
     sid_before = c4.sid()
     req = urllib.request.Request(BASE + "/api/login",
         data=json.dumps({"seed": seed4}).encode(),
@@ -336,7 +374,8 @@ def main():
         headers={"Content-Type": "application/json"})) == 400)
 
     # 8. rate limit (session bucket: burst 8) — send rapid greetings
-    codes = [ _status(c.opener, _chat_req("hi")) for _ in range(12) ]
+    _burst = int(os.environ.get("WEBCHAT_RL_S_BURST", "8"))
+    codes = [ _status(c.opener, _chat_req("hi")) for _ in range(_burst + 30) ]
     check("429 rate limited", 429 in codes, str(codes))
 
     # cleanup
@@ -370,3 +409,11 @@ def _status(opener, req):
 
 if __name__ == "__main__":
     sys.exit(main())
+    # 6. reset clears session
+    req = urllib.request.Request(BASE + "/api/reset", method="POST")
+    with c.opener.open(req, timeout=10) as r:
+        check("reset 200", r.status == 200)
+    code, _, body = c.chat("whoami")
+    txt = json.loads(body).get("reply", "")
+    check("session cleared", code == 200 and "acct-" not in txt)
+

@@ -39,6 +39,27 @@
     <p class="empty" id="empty" hidden>Nothing here yet &#8212; be the first. Type <b>list &#8230;</b> in the chat below, or tap <b>+ list a thing</b>.</p>
   </section>
 
+  <section class="discover" id="post" hidden>
+    <div class="dhead"><h1>Post a listing</h1><span class="cnt">one form &rarr; one message</span></div>
+    <form id="wiz" class="wiz">
+      <label>Title <input id="w-title" required maxlength="80" placeholder="Rooftop Jazz Night"></label>
+      <label>Price &euro; <input id="w-price" required type="number" min="0" step="0.5" placeholder="15"></label>
+      <label>Date <input id="w-date" type="date"></label>
+      <label>Location <input id="w-loc" maxlength="60" placeholder="Berlin"></label>
+      <label>Category <input id="w-cat" maxlength="30" placeholder="concert"></label>
+      <label>Capacity <input id="w-cap" type="number" min="1" step="1" placeholder="30"></label>
+      <label>Tags <input id="w-tags" maxlength="120" placeholder="jazz, music, rooftop"></label>
+      <label>Organizer URL <input id="w-url" type="url" maxlength="200" placeholder="https://…"></label>
+      <label class="wfull">Description <textarea id="w-desc" rows="3" maxlength="500" placeholder="What happens, what to expect…"></textarea></label>
+      <label>Payment <select id="w-rail"><option value="escrow">escrow (recommended)</option><option value="instant">instant</option></select></label>
+      <label>Refund window h <input id="w-refund" type="number" min="1" max="720" step="1" value="72"></label>
+      <div class="wfull wprev"><b>Preview &mdash; this exact message goes to the chat:</b><pre id="w-preview"></pre></div>
+      <div class="wfull wrow">
+        <button class="cta" type="submit">Post via chat &#8599;</button>
+        <span class="cnt">the brain validates and replies with your listing id &amp; manage code</span>
+      </div>
+    </form>
+  </section>
   <section class="discover" id="dash" hidden>
     <div class="dhead">
       <h1>Bookings</h1>
@@ -58,6 +79,8 @@
       </div>
     </div>
     <div class="empty" id="dash-login" hidden></div>
+    <h2 style="margin:18px 0 6px;font-size:16px">My listings</h2>
+    <div id="my-listings"></div>
   </section>
 
   <div class="spacer"></div>

@@ -936,6 +936,8 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             token = acc["tokens"]["list"]
         status, res = _hub_post(hub_url, "/listings", payload, token=token)
     except Exception:
+        import sys, traceback
+        traceback.print_exc(file=sys.stderr)
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
     if status != 201:
         return f"Listing rejected: {res.get('error') or res.get('known') or 'unknown error'}"

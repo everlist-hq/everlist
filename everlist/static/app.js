@@ -172,14 +172,58 @@ if (minBtn) minBtn.addEventListener("click", () => { document.body.classList.add
 if (pill) pill.addEventListener("click", () => { openChat(); input.focus(); });
 
 /* ---------- post-a-listing affordances ---------- */
-function startPost() {
-  openChat();
-  input.value = "list ";
-  input.focus();
-  autosize();
+/* ---------- W3: post wizard (composes the brain's own rich list text) ---------- */
+const WIZ_IDS = ["title", "price", "date", "loc", "cat", "cap", "tags", "url", "desc", "rail", "refund"];
+
+function wizVals() {
+  const v = {};
+  WIZ_IDS.forEach((k) => { const n = document.getElementById("w-" + k); if (n) v[k] = n.value.trim(); });
+  return v;
 }
-if (postBtn) postBtn.addEventListener("click", startPost);
+
+function composeListing(f) {
+  const L = ["list", "title: " + f.title, "price: " + f.price];
+  if (f.date) L.push("date: " + f.date);
+  if (f.loc) L.push("location: " + f.loc);
+  if (f.cat) L.push("category: " + f.cat);
+  if (f.cap) L.push("capacity: " + f.cap);
+  if (f.tags) L.push("tags: " + f.tags);
+  if (f.url) L.push("url: " + f.url);
+  if (f.desc) L.push("description: " + f.desc);
+  L.push("rail: " + (f.rail || "escrow"));
+  if ((f.rail || "escrow") === "escrow" && f.refund) L.push("refund_window: " + f.refund);
+  return L.join("\n");
+}
+
+function updatePreview() {
+  const pre = document.getElementById("w-preview");
+  if (!pre) return;
+  const f = wizVals();
+  pre.textContent = (f.title && f.price !== "") ? composeListing(f) : "(fill title and price to see the message)";
+}
+
+function startPost(prefill) {
+  showView("post");
+  const f = prefill || {};
+  const map = { title: "w-title", price: "w-price", date: "w-date", loc: "w-loc", cat: "w-cat", cap: "w-cap", tags: "w-tags", url: "w-url", desc: "w-desc", rail: "w-rail", refund: "w-refund" };
+  Object.keys(map).forEach((k) => { const n = document.getElementById(map[k]); if (n) n.value = (f[k] != null) ? String(f[k]) : (k === "refund" ? "72" : ""); });
+  updatePreview();
+}
+if (postBtn) postBtn.addEventListener("click", () => startPost());
 if (navPost) navPost.addEventListener("click", (e) => { e.preventDefault(); startPost(); });
+const wizForm = document.getElementById("wiz");
+if (wizForm) {
+  wizForm.addEventListener("input", updatePreview);
+  wizForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = wizVals();
+    if (!f.title || f.price === "") return;
+    const text = composeListing(f);
+    showView(false); /* back to browse; the dock carries the brain's reply */
+    openChat();
+    send(text);
+  });
+}
 
 /* ---------- Discover grid (real data, CSP-safe DOM) ---------- */
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -443,8 +487,11 @@ function el(tag, cls, text) {
   return n;
 }
 
-function showView(dash) {
-  browseSec.hidden = dash;
+function showView(name) {
+  const dash = name === "dash", post = name === "post";
+  browseSec.hidden = dash || post;
+  const postSec = document.getElementById("post");
+  if (postSec) postSec.hidden = !post;
   dashSec.hidden = !dash;
   navBrowse.classList.toggle("on", !dash);
   navDash.classList.toggle("on", dash);
@@ -571,6 +618,39 @@ function renderLogin() {
   dashLogin.appendChild(form);
 }
 
+/* ---------- W3: my listings (dashboard manage) ---------- */
+async function loadMyListings() {
+  const box = document.getElementById("my-listings");
+  if (!box) return;
+  box.textContent = "";
+  let data;
+  try {
+    const r = await fetch("/api/my-listings", { cache: "no-store" });
+    data = await r.json();
+  } catch (e) { return; }
+  if (!data.listings || !data.listings.length) {
+    box.appendChild(el("p", "empty", "No listings yet — use “Post a listing” or type 'list ...' in the chat."));
+    return;
+  }
+  data.listings.forEach((l) => {
+    const row = el("div", "myrow");
+    row.appendChild(el("span", "t", l.title || l.id));
+    row.appendChild(el("span", "m", (l.id || "") + " · " + priceOf(l).txt + (l.date ? " · " + l.date : "")));
+    row.appendChild(el("span", "m", l.available === false ? "archived" : "live"));
+    row.appendChild(el("span", "grow"));
+    const det = document.createElement("a"); det.className = "linkbtn"; det.href = "/l/" + encodeURIComponent(l.id); det.target = "_blank"; det.rel = "noopener"; det.textContent = "details";
+    row.appendChild(det);
+    const arc = document.createElement("button"); arc.className = "linkbtn"; arc.type = "button";
+    arc.textContent = l.available === false ? "unarchive" : "archive";
+    arc.addEventListener("click", () => { openChat(); send((l.available === false ? "unarchive " : "archive ") + l.id); setTimeout(loadMyListings, 1500); });
+    row.appendChild(arc);
+    const ed = document.createElement("button"); ed.className = "linkbtn"; ed.type = "button"; ed.textContent = "edit";
+    ed.addEventListener("click", () => startPost({ title: l.title, price: l.price, date: l.date, loc: l.location, cap: l.capacity, url: l.url }));
+    row.appendChild(ed);
+    box.appendChild(row);
+  });
+}
+
 async function loadDashboard() {
   let data;
   try {
@@ -598,6 +678,7 @@ async function loadDashboard() {
   data.bookings.forEach((b) => myBookings.appendChild(bookingCard(b)));
   if (!data.orders.length) myOrders.appendChild(el("p", "empty", "No orders yet \u2014 orders for your listings appear here."));
   data.orders.forEach((o) => myOrders.appendChild(orderCard(o)));
+  loadMyListings();
 }
 
 if (dashRefresh) dashRefresh.addEventListener("click", loadDashboard);

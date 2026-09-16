@@ -314,7 +314,10 @@ def _pow_spend(kind, powobj):
     return None
 
 
-LOCK = threading.Lock()
+# RLock: _gen_check may run while the caller already holds LOCK
+# (e.g. GET /listings owner-projection) - threading.Lock would
+# self-deadlock on reentrant acquisition (found via faulthandler dump)
+LOCK = threading.RLock()
 
 # G1: JSON snapshot persistence (atomic write on every mutation, load on start).
 # Privacy: SECRETS (real attendee/buyer names) are NEVER persisted - identities stay
