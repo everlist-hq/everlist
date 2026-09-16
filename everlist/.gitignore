@@ -16,3 +16,4 @@ __pycache__/
 
 # canonical agent identity seed (TESTNET ONLY - never commit, never attach real funds)
 .secrets/
+everlist/hub.db
