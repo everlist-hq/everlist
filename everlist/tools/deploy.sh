@@ -40,7 +40,7 @@ $DOMAIN {
 
     # Browser chat is the face of the site; the agent hub API shares the same
     # domain under its own paths (agents discover it via /.well-known/...).
-    @chat path / /index.html /api/* /app.js /style.css /favicon.svg /nacl-fast.min.js /l/* /booking/* /transparency /network /how /agents /og/* /theme.js /sw.js /manifest.webmanifest /logo-512.png /org/* /sitemap.xml /robots.txt
+    @chat path / /index.html /api/* /app.js /style.css /favicon.svg /nacl-fast.min.js /l/* /booking/* /transparency /network /how /agents /og/* /theme.js /sw.js /manifest.webmanifest /logo-512.png /sitemap.xml /robots.txt
     handle @chat {
         reverse_proxy 127.0.0.1:$WEBCHAT_PORT
     }
@@ -86,6 +86,17 @@ if [ ! -s "$ENVF" ]; then
     echo "HUB_ADMIN_KEY=$(openssl rand -hex 32)"
     echo "HUB_BOOKING_KEY=$(openssl rand -hex 32)"
     echo "HUB_AGENT_SEED=$(openssl rand -hex 32)"
+    # optional real-email block: fires ONLY when RESEND_SMTP_PASS is provided
+    # (GitHub/env secret at install time). Value is written to the 0600 env
+    # file, never printed or logged.
+    if [ -n "${RESEND_SMTP_PASS:-}" ]; then
+      echo "HUB_EMAIL_MODE=smtp"
+      echo "HUB_SMTP_HOST=smtp.resend.com"
+      echo "HUB_SMTP_PORT=587"
+      echo "HUB_SMTP_USER=resend"
+      echo "HUB_SMTP_PASS=$RESEND_SMTP_PASS"
+      echo "HUB_MAIL_FROM=${HUB_MAIL_FROM:-notify@$DOMAIN}"
+    fi
   } > "$ENVF"
   echo "[secrets] generated $ENVF (admin + booking + agent seed)"
 else
