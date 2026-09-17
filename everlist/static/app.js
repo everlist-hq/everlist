@@ -121,7 +121,7 @@ async function send(text) {
         BOARD = null; SIG = "";
         renderGrid();
         showView(false);
-      } else if (data.nav === "results" && overlayEl) {
+      } else if (data.nav === "results" && openDetailCard) {
         closeDetail(false);
       }
       const meta = document.createElement("div");
@@ -401,42 +401,81 @@ if (filters) filters.addEventListener("click", (e) => {
   if (b.dataset.q) { openChat(); send(b.dataset.q); }
 });
 
-/* ---------- shared motion helpers ---------- */
+/* ---------- board motion: everything slides, nothing fades ----------
+   No card may ever appear or disappear during a reflow: every moving card
+   is one rigid translate. Transform-only (compositor) — no width/height
+   animation anywhere, so a reflow never touches layout per frame. */
 const EASE = "cubic-bezier(.2,.7,.2,1)";
 const REDUCE = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/* ---------- detail overlay: one click = the full /l/{id} detail, on top ----------
-   Owner call (2026-09-17, v2): the detail opens ON TOP of the board — dimmed
-   backdrop, centered panel, internal scrolling. The board never reflows and
-   the page never needs scrolling. Morphs are transform-only from the clicked
-   card's rect. On close the panel fades FAST while shrinking: it is half
-   transparent by 40% of the run, so nothing flashes when it reaches card
-   size. Close paths: × button, Escape, backdrop click, browser back.
-   Switching listings swaps the panel content in place and replaces the
-   history entry. /l/{id} stays a real server page for crawlers, no-JS and
-   deep links — in-app we never navigate. */
-let openDetailCard = null;   // card the overlay morphs from (may be null)
-let overlayEl = null;        // .overlay root (backdrop)
-let detailPanel = null;      // .detail-panel inside the overlay
+function slideBack(f, l, c) {
+  const dx = f.left - l.left, dy = f.top - l.top;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+  if (REDUCE()) return;
+  c.animate(
+    [{ transform: "translate(" + dx + "px," + dy + "px)" },
+     { transform: "none" }],
+    { duration: 340, easing: EASE }
+  );
+}
+
+function animateBoardChange(mutate) {
+  const before = new Map();
+  Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
+  mutate();
+  Array.from(grid.children).forEach((c) => {
+    const f = before.get(c);
+    if (!f) return;                 // inserted node: panel animates itself
+    slideBack(f, c.getBoundingClientRect(), c);
+  });
+}
+
+/* ---------- detail panel: one click = the full /l/{id} detail, row ABOVE ----------
+   Owner call (2026-09-17, v3): in-grid full-row panel like the previous
+   implementation — but it opens in a row ABOVE the clicked card, not below.
+   Rows above stay put; the clicked row (and everything below it) slides
+   down; the clicked slot becomes a dashed ghost hole. The panel grows
+   straight out of the clicked card into its slot above. On close it fades
+   FAST (half gone by 40% of the run) BEFORE shrinking back into the card —
+   the end-of-shrink flash is structurally impossible. Close paths: x
+   button, Escape, click on the hole, click on empty panel background,
+   browser back. Switching listings swaps the panel inside ONE FLIP step
+   and replaces the history entry so the back stack stays clean. /l/{id}
+   stays a real server page for crawlers, no-JS visitors and deep links —
+   in-app we never navigate. */
+let openDetailCard = null;   // card currently holed
+let detailPanel = null;      // panel element (in flow while open)
 
 function cardListing(card) {
   try { return JSON.parse(card.dataset.listing || "null"); } catch (e) { return null; }
 }
 
 function killStrayPanels() {
-  /* Bulletproof hygiene: no overlay may ever survive a state change — it
-     would float over the board and swallow clicks. */
-  document.querySelectorAll(".overlay").forEach((o) => o.remove());
-  overlayEl = null; detailPanel = null;
-  document.body.classList.remove("detail-open");
+  /* Bulletproof hygiene: no frozen/animating panel may ever survive a state
+     change — it would float over the board and swallow clicks. */
+  document.querySelectorAll(".detail-panel").forEach((p) => p.remove());
+  detailPanel = null;
 }
 
 function resetBoardState() {
-  /* Board re-rendered (search/filter): the overlay is torn down silently and
-     the URL returns home. Called by renderGrid BEFORE innerHTML is cleared. */
+  /* Board re-rendered (search/filter): any open detail is torn down silently
+     and the URL returns home. Called by renderGrid BEFORE innerHTML clears. */
   openDetailCard = null;
   killStrayPanels();
   if (history.state && history.state.detail) history.replaceState(null, "", "/");
+}
+
+function rowsOfGrid() {
+  const rows = [];
+  let cur = null, top = -1e9;
+  Array.from(grid.children).forEach((el) => {
+    if (el.classList && el.classList.contains("card")) {
+      const t = el.offsetTop;
+      if (!cur || Math.abs(t - top) > 2) { cur = []; rows.push(cur); top = t; }
+      cur.push(el);
+    }
+  });
+  return rows;
 }
 
 function boardData() {
@@ -509,7 +548,7 @@ function buildDetailPanel(l) {
   book.textContent = "\ud83d\udcac Ask EverList to book this";
   book.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    closeDetail(false);   /* reveal the chat dock under the overlay */
+    closeDetail(false);   /* clear the panel before handing over to the chat */
     openChat();
     input.value = "book " + (l.id || "") + " ";
     input.focus(); autosize();
@@ -564,105 +603,126 @@ function buildDetailPanel(l) {
   return d;
 }
 
-function showDetail(l, fromRect) {
-  if (!overlayEl) {
-    overlayEl = document.createElement("div");
-    overlayEl.className = "overlay";
-    overlayEl.addEventListener("click", (e) => { if (e.target === overlayEl) closeDetail(false); });
-    detailPanel = buildDetailPanel(l);
-    overlayEl.appendChild(detailPanel);
-    document.body.appendChild(overlayEl);
-    document.body.classList.add("detail-open");
-    /* transform-only morph (GPU, zero reflow): grow out of the clicked card */
-    if (!REDUCE() && fromRect) {
-      const to = detailPanel.getBoundingClientRect();
-      if (to.width > 0 && to.height > 0) {
-        detailPanel.style.transformOrigin = "top left";
-        detailPanel.animate(
-          [{ transform: "translate(" + (fromRect.left - to.left) + "px," + (fromRect.top - to.top) + "px) scale(" + (fromRect.width / to.width) + "," + (fromRect.height / to.height) + ")", opacity: 0.6 },
-           { transform: "none", opacity: 1 }],
-          { duration: 320, easing: EASE }
-        );
-      }
-    }
-    if (!REDUCE()) overlayEl.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: "ease-out" });
-  } else {
-    /* switching listings: swap content in place — no close/reopen trip */
-    const fresh = buildDetailPanel(l);
-    detailPanel.replaceWith(fresh);
-    detailPanel = fresh;
-    if (!REDUCE()) detailPanel.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-  }
-  detailPanel.scrollTop = 0;
-  /* push once per detail session; a switch replaces the entry (clean stack) */
-  const url = "/l/" + encodeURIComponent(l.id || "");
-  if (history.state && history.state.detail) history.replaceState({ detail: l.id }, "", url);
-  else if (location.pathname !== url) history.pushState({ detail: l.id }, "", url);
-}
-
 function openDetail(card) {
+  if (openDetailCard === card) { closeDetail(false); return; }
   const l = cardListing(card);
   if (!l) return;
+  // direct swap: old panel (if any) is replaced inside the same FLIP step,
+  // so the board moves once — never collapse-then-reexpand
+  const prevCard = openDetailCard;
+  const prevPanel = detailPanel;
+  // insert the panel in a row ABOVE the clicked card (owner call v3):
+  // rows above stay, the clicked row and everything below slide down
+  const rows = rowsOfGrid();
+  let rowIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].indexOf(card) !== -1) { rowIdx = i; break; }
+  }
+  animateBoardChange(() => {
+    if (prevCard) prevCard.classList.remove("ghost");
+    if (prevPanel) prevPanel.remove();
+    card.classList.add("ghost");
+    detailPanel = buildDetailPanel(l);
+    if (rowIdx <= 0) grid.insertBefore(detailPanel, grid.firstChild);
+    else rows[rowIdx - 1][rows[rowIdx - 1].length - 1].after(detailPanel);
+  });
+  // transform-only morph (GPU, zero reflow): grow out of the clicked card
+  // into the slot directly above it
+  const hole = card.getBoundingClientRect();
+  const pr = detailPanel.getBoundingClientRect();
+  if (!REDUCE() && pr.width > 0 && pr.height > 0) {
+    detailPanel.style.transformOrigin = "top left";
+    detailPanel.animate(
+      [{ transform: "translate(" + (hole.left - pr.left) + "px," + (hole.top - pr.top) + "px) scale(" + (hole.width / pr.width) + "," + (hole.height / pr.height) + ")", opacity: 0.55 },
+       { transform: "none", opacity: 1 }],
+      { duration: 340, easing: EASE }
+    );
+  }
   openDetailCard = card;
-  showDetail(l, REDUCE() ? null : card.getBoundingClientRect());
+  // push once per detail session; a switch replaces the entry (clean stack)
+  const url = "/l/" + encodeURIComponent(l.id);
+  if (history.state && history.state.detail) history.replaceState({ detail: l.id }, "", url);
+  else if (location.pathname !== url) history.pushState({ detail: l.id }, "", url);
+  detailPanel.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
 }
 
 function closeDetail(viaPop) {
-  if (!overlayEl) return;
-  const ov = overlayEl, panel = detailPanel, card = openDetailCard;
-  overlayEl = null; detailPanel = null; openDetailCard = null;
+  if (!openDetailCard || !detailPanel) return;
+  const card = openDetailCard, panel = detailPanel;
+  openDetailCard = null; detailPanel = null;
+  // capture BEFORE-positions while the panel still holds the row open
+  const before = new Map();
+  Array.from(grid.children).forEach((c) => { if (c !== panel) before.set(c, c.getBoundingClientRect()); });
+  // freeze the panel OUT of the grid: the board closes immediately and can
+  // never be blocked by it — the panel keeps floating during its retreat
+  const pr = panel.getBoundingClientRect();
+  panel.style.position = "fixed";
+  panel.style.left = pr.left + "px"; panel.style.top = pr.top + "px";
+  panel.style.width = pr.width + "px"; panel.style.height = pr.height + "px";
+  panel.style.margin = "0"; panel.style.zIndex = "40";
+  panel.style.pointerEvents = "none";
+  document.body.appendChild(panel);
+  // refill the hole: the card never left, it just un-dims (CSS transition)
+  card.classList.remove("ghost");
+  requestAnimationFrame(() => {
+    // everyone slides back up into the closed row (transform-only)
+    Array.from(grid.children).forEach((c) => {
+      const f = before.get(c);
+      if (f) slideBack(f, c.getBoundingClientRect(), c);
+    });
+    // fade FAST first (half gone by 40% of the run), then shrink into the
+    // card — nearly invisible before it approaches card size: no flash
+    const hole = card.getBoundingClientRect();
+    if (REDUCE()) { panel.remove(); return; }
+    const frames = [
+      { transform: "none", opacity: 1, offset: 0 },
+      { transform: "none", opacity: 0.5, offset: 0.4 }
+    ];
+    if (pr.width > 0 && hole.width > 0) {
+      panel.style.transformOrigin = "top left";
+      frames.push({ transform: "translate(" + (hole.left - pr.left) + "px," + (hole.top - pr.top) + "px) scale(" + (hole.width / pr.width) + "," + (hole.height / pr.height) + ")", opacity: 0 });
+    } else {
+      frames.push({ transform: "translateY(8px) scale(.97)", opacity: 0 });
+    }
+    panel.animate(frames, { duration: 320, easing: EASE });
+    // unconditional cleanup: the floating panel can never outlive its exit
+    setTimeout(() => panel.remove(), 340);
+  });
   if (!viaPop && history.state && history.state.detail) history.back();
-  document.body.classList.remove("detail-open");
-  if (REDUCE()) { ov.remove(); return; }
-  ov.style.pointerEvents = "none";
-  /* fade FAST first (half gone by 40%), then shrink into the card's rect —
-     the panel is nearly invisible before it approaches card size, so the
-     end-of-shrink flash is structurally impossible */
-  const frames = [
-    { transform: "none", opacity: 1, offset: 0 },
-    { transform: "none", opacity: 0.5, offset: 0.4 }
-  ];
-  const from = panel.getBoundingClientRect();
-  const to = card && card.isConnected ? card.getBoundingClientRect() : null;
-  if (to && from.width > 0 && to.width > 0) {
-    panel.style.transformOrigin = "top left";
-    frames.push({ transform: "translate(" + (to.left - from.left) + "px," + (to.top - from.top) + "px) scale(" + (to.width / from.width) + "," + (to.height / from.height) + ")", opacity: 0 });
-  } else {
-    frames.push({ transform: "translateY(8px) scale(.97)", opacity: 0 });
-  }
-  panel.animate(frames, { duration: 300, easing: EASE });
-  ov.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, easing: "ease-out" });
-  /* unconditional cleanup: the closing overlay can never outlive its exit */
-  setTimeout(() => ov.remove(), 320);
+  // keep the hole in view so the dock-back animation is always visible
+  card.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
 }
 
 window.addEventListener("popstate", () => {
-  if (overlayEl && !(history.state && history.state.detail)) closeDetail(true);
-  else if (!overlayEl && history.state && history.state.detail) {
-    /* forward button: re-open the panel for the listing in the URL */
+  if (openDetailCard && !(history.state && history.state.detail)) closeDetail(true);
+  else if (!openDetailCard && history.state && history.state.detail) {
+    // forward button: re-open the panel for the listing in the URL
     const id = history.state.detail;
-    const l = boardData().find((x) => String(x.id) === String(id));
-    if (l) {
-      const card = Array.from(grid.querySelectorAll(".card")).find((c) => {
-        const xl = cardListing(c); return xl && String(xl.id) === String(id);
-      });
-      openDetailCard = card || null;
-      showDetail(l, card ? card.getBoundingClientRect() : null);
-    }
+    const card = Array.from(grid.querySelectorAll(".card")).find((c) => {
+      const l = cardListing(c); return l && String(l.id) === String(id);
+    });
+    if (card) openDetail(card);
   }
 });
 
-/* One handler: chat CTA keeps its own behavior; details link opens the panel
-   instead of navigating (modifier-click keeps native /l/ for new tabs);
-   any card click = FULL detail overlay. */
+/* One handler, ordered: chat CTA first, then detail-close gestures, then
+   card click = FULL detail. The details link is folded in here — a second
+   listener would open+close in the same click dispatch (net: nothing).
+   Modifier-clicked links keep native /l/ navigation. */
 grid.addEventListener("click", (e) => {
-  if (e.target.closest(".cta")) return;
+  if (e.target.closest(".cta")) return;             /* CTA routes to chat itself */
   const dl = e.target.closest(".dlink");
-  if (dl && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) e.preventDefault();
+  if (dl && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) e.preventDefault(); /* panel, not navigation */
+  if (e.target.closest(".detail-panel")) {
+    if (e.target === detailPanel) closeDetail(false); /* bg/padding click = close; content stays interactive */
+    return;
+  }
   const card = e.target.closest(".card");
-  if (card) openDetail(card);
+  if (!card) { if (openDetailCard) closeDetail(false); return; }
+  if (openDetailCard === card) { closeDetail(false); return; }  /* hole click = close */
+  openDetail(card);
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && overlayEl) closeDetail(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openDetailCard) closeDetail(false); });
 
 /* ---------- W3: browser signup (PoW + keygen in-page; seed shown ONCE) ---------- */
 /* The keypair is generated IN THE BROWSER (vendored tweetnacl): the seed is
