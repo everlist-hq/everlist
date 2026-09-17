@@ -125,31 +125,30 @@ body {
   border-radius: 999px; padding: 3px 9px;
 }
 .card .desc { display: none; }
-/* ---- detail panel: full-row expansion with a ghost hole (W5) ---- */
-.card.ghost {
-  border-style: dashed;
-  border-color: var(--accent-dim);
-  opacity: .35;
-  pointer-events: auto;      /* clicking the hole closes the panel */
-  filter: saturate(.4);
-  transition: opacity .18s, filter .18s;
+/* ---- detail overlay: full /l/{id} detail on top of the board (W6) ---- */
+body.detail-open { overflow: hidden; }  /* board scroll lock while open */
+.overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  backdrop-filter: blur(10px) saturate(1.15);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
 }
-.card.ghost:hover { transform: none; box-shadow: none; border-color: var(--accent-dim); }
 .detail-panel {
-  grid-column: 1 / -1;       /* full row */
   background: var(--bg2);
   border: 1px solid var(--accent-dim);
   border-radius: 16px;
   padding: 20px 22px;
   display: flex; flex-direction: column; gap: 12px;
   position: relative;
-  z-index: 1;
-  box-shadow: 0 14px 40px var(--shadow);
-  scroll-margin: 24px;       /* breathing room when scrolled into view */
+  width: min(720px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow: auto;            /* internal scroll — the page itself never scrolls */
+  box-shadow: 0 24px 70px var(--shadow);
 }
 /* detail panel reuses the SSR /l/{id} classes (.ldetail .lmeta etc.);
    only panel-scoped additions live here */
-.detail-panel .dtitle { margin: 2px 0 0; font-size: 24px; font-weight: 700; letter-spacing: -.3px; }
+.detail-panel .dtitle { margin: 2px 0 0; padding-right: 40px; font-size: 24px; font-weight: 700; letter-spacing: -.3px; }
 .detail-panel .ldesc { margin: 0; color: var(--text2); font-size: 14px; line-height: 1.6; max-width: 72ch; }
 .detail-panel .drel { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 .detail-panel .drelrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -171,8 +170,11 @@ body {
 .detail-panel .dv { font-size: 14px; font-weight: 600; color: var(--text2); }
 .detail-panel .cta { align-self: flex-start; }
 .dclose {
-  position: absolute; top: 10px; right: 12px;
-  background: none; border: 1px solid var(--line); border-radius: 999px;
+  position: sticky; top: 0;       /* stays visible while the panel scrolls */
+  align-self: flex-end;
+  margin-bottom: -42px;           /* occupy no flow space (30px h + 12px gap) */
+  z-index: 2;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: 999px;
   color: var(--muted); font-size: 15px; line-height: 1;
   width: 30px; height: 30px; cursor: pointer; font-family: inherit;
 }
