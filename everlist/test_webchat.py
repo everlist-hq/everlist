@@ -134,6 +134,17 @@ def main():
     check("CSP present", "content-security-policy" in {k.lower() for k in hdrs})
     check("nosniff", hdrs.get("X-Content-Type-Options") == "nosniff")
     code, _, _ = c.get("/style.css")
+    check("style.css 200", code == 200)
+    # CSS sanity: an unbalanced brace silently kills every rule after it
+    # (the .dclose incident: cards styled, whole chat dock unstyled).
+    code, _, body = c.get("/style.css")
+    if code == 200:
+        import re as _re
+        css = body.decode("utf-8", "replace") if isinstance(body, (bytes, bytearray)) else body
+        clean = _re.sub(r"/\*.*?\*/", "", css, flags=_re.S)
+        clean = _re.sub(r'"[^"\n]*"|\'[^\'\n]*\'', '', clean)
+        depth = clean.count("{") - clean.count("}")
+        check("style.css braces balanced", depth == 0)
     check("css 200", code == 200)
     code, _, _ = c.get("/app.js")
     check("js 200", code == 200)

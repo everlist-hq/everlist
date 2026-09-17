@@ -163,7 +163,6 @@ body {
   padding: 6px 12px; cursor: pointer; text-align: left;
 }
 .detail-panel .drelitem:hover { border-color: var(--accent-dim); color: var(--text); }
-.dclose {
 .detail-panel .ddesc { margin: 0; color: var(--text2); font-size: 14px; line-height: 1.55; }
 .detail-panel .dgrid {
   display: grid; gap: 10px 18px;
