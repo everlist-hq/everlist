@@ -439,22 +439,30 @@ function animateBoardChange(mutate, hero) {
 /* ---------- detail panel: full-row expansion with a hole ----------
    "details" expands a full-width panel in the row BELOW the clicked card.
    Above stays above; same-row neighbors keep their slots (the clicked slot
-   becomes a dashed ghost "hole"); everything below slides down. Open: the
-   panel drops out of the hole straight down, THEN widens inside its own
-   empty band — it never sweeps across same-row neighbors. Close: reverse —
-   narrow in the band, then rise back into the hole while the board closes
-   up. The URL mirrors /l/{id} via pushState; /l/{id} stays a real server
-   page for crawlers, no-JS visitors and deep links, but in-app we never
-   navigate. One generation counter (detailGen) serializes everything: a
-   switch first closes the old panel, then opens the new one when that
-   finishes; a popstate mid-flight force-closes, cancelling in-flight
-   animations so state and URL can never desync. */
+   becomes a dashed ghost "hole"); everything below slides down. The panel
+   is IN FLOW: it pushes rows away, it never floats over them. Content
+   mirrors the server-rendered /l/{id} page 1:1 (same classes, same data).
+   Close paths: × button, Escape, click on the hole, click on empty panel
+   background, browser back. On close the panel detaches to <body> and
+   retreats into the hole while the board closes up; removal is
+   unconditional (onfinish + timeout failsafe) so a stuck invisible
+   overlay can never block the board again. A generation counter
+   (detailGen) serializes open/close/switch. The URL mirrors /l/{id} via
+   pushState; /l/{id} stays a real server page for crawlers, no-JS
+   visitors and deep links — in-app we never navigate. */
 let openDetailCard = null;   // card currently holed
 let detailPanel = null;      // panel element (in flow while open)
-let detailGen = 0;          // generation counter: +1 invalidates in-flight work
+let detailGen = 0;           // generation counter: +1 invalidates in-flight work
 
 function cardListing(card) {
   try { return JSON.parse(card.dataset.listing || "null"); } catch (e) { return null; }
+}
+
+function killStrayPanels() {
+  /* Bulletproof hygiene: no frozen/animating panel may ever survive a state
+     change — it would float over the board and swallow clicks. */
+  document.querySelectorAll(".detail-panel").forEach((p) => p.remove());
+  detailPanel = null;
 }
 
 function resetBoardState() {
@@ -464,7 +472,7 @@ function resetBoardState() {
   detailGen++;
   openDetailCard = null;
   openCard = null;
-  if (detailPanel) { detailPanel.remove(); detailPanel = null; }
+  killStrayPanels();
   if (history.state && history.state.detail) history.replaceState(null, "", "/");
 }
 
@@ -481,63 +489,122 @@ function rowsOfGrid() {
   return rows;
 }
 
+function fmtDateLong(d) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ""));
+  if (!m) return String(d || "any date");
+  return (+m[3]) + " " + (MONTHS[(+m[2]) - 1] || m[2]) + " " + m[1];
+}
+
+/* Content parity with the SSR /l/{id} page (pages.py listing_html): same
+   data, same classes (.lmeta .chip .esc.note .lcta .lnote), so the shared
+   stylesheet renders both identically. CSP-safe: textContent everywhere. */
 function buildDetailPanel(l) {
-  const d = document.createElement("section");
-  d.className = "detail-panel";
+  const d = document.createElement("article");
+  d.className = "detail-panel ldetail";
+
   const close = document.createElement("button");
   close.className = "dclose"; close.type = "button"; close.setAttribute("aria-label", "close");
   close.textContent = "\u00d7";
   close.addEventListener("click", (ev) => { ev.stopPropagation(); closeDetail(false); });
   d.appendChild(close);
 
-  const r1 = document.createElement("div"); r1.className = "r1";
-  const dt = fmtDate(l.date);
-  const date = document.createElement("span"); date.className = "date";
-  const db = document.createElement("b"); db.textContent = dt ? dt.big : "\u221e";
-  const ds = document.createElement("s"); ds.textContent = dt ? (dt.small || "") : "any";
-  date.appendChild(db); date.appendChild(ds); r1.appendChild(date);
-  const vtag = document.createElement("span"); vtag.className = "vtag";
-  vtag.textContent = ((l.category || l.vertical || "listing").toUpperCase());
-  r1.appendChild(vtag);
-  if (l.owner_public) { const o = document.createElement("span"); o.className = "meta"; o.textContent = "by " + l.owner_public; r1.appendChild(o); }
-  d.appendChild(r1);
+  const price = priceOf(l);
+  const metaBits = [l.vertical || l.category || "", fmtDateLong(l.date), price.txt, l.location || ""].filter(Boolean);
+  const meta = document.createElement("div"); meta.className = "lmeta"; meta.textContent = metaBits.join(" \u00b7 "); d.appendChild(meta);
 
   const h2 = document.createElement("h2"); h2.className = "dtitle"; h2.textContent = l.title || "Untitled"; d.appendChild(h2);
-  if (l.description) { const de = document.createElement("p"); de.className = "ddesc"; de.textContent = String(l.description); d.appendChild(de); }
 
-  const g = document.createElement("div"); g.className = "dgrid";
-  const bits = [];
-  if (l.location) bits.push(["Location", l.location]);
-  const sp = spotsLeft(l);
-  if (sp) bits.push(["Capacity", sp]);
-  const pr = priceOf(l);
-  bits.push(["Price", pr.txt + (pr.esc ? " (escrow)" : "")]);
+  const cap = parseInt(l.capacity, 10);
+  if (!isNaN(cap) && cap > 0) {
+    const reg = parseInt(l.registered != null ? l.registered : l.booked, 10) || 0;
+    const left = Math.max(0, cap - reg);
+    const spots = document.createElement("div"); spots.className = "lmeta";
+    spots.textContent = left + " of " + cap + " spots left";
+    d.appendChild(spots);
+  }
+
+  if (l.description) { const de = document.createElement("p"); de.className = "ldesc"; de.textContent = String(l.description); d.appendChild(de); }
+
+  const tags = l.tags || [];
+  if (tags.length) {
+    const tw = document.createElement("div");
+    tags.slice(0, 8).forEach((t) => { const c = document.createElement("span"); c.className = "chip stat"; c.textContent = t; tw.appendChild(c); });
+    d.appendChild(tw);
+  }
+
+  const rateBits = [];
   if ((l.rating_count | 0) > 0) {
     let avg = (l.rating_wtot || 0) > 0 ? (l.rating_wsum || 0) / l.rating_wtot
             : (l.rating_avg != null ? l.rating_avg : (l.rating_sum || 0) / l.rating_count);
-    bits.push(["Paid reviews", "\u2605 " + (Math.round(avg * 10) / 10) + "/5 (" + l.rating_count + ")"]);
+    rateBits.push("\u2605 " + (Math.round(avg * 10) / 10) + "/5 paid reviews (" + l.rating_count + ")");
   }
   if ((l.free_rating_count | 0) > 0) {
-    bits.push(["Free class", (Math.round((l.free_rating_sum || 0) / l.free_rating_count * 10) / 10) + "/5 (" + l.free_rating_count + ")"]);
+    rateBits.push("free-class " + (Math.round((l.free_rating_sum || 0) / l.free_rating_count * 10) / 10) + "/5 (" + l.free_rating_count + ")");
   }
-  bits.forEach((pair) => {
-    const item = document.createElement("div"); item.className = "ditem";
-    const k = document.createElement("span"); k.className = "dk"; k.textContent = pair[0]; item.appendChild(k);
-    const v = document.createElement("span"); v.className = "dv"; v.textContent = pair[1]; item.appendChild(v);
-    g.appendChild(item);
-  });
-  d.appendChild(g);
+  if (rateBits.length) { const rl = document.createElement("div"); rl.className = "lmeta rline"; rl.textContent = rateBits.join(" \u00b7 "); d.appendChild(rl); }
 
+  const pt = l.payment_terms || {};
+  if ((pt.rail || "") === "escrow" && price.esc) {
+    const note = document.createElement("div"); note.className = "esc note";
+    note.textContent = "\ud83d\udd12 Price held in escrow \u2014 released only when you confirm completion. Refund window: " + (pt.refund_window_hours != null ? pt.refund_window_hours : 24) + "h after booking.";
+    d.appendChild(note);
+  }
+
+  const cta = document.createElement("div"); cta.className = "lcta";
+  const book = document.createElement("button"); book.className = "btn"; book.type = "button";
+  book.textContent = "\ud83d\udcac Ask EverList to book this";
+  book.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    openChat();
+    input.value = "book " + (l.id || "") + " ";
+    input.focus(); autosize();
+  });
+  cta.appendChild(book);
   if (l.id) {
-    const cta = document.createElement("button"); cta.className = "cta"; cta.type = "button";
-    cta.textContent = "Ask AI to book";
-    cta.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      openChat();
-      input.value = "book " + l.id + " ";
-      input.focus(); autosize();
-    });
-    d.appendChild(cta);
+    const ics = document.createElement("a"); ics.className = "chip";
+    ics.href = "/l/" + encodeURIComponent(l.id) + ".ics";
+    ics.target = "_blank"; ics.rel = "noopener";
+    ics.textContent = "\ud83d\udcc5 Add to calendar";
+    ics.addEventListener("click", (ev) => ev.stopPropagation());
+    cta.appendChild(ics);
+  }
+  d.appendChild(cta);
+
+  if (l.url) {
+    const un = document.createElement("div"); un.className = "lnote";
+    un.textContent = "Organizer page: ";
+    const ua = document.createElement("a"); ua.href = l.url; ua.rel = "noopener nofollow"; ua.target = "_blank";
+    ua.textContent = l.url;
+    ua.addEventListener("click", (ev) => ev.stopPropagation());
+    un.appendChild(ua);
+    d.appendChild(un);
+  }
+
+  /* Same board data the SSR page uses for "More from this organizer":
+     switch directly to that listing's panel instead of navigating. */
+  const own = String(l.owner || "");
+  if (own && l.id) {
+    const sibs = (typeof BOARD !== "undefined" && BOARD ? BOARD : ALL)
+      .filter((x) => String(x.id) !== String(l.id) && String(x.owner || "") === own).slice(0, 3);
+    if (sibs.length) {
+      const sec = document.createElement("section"); sec.className = "drel";
+      const sh = document.createElement("div"); sh.className = "lmeta"; sh.textContent = "More from this organizer"; sec.appendChild(sh);
+      const row = document.createElement("div"); row.className = "drelrow";
+      sibs.forEach((x) => {
+        const b = document.createElement("button"); b.className = "drelitem"; b.type = "button";
+        b.textContent = x.title || "Untitled";
+        b.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const target = Array.from(grid.querySelectorAll(".card")).find((c) => {
+            const xl = cardListing(c); return xl && String(xl.id) === String(x.id);
+          });
+          if (target) switchDetail(target);
+        });
+        row.appendChild(b);
+      });
+      sec.appendChild(row);
+      d.appendChild(sec);
+    }
   }
   return d;
 }
@@ -546,7 +613,8 @@ function openDetail(card) {
   if (openDetailCard) return;
   const l = cardListing(card);
   if (!l) return;
-  const gen = ++detailGen;
+  ++detailGen;
+  killStrayPanels();                      // never two panels, never a frozen one
   const rows = rowsOfGrid();
   let anchor = card;
   for (const row of rows) { if (row.indexOf(card) !== -1) { anchor = row[row.length - 1]; break; } }
@@ -575,6 +643,19 @@ function openDetail(card) {
   detailPanel.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
 }
 
+function switchDetail(card) {
+  /* Close-then-open with the generation counter arbitrating: if anything
+     else bumps the generation first, the queued open is discarded. */
+  if (openDetailCard === card) { closeDetail(false); return; }
+  if (openDetailCard) {
+    closeDetail(false);
+    const gen = detailGen;
+    setTimeout(() => { if (gen === detailGen && !openDetailCard) openDetail(card); }, 430);
+  } else {
+    openDetail(card);
+  }
+}
+
 function closeDetail(viaPop) {
   if (!openDetailCard || !detailPanel) return;
   const card = openDetailCard, panel = detailPanel;
@@ -583,34 +664,35 @@ function closeDetail(viaPop) {
   // capture BEFORE-positions while the panel still holds the row open
   const before = new Map();
   Array.from(grid.children).forEach((c) => { if (c !== panel) before.set(c, c.getBoundingClientRect()); });
-  // freeze the panel out of flow (fixed): row collapses, panel stays on screen
+  // freeze the panel OUT of the grid: the board closes immediately and can
+  // never be blocked by it — the panel keeps floating during its retreat
   const pr = panel.getBoundingClientRect();
   panel.style.position = "fixed";
   panel.style.left = pr.left + "px"; panel.style.top = pr.top + "px";
   panel.style.width = pr.width + "px"; panel.style.height = pr.height + "px";
-  panel.style.margin = "0"; panel.style.zIndex = "6";
+  panel.style.margin = "0"; panel.style.zIndex = "40";
+  panel.style.pointerEvents = "none";
+  document.body.appendChild(panel);
   // refill the hole: the card never left, it just un-dims (CSS transition)
   card.classList.remove("ghost");
   requestAnimationFrame(() => {
     // everyone slides back up into the closed row
     Array.from(grid.children).forEach((c) => {
-      if (c === panel) return;
       const f = before.get(c);
       if (f) slideBack(f, c.getBoundingClientRect(), c);
     });
     // panel narrows in its band, then docks back into the hole
     const hole = card.getBoundingClientRect();
-    if (!REDUCE()) {
-      const dxa = hole.left - pr.left;
-      const finish = () => { if (gen === detailGen) { panel.remove(); } };
-      panel.animate(
-        [{ transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 },
-         { transform: "translate(" + dxa() + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.55 },
-         { transform: "translate(" + dxa() + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 }],
-        { duration: 400, easing: EASE }
-      ).onfinish = finish;
-      panel.getAnimations().forEach((a) => a.finished.catch(() => finish()));
-    } else { panel.remove(); }
+    if (REDUCE()) { panel.remove(); return; }
+    const dxa = hole.left - pr.left;
+    panel.animate(
+      [{ transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 },
+       { transform: "translate(" + dxa + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.55 },
+       { transform: "translate(" + dxa + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 }],
+      { duration: 400, easing: EASE }
+    );
+    // unconditional cleanup: the floating panel can never outlive its exit
+    setTimeout(() => panel.remove(), 450);
   });
   if (!viaPop && history.state && history.state.detail) history.back();
 }
@@ -620,7 +702,7 @@ window.addEventListener("popstate", () => {
   else if (!openDetailCard && history.state && history.state.detail) {
     // forward button: re-open the panel for the listing in the URL
     const id = history.state.detail;
-    const card = Array.from(grid.children).find((c) => {
+    const card = Array.from(grid.querySelectorAll(".card")).find((c) => {
       const l = cardListing(c); return l && l.id === id;
     });
     if (card) openDetail(card);
@@ -643,7 +725,7 @@ function collapseCard() {
   animateBoardChange(() => c.classList.remove("open"), c);
 }
 
-/* one handler, ordered: CTA / details link first (their own behavior),
+/* one handler, ordered: details link first (its own behavior), then CTA,
    then detail-close gestures, then peek expand */
 grid.addEventListener("click", (e) => {
   const dl = e.target.closest(".dlink");
@@ -651,20 +733,12 @@ grid.addEventListener("click", (e) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; /* native: open /l page */
     e.preventDefault();
     const card = dl.closest(".card");
-    if (!card) return;
-    if (openDetailCard === card) { closeDetail(false); return; }
-    if (openDetailCard) {
-      closeDetail(false);
-      const gen = detailGen;
-      setTimeout(() => { if (gen === detailGen) openDetail(card); }, 430);
-    } else {
-      openDetail(card);
-    }
+    if (card) switchDetail(card);
     return;
   }
   if (e.target.closest(".cta")) return;             /* CTA routes to chat itself */
   if (e.target.closest(".detail-panel")) {
-    if (e.target === detailPanel) closeDetail(false); /* bg/padding click = close; text/buttons keep focus */
+    if (e.target === detailPanel) closeDetail(false); /* bg/padding click = close; content stays interactive */
     return;
   }
   const card = e.target.closest(".card");

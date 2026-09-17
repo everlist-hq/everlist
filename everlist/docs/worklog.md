@@ -844,3 +844,10 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - DRIFT FOUND: entire Brain v2 (brain.py + chatlib block + webchat nav/health) existed only in experiments working copy, never committed — CI deployed the old nlu router. Full experiments<->staging audit run; all core files now identical
 - health: brain key + legacy nlu alias (one release); deploy assert brain-aware
 - analytics: owner approved self-hosted counter during plan review (deferred — build after org page ships)
+
+## 2026-09-17 — Board motion v3: close-bug root fix + full /l/ content parity (owner feedback)
+- Owner: could not close the panel; panel floated over the board; content far below the /l/ page
+- ROOT CAUSE: closeDetail removed the frozen fixed-position panel only in an onfinish guarded by detailGen — any state change mid-retreat skipped removal forever → invisible click-blocking overlay. Fix: panel reparents to <body> with pointer-events:none on freeze, removal is unconditional (timeout 450ms failsafe + killStrayPanels sweep on every open/render)
+- Panel content now mirrors SSR /l/{id} 1:1: lmeta line (vertical · date · price · location), spots-left, full description, tag chips, ratings line, escrow note w/ refund window, 💬 book CTA + 📅 .ics link, organizer url, 'More from this organizer' switcher (in-board switchDetail) — reuses .ldetail classes so shared style.css renders panel = SSR page
+- Panel is strictly in flow (pushes rows); only the retreat animation floats, pointer-transparent, unconditionally removed
+- Verified: wedge sequence (open→Esc→immediate reopen→Esc) clean, no stray .detail-panel, board interactive; content parity vs /l/even-1 confirmed; make test ALL PASSED (E2E escrow HELD)
