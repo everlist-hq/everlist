@@ -859,6 +859,8 @@ def _openapi_spec():
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (WAIVED) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
+            "/mcp": {"post": op("Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the six everlist_* tools", "discovery",
+                                note="thin adapter onto this same REST contract; auth = X-Hub-Token header or per-call token argument")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
                                   note="acct- principals refused; accounts use /accounts/login")},
             "/accounts/signup": {"post": op("Create account (PoW-gated; keypair or legacy code)", "accounts")},
@@ -996,6 +998,10 @@ class Handler(BaseHTTPRequestHandler):
                                   "listings": "/listings", "book": "POST /book",
                                   "bookings": "/bookings", "orders": "/orders (merchant view, list token)",
                                   "ledger": "/ledger",
+                                  "mcp": {"endpoint": "/mcp", "protocol": "MCP (JSON-RPC 2.0 over HTTP POST)",
+                                          "tools": ["everlist_contract", "everlist_verticals", "everlist_search",
+                                                    "everlist_listing", "everlist_book", "everlist_booking"],
+                                          "auth": "same X-Hub-Token as REST (header or token argument); the MCP layer holds no logic of its own"},
                                   "add_listing": "POST /listings",
                                   "premium": {"endpoint": "/premium/events", "protocol": "x402",
                                                "status": ("TESTNET - real EIP-3009 signature verification (eth-account), no on-chain settlement yet (C3b)" if PAY_MODE == "testnet" else "SIMULATED - stub verification, no real settlement (C3a = real EIP-3009 on base-sepolia)")}},
@@ -1425,6 +1431,14 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw) if raw.strip() else {}
         except Exception as ex:
             return self._json(400, {"error": str(ex)})
+        if path == "/mcp":
+            # Phase D: MCP (Model Context Protocol) face - JSON-RPC 2.0 over
+            # HTTP, thin loopback adapter onto this hub's own REST contract.
+            # No logic of its own: auth/rate-limit/validation all live in the
+            # REST layer and apply to every tool call unchanged.
+            import mcp as _mcp
+            st, body, extra = _mcp.handle(self, data, globals().get("_MCP_HUB_PORT", PORT))
+            return self._json(st, body, extra_headers=extra or {})
         if path == "/access":
             # H5: per-source backstop — token minting must not be free (counts
             # every attempt, before validation)
@@ -2707,6 +2721,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    globals()["_MCP_HUB_PORT"] = port  # Phase D: MCP loopback target = the port we actually serve
     # H4: single-instance guard. Two hubs sharing one state.json on different
     # ports would interleave writes and corrupt it (the Makefile port guard
     # cannot catch same-state-different-port starts). Take a non-blocking
