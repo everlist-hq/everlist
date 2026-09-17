@@ -653,27 +653,38 @@ function closeDetail(viaPop) {
   // capture BEFORE-positions while the panel still holds the row open
   const before = new Map();
   Array.from(grid.children).forEach((c) => { if (c !== panel) before.set(c, c.getBoundingClientRect()); });
-  // freeze the panel OUT of the grid: the board closes immediately and can
-  // never be blocked by it — the panel keeps floating during its retreat
+  // freeze the panel OUT of the grid — in DOCUMENT coordinates (absolute,
+  // not fixed) so page scroll during the retreat keeps it glued to the hole
   const pr = panel.getBoundingClientRect();
-  panel.style.position = "fixed";
-  panel.style.left = pr.left + "px"; panel.style.top = pr.top + "px";
-  panel.style.width = pr.width + "px"; panel.style.height = pr.height + "px";
-  panel.style.margin = "0"; panel.style.zIndex = "40";
+  const sx = window.scrollX || 0, sy = window.scrollY || 0;
+  panel.style.position = "absolute";
+  panel.style.left = (pr.left + sx) + "px";
+  panel.style.top = (pr.top + sy) + "px";
+  panel.style.width = pr.width + "px";
+  panel.style.height = pr.height + "px";
+  panel.style.boxSizing = "border-box";   /* rect.width == style.width exactly */
+  panel.style.margin = "0";
+  panel.style.zIndex = "40";
   panel.style.pointerEvents = "none";
   document.body.appendChild(panel);
   // refill the hole: the card never left, it just un-dims (CSS transition)
   card.classList.remove("ghost");
-  requestAnimationFrame(() => {
-    // everyone slides back up into the closed row (transform-only)
-    Array.from(grid.children).forEach((c) => {
-      const f = before.get(c);
-      if (f) slideBack(f, c.getBoundingClientRect(), c);
-    });
+  // hole FINAL resting rect — measured BEFORE any slide transform runs.
+  // getBoundingClientRect includes transforms: measuring after the slides
+  // start would target the animated START position and mis-dock by a row.
+  const hole = card.getBoundingClientRect();
+  // board closes NOW and every compensating slide starts in THIS task, so
+  // the first painted frame is already the sliding state (no 1-frame jump)
+  Array.from(grid.children).forEach((c) => {
+    const f = before.get(c);
+    if (f) slideBack(f, c.getBoundingClientRect(), c);
+  });
+  if (REDUCE()) {
+    panel.remove();
+  } else {
     // fade FAST first (half gone by 40% of the run), then shrink into the
-    // card — nearly invisible before it approaches card size: no flash
-    const hole = card.getBoundingClientRect();
-    if (REDUCE()) { panel.remove(); return; }
+    // hole's FINAL position — same 340ms/easing as the board slide, so the
+    // panel and the cards land together, pixel-exact
     const frames = [
       { transform: "none", opacity: 1, offset: 0 },
       { transform: "none", opacity: 0.5, offset: 0.4 }
@@ -684,13 +695,13 @@ function closeDetail(viaPop) {
     } else {
       frames.push({ transform: "translateY(8px) scale(.97)", opacity: 0 });
     }
-    panel.animate(frames, { duration: 320, easing: EASE });
-    // unconditional cleanup: the floating panel can never outlive its exit
-    setTimeout(() => panel.remove(), 340);
-  });
+    panel.animate(frames, { duration: 340, easing: EASE });
+  }
+  // unconditional cleanup: the floating panel can never outlive its exit
+  setTimeout(() => panel.remove(), 360);
   if (!viaPop && history.state && history.state.detail) history.back();
-  // keep the hole in view so the dock-back animation is always visible
-  card.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
+  // NOTE: no scrollIntoView here — scrolling during the retreat moves the
+  // hole relative to the frozen panel and was a prime glitch source
 }
 
 window.addEventListener("popstate", () => {
