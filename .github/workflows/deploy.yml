@@ -41,4 +41,4 @@ jobs:
         run: |
           sleep 3
           curl -fsS https://everlist.network/api/health | tee /tmp/health.json
-          python3 -c 'import json;d=json.load(open("/tmp/health.json"));assert d.get("nlu",{}).get("configured"),"nlu not configured";print("hub ok, nlu configured")'
+          python3 -c 'import json;d=json.load(open("/tmp/health.json"));assert (d.get("brain",{}) or d.get("nlu",{})).get("configured"),"brain not configured";print("hub ok, brain configured")'
