@@ -899,3 +899,23 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
   SENT-OK to owner's address — owner to confirm inbox placement
 - deploy.sh: fresh installs now opt-in email-capable (RESEND_SMTP_PASS secret);
   existing installs keep their env file (pushed c4c724e)
+
+## 2026-09-17 — Board v4: one-click full detail + transform-only morphs
+- Owner call: no half/full detail stages — clicking a card (or its details link) opens the FULL /l/{id} detail panel directly. Peek-expand removed (`.card.open` CSS + JS deleted).
+- Lag fix: open/close morphs are now transform-only (translate+scale from/to the card hole) — GPU-composited, zero per-frame layout, so closing tall panels is smooth.
+- Fixed details-link open/close race: merged the two grid click listeners into one (second listener closed what the first opened).
+- Panel switching is one FLIP step (no collapse-then-reexpand); switches use replaceState to keep the back stack clean.
+- Verified: make test ALL PASSED (2x, escrow E2E HELD); live 8804: one-click full detail, details link, close via x, board clean after.
+
+## 2026-09-17 (late) — Email rebrand: professional multipart templates (owner request)
+- emailkit.py: branded HTML+text multipart (site palette, table layout, inline
+  styles), proper From/Date/Message-ID/List-Id, RFC 2369 + 8058 one-click
+  unsubscribe headers; 6 templates (booking x4 event/role + verify/recover
+  with big mono code block); titles escaped (XSS-safe)
+- app.py: _send_email MIME-aware (log format kept for suites), _notify_booking
+  onto templates (refunded->cancelled owner mapping fixed), branded code mails,
+  signed account-scoped /accounts/notify/unsubscribe (GET landing + POST
+  one-click), OpenAPI entries; caught+fixed HUB_BOOKING_KEY->BOOKING_KEY
+  NameError and hmac scope pre-push (gate would have silently swallowed it)
+- test_emailkit.py (41 checks) in gate; notify suite 15/15; gate ALL PASSED;
+  CI green 5dfd4be; 6 live previews sent to owner inbox for approval
