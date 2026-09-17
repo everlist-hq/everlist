@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import sys
 from datetime import datetime as _dt
 
 from cryptography.hazmat.primitives import serialization as _ser
@@ -213,6 +214,7 @@ _HARD_CAP = 12      # never flood the chat with more full cards at once
 _INDEX_CAP = 20     # index lines shown before pointing at refinement
 _PREVIEW_CARDS = 3  # full cards attached under a long index
 _LAST_RESULTS: dict[str, list] = {}  # per-sender stash for '3' / '2-6' / 'all' follow-ups
+_LAST_SEARCH: dict[str, dict] = {}   # Brain v2: last search spec per sender (q + filters)
 
 
 def _weekday(date_s: str) -> str | None:
@@ -1218,7 +1220,12 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                 "or 'find me a free yoga class'.")
     if len(_LAST_RESULTS) > 500:
         _LAST_RESULTS.clear()
+        _LAST_SEARCH.clear()
     _LAST_RESULTS[sender] = listings
+    _LAST_SEARCH[sender] = {
+        "q": " ".join(words) if words else "",
+        "filters": {**({"free": True} if free else {}),
+                    **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()}}}
     n = len(listings)
     head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
     tail = "\nTo book one, say 'book <n>' - $0 listings book without payment."
@@ -1267,18 +1274,8 @@ _HELP = (
 )
 
 
-# Boundary reply for messages the router affirmatively classifies as NOT an
-# EverList request. The chat has one job: real-world listings. It never
-# role-plays, answers general knowledge, or discusses anything outside EverList.
-_OFFTOPIC = (
-    "I can't help with that — I only do EverList: finding, booking, and listing "
-    "real-world things (events, classes, services, food, gigs).\n"
-    "Tell me what you're looking for — e.g. 'free yoga this weekend' or 'jazz "
-    "in berlin' — or say 'help' to see everything I can do."
-)
-
-# Identity questions are not off-topic — they are about this site. Answer them
-# warmly and steer straight back to the one job (deterministic, no LLM).
+# Identity intro — handed out by the deterministic fast path in handle_text
+# and by brain.respond (identity is site meta, never off-topic).
 _WHOAMI = (
     "I'm the EverList assistant. I run this marketplace: I find listings, book "
     "them with escrow-protected payment, and list your own offerings — in one "
@@ -1287,43 +1284,223 @@ _WHOAMI = (
     "an account. 'help' shows everything."
 )
 
-# Deterministic chit-chat screen (C9d-hardening): catches pure conversation
-# EVEN when the LLM router is unavailable (its fail-open path would otherwise
-# run a confusing keyword search on 'tell me a joke'). EverList-shaped text
-# (any listing intent below) always skips this screen and goes to the router —
-# the fail-open law for real searches is unchanged.
-_OFFTOPIC_RX = re.compile(
-    r"\b(joke|jokes|story|poem|riddle|weather|forecast|horoscope|capital of|"
-    r"president|prime minister|who won|score of|stock price|translate|"
-    r"how are you|how's it going|what time is it|what.?s the time|"
-    r"what.?s the date|today.?s date|solve|homework|essay)\b", re.I)
-_EVERLIST_RX = re.compile(
-    r"\b(search|find|book|booking|list|listing|price|cost|escrow|refund|cancel|"
-    r"confirm|signup|login|my-bookings|my listings|yoga|jazz|sushi|pizza|class|"
-    r"event|concert|workshop|market|tour|repair|cleaning|massage|ticket)\b", re.I)
-_OFFTOPIC_MAXLEN = 120  # long, specific texts are real queries — never screened
+# ---- Brain v2 executors (owner call 2026-09-16) --------------------------
+# brain.py decides WHAT to do (one validated JSON action per turn); these
+# functions DO it and own every fact: hub data, prices, weather numbers, nav
+# tokens, policy text. The LLM never renders listings (SPEC: chatlib is the
+# only JSON-to-sheet translator) and never writes declines or money moments.
+
+_NAV_TOKEN = "[[nav:%s]]"
+
+_ESCROW_EXPLAINER = (
+    "✪ How escrow works: when you book a paid listing, your money is locked in "
+    "escrow — the organizer can see it's there but can't touch it.\n"
+    "It's released to them after the event ends, and every listing shows its "
+    "refund window before you book. Say 'search' to find something worth booking."
+)
 
 
-def _boundary_or_none(text: str):
-    """Return a fixed reply for affirmed chit-chat, or None to continue the
-    normal flow. Deterministic (no LLM): works during router flakes.
-    Identity questions get the branded intro; everything else the boundary."""
-    t = text.strip()
-    if len(t) > _OFFTOPIC_MAXLEN or _EVERLIST_RX.search(t):
+def _fee_reply(hub_url: str) -> str:
+    """Fee transparency (deterministic, manifest-grounded)."""
+    try:
+        m = _hub_get(hub_url, "/.well-known/agent-hub.json")
+        declared = m.get("payments", {}).get("hub_fee", m.get("fee"))
+        return (
+            "EverList hubs declare their fee openly in the manifest"
+            + (f": {declared}." if declared is not None else ".")
+            + " A public ledger records every transaction, and an independent"
+            " conformance checker verifies declared vs actual. No hidden fees."
+        )
+    except Exception:
+        return "The hub manifest is unreachable right now — try again shortly."
+
+
+def nav_reply(hub_url: str, target: str, sender: str) -> str:
+    """Deterministic site navigation (brain action 'nav').
+    home: clear the sender's search state so the board shows all listings;
+    dashboard: point at the Bookings tab; results: replay the stashed cards."""
+    t = (target or "home").strip().lower()
+    if t not in ("home", "dashboard", "results"):
+        t = "home"
+    if t == "home":
+        _LAST_RESULTS.pop(sender, None)
+        _LAST_SEARCH.pop(sender, None)
+        return (_NAV_TOKEN % "home") + (
+            "🔎 The whole board is back — every live listing is up.\n"
+            "Tell me what you feel like — 'jazz tonight', 'free yoga', 'sushi' — and I'll pull them out for you.")
+    if t == "dashboard":
+        return (_NAV_TOKEN % "dash") + (
+            "🔑 Your bookings live in the Bookings tab — just opened it for you.\n"
+            "In chat you can also say 'my-bookings' anytime.")
+    if _LAST_RESULTS.get(sender):
+        return (_NAV_TOKEN % "results") + _show_results(hub_url, sender, "all")
+    return (_NAV_TOKEN % "home") + _smart_search(hub_url, "search", sender)
+
+
+def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
+    """Execute a brain search/refine action through the deterministic core.
+    Builds a canonical command from validated fields (refine merges onto the
+    sender's last search spec), then reuses _smart_search for execution,
+    rendering and stash bookkeeping. Bare 'cheaper' refinements honestly
+    re-sort by price instead of inventing a budget."""
+    q = str(act.get("q") or "").strip().lower()
+    q = re.sub(r"[^\w\s-]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()[:40]
+    f = act.get("filters") or {}
+    spec = {"q": q, "filters": {}}
+    try:
+        if f.get("free") is True:
+            spec["filters"]["free"] = True
+        for k in ("max_price", "min_price"):
+            try:
+                v = float(f[k])
+            except (TypeError, ValueError):
+                continue
+            if 0 <= v <= 1_000_000:
+                spec["filters"][k] = v
+        for k in ("from", "to"):
+            v = str(f.get(k) or "")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                try:
+                    _dt.strptime(v, "%Y-%m-%d")
+                    spec["filters"][k] = v
+                except ValueError:
+                    pass
+        if f.get("sort") in ("price", "date"):
+            spec["filters"]["sort"] = f["sort"]
+    except Exception:
+        spec = {"q": q, "filters": {}}
+    # refine: merge onto the last search spec (only provided fields override)
+    if act.get("refine") and _LAST_SEARCH.get(sender):
+        last = _LAST_SEARCH[sender]
+        if not spec["q"]:
+            spec["q"] = last.get("q") or ""
+        for k, v in (last.get("filters") or {}).items():
+            spec["filters"].setdefault(k, v)
+        if not any(k in spec["filters"] for k in ("max_price", "min_price", "free")):
+            # bare 'actually cheaper': honest re-sort, no invented budget
+            spec["filters"]["sort"] = "price"
+    parts = ["search"]
+    if spec["q"]:
+        parts.append(spec["q"])
+    fl = spec["filters"]
+    if fl.get("free"):
+        parts.append("free")
+    if "max_price" in fl:
+        parts.append("under %g" % fl["max_price"])
+    if "min_price" in fl:
+        parts.append("over %g" % fl["min_price"])
+    if fl.get("from"):
+        parts.append("from " + fl["from"])
+    if fl.get("to"):
+        parts.append("until " + fl["to"])
+    if fl.get("sort") == "price":
+        parts.append("cheapest")
+    elif fl.get("sort") == "date":
+        parts.append("soonest")
+    say = str(act.get("say") or "").strip()
+    say = re.sub(r"https?://\S+|[*_`~#>\[\]|]", "", say).strip()
+    out = _smart_search(hub_url, " ".join(parts), sender)
+    if say and len(say) <= 160:
+        return say + "\n" + out
+    return out
+
+
+_WEATHER_RX = re.compile(
+    r"\b(weather|rain|temperature|forecast|sunny|raining|cold|hot)\b", re.I)
+_FEEQ_RX = re.compile(r"\bfees?\b|\bcommission\b", re.I)
+_ESCROWQ_RX = re.compile(r"\bescrow\b|\brefund\b|\bmoney back\b|\bdeposit\b|\bpayment\b", re.I)
+
+
+def _http_json(url: str, timeout: float = 5.0):
+    """Tiny GET->dict helper for external (non-hub) JSON APIs."""
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                              "User-Agent": "everlist-chat/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _weather_reply(hub_url: str, sender: str, text: str):
+    """Weather FOR a listing the user is looking at (owner-approved
+    2026-09-16). Grounded: matches a stashed listing by title overlap, then
+    pulls a real forecast (Open-Meteo, no key) for its date + location.
+    Returns None when there is no listing context to anchor on."""
+    results = _LAST_RESULTS.get(sender) or []
+    if not results:
         return None
-    low = t.lower().strip("?!. ")
-    if low in ("who are you", "what are you", "who r u", "what is this",
-               "what is everlist", "what's everlist", "who are you?"):
-        return _WHOAMI
-    if _OFFTOPIC_RX.search(t):
-        return _OFFTOPIC
-    # C9g: math gate — pure arithmetic messages or explicit math questions.
-    # fullmatch keeps range-style searches ('party for 4-6 people') safe.
-    if re.fullmatch(r"[\d\s+\-*/x().%^]+", low) and re.search(r"\d\s*[-+*/x%^]\s*\d", low):
-        return _OFFTOPIC
-    if re.match(r"^(what(?:'| i)s|what is|how much is|calculate|compute)\s+[\d(]", low):
-        return _OFFTOPIC
-    return None
+    toks = set(re.findall(r"[a-z0-9']+", (text or "").lower()))
+    best, best_score = None, 0
+    for i, l in enumerate(results):
+        title_toks = set(re.findall(r"[a-z0-9']+", str(l.get("title") or "").lower()))
+        score = len(title_toks & toks)
+        if score > best_score:
+            best, best_score = (i, l), score
+    if not best:
+        return None
+    i, l = best
+    date = str(l.get("date") or "")
+    loc = str(l.get("location") or "").strip()
+    title = str(l.get("title") or "that event")
+    if not loc:
+        return None
+    try:
+        d = _dt.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    today = _dt.now().date()
+    if d < today:
+        return None
+    if (d - today).days > 15:
+        return ("The forecast for '%s' is too far out — forecasts reach ~16 days. "
+                "Its date and place are on its card." % title)
+    try:
+        geo = _http_json("https://geocoding-api.open-meteo.com/v1/search?name="
+                         + urllib.parse.quote(loc) + "&count=1")
+        g = ((geo or {}).get("results") or [None])[0]
+        if not g:
+            return ("I couldn't locate '%s' on the map for a forecast — the card "
+                    "still shows its date and place." % loc)
+        fc = _http_json(
+            "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
+            "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+            "&start_date=%s&end_date=%s&timezone=auto"
+            % (g.get("latitude"), g.get("longitude"), date, date))
+        dd = (fc or {}).get("daily") or {}
+        tmax = (dd.get("temperature_2m_max") or [None])[0]
+        tmin = (dd.get("temperature_2m_min") or [None])[0]
+        pp = (dd.get("precipitation_probability_max") or [None])[0]
+        if tmax is None:
+            return None
+        rng = ("%d" % round(tmin)) if (tmin is None or round(tmin) == round(tmax)) \
+            else ("%d to %d" % (round(tmin), round(tmax)))
+        line = "🌦 '%s' on %s in %s: %s°C" % (title, date, loc, rng)
+        if pp is not None:
+            line += ", %d%% chance of rain" % int(pp)
+        line += (".\nThat's spot %d from your last search — say 'book %d' and the "
+                 "money stays in escrow until the event ends." % (i + 1, i + 1))
+        return line
+    except Exception:
+        return "I couldn't fetch the forecast just now — try again in a moment."
+
+
+def brain_meta(hub_url: str, sender: str, text: str, say: str) -> str:
+    """Execute a brain meta action. Policy questions (fees, escrow, refunds,
+    payments) always get deterministic template answers — the LLM may never
+    state a policy. Weather-at-a-listing is grounded in the stash + a real
+    forecast. Everything else: the sanitized LLM line (generic site truths)."""
+    low = (text or "").lower()
+    if _FEEQ_RX.search(low):
+        return _fee_reply(hub_url)
+    if _ESCROWQ_RX.search(low):
+        return _ESCROW_EXPLAINER
+    if _WEATHER_RX.search(low):
+        out = _weather_reply(hub_url, sender, text)
+        if out:
+            return out
+        return (say or "").strip() or (
+            "Tell me which event you mean — run a search first, then ask e.g. "
+            "'weather at the jazz night' and I'll pull its date, place and forecast.")
+    return (say or "").strip() or _HELP
 
 
 def last_results(sender: str, cap: int = 48) -> list:
@@ -1397,7 +1574,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         r"(show (me |us )?|take (me |us )?|back (to |on )?)*(the )?(main |home |start |front )?(page|screen|board|homepage)"
         r"( again| once more| please)?|back to (all|everything|start)|reset( the)? (board|page|screen)", low):
         _LAST_RESULTS.pop(sender, None)
-        return ("🔎 The whole board is back — every live listing is up.\n"
+        _LAST_SEARCH.pop(sender, None)
+        return ("[[nav:home]]🔎 The whole board is back — every live listing is up.\n"
                 "Tell me what you feel like — 'jazz tonight', 'free yoga', 'sushi' — and I'll pull them out for you.")
 
     # --- dismissals & negations (C9f): don't keyword-search feelings.
@@ -1603,31 +1781,22 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     if low in ("hi", "hello", "hey", "help", "menu", "commands"):
         return _HELP
 
-    # --- fallback: treat the whole text as a search query
-    # C9/NLU: free text may be translated by the optional LLM layer into a
-    # validated canonical search command. Three outcomes, one law preserved:
-    #   cmd non-empty -> affirmed search, run it (deterministic core executes).
-    #   cmd == ''     -> router AFFIRMED this is not an EverList request ->
-    #                    clean boundary; the chat never answers off-topic.
-    #   cmd is None   -> indeterminate (no key / API error / empty content) ->
-    #                    fail-open: keep the deterministic keyword search, so
-    #                    'free yoga this weekend' still works without any LLM.
-    # C9d-hardening: BEFORE the router, a deterministic chit-chat screen
-    # declines pure conversation even during router flakes (the fail-open
-    # path would otherwise run a confusing keyword search on 'tell me a
-    # joke'). EverList-shaped text always skips the screen (fail-open law
-    # for real searches is unchanged).
-    bound = _boundary_or_none(text)
-    if bound is not None:
-        return bound
+    # --- fallback: Brain v2 (owner call 2026-09-16) --------------------------
+    # One LLM turn classifies the message into a validated action
+    # (search/refine/nav/ack/meta/off_topic); deterministic executors above
+    # do the doing and own every fact. Fail-open law unchanged: brain
+    # unavailable (no key / API error / bad JSON / rate-capped / disabled via
+    # EVERLIST_BRAIN_DISABLED) -> deterministic keyword search, so real
+    # searches never die with the LLM.
     try:
-        import nlu
+        import brain
     except ImportError:
-        nlu = None
-    if nlu is not None:
-        cmd = nlu.translate(text, sender=sender)
-        if cmd:
-            return handle_text(hub_url, cmd, sender=sender)
-        if cmd == "":
-            return _OFFTOPIC
+        brain = None
+    if brain is not None:
+        try:
+            out = brain.respond(hub_url, text, sender, chatlib=sys.modules[__name__])
+        except Exception:
+            out = None  # fail-open law: brain must never take the chat down
+        if out is not None:
+            return out
     return handle_text(hub_url, "search " + text.strip(), sender=sender)

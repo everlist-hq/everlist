@@ -836,3 +836,11 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - Ghost hole: hover-lift disabled while holed (dashed slot shouldn't rise); panel got depth (shadow) + scroll-margin breathing room
 - Dead code removed: gridPitch, cssText-after-remove, no-op WAAPI un-dim (CSS transition covers it), unused handler merged into one ordered grid click handler
 - Full gate: make test ALL PASSED (E2E escrow HELD); live re-verified on 8804 (open/close/back/URL); shipped via CI to everlist.network
+
+## 2026-09-17 — Phase A: organizer public pages /org/{owner} (+ critical chat fix)
+- /org/{owner}: pure projection over ALREADY-public catalog (no account join -> no new probe surface); strict owner charset, honest 404 (no empty shells); linked from detail pages ('More from this organizer') + sitemap
+- 7 new suite checks (org 200, listings, privacy note, unknown 404, bad-charset 404, cross-link, sitemap); suite 122/122
+- CRITICAL FIX caught by the gate: chatlib brain call used sys.modules without 'import sys' -> every brain-path message raised NameError -> instant 502, fail-open law violated. Fixed import + wrapped brain.respond in try/except (fail-open at call site). Root cause of 2 then 5 gate failures was THIS, not provider quota (0.002s 502 = local raise)
+- DRIFT FOUND: entire Brain v2 (brain.py + chatlib block + webchat nav/health) existed only in experiments working copy, never committed — CI deployed the old nlu router. Full experiments<->staging audit run; all core files now identical
+- health: brain key + legacy nlu alias (one release); deploy assert brain-aware
+- analytics: owner approved self-hosted counter during plan review (deferred — build after org page ships)

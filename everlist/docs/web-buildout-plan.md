@@ -275,4 +275,13 @@ Hub keeps: `/search`, `/book`, `/listings`, `/ledger`, `/registry`, `/verticals`
 ~8–12 focused sessions for W0–W5 (the ungated buildout), each session ending gate-green and deployable. Gated phases (W6/W7) sized separately after owner GO.
 ## W5 completion (2026-09-16)
 
-Shipped: /how explainer (honest covers/does-not-cover + SIMULATED banner from manifest `payments.mode`), /agents page (real endpoints + SDK flow), per-vertical OG images (FLUX), PWA + light/dark + a11y, Caddy matcher repaired+extended, gate-up state isolation. **Open stragglers from the W5 tag:** organizer public page `/org/{account}`, per-listing "book with your agent" snippet (needs hub account-page data or a public account-listings endpoint). CI: tests + deploy green on `4a890ef`.
+Shipped: /how explainer (honest covers/does-not-cover + SIMULATED banner from manifest `payments.mode`), /agents page (real endpoints + SDK flow), per-vertical OG images (FLUX), PWA + light/dark + a11y, Caddy matcher repaired+extended, gate-up state isolation. CI: tests + deploy green on `4a890ef`.
+
+### Post-plan approved work (2026-09-16/17)
+
+- OG share images: owner rejected per-vertical scenes (misrepresent real listings); ONE approved nano-banana-pro brand card live everywhere (`5a4e0b2`)
+- **Phase A DONE: organizer public pages `/org/{owner}`** — pure projection over already-public catalog (no account join), strict charset, honest 404s, detail-page cross-links, sitemap; suite 122/122
+- Owner REJECTED (do not resurface): per-listing "book with your agent" snippet, status page
+- Analytics: self-hosted counter APPROVED by owner (build next; no cookies, no third parties)
+- CRITICAL FIX: chatlib brain call missing `import sys` -> NameError 502 on every brain-path message (fail-open law violated); fixed + wrapped; Brain v2 drift (experiments-only, never committed) found by full audit and synced
+- Next per owner-approved plan: Phase B email (dry-run until SMTP creds), Phase C jobs schema, Phase D MCP (owner confirmed GO); real-money rails stay strategy-gated

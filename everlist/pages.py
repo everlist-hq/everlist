@@ -304,7 +304,18 @@ def detail_html(l, hub=None):
           + esc(l.get("url")) + "</a></div>")
     a("<div class=\"lnote\">No account needed to look. Booking happens in the chat &mdash; the same brain our API agents use.</div>")
     a("</article>")
-    rel = [x for x in all_listings(hub) if str(x.get("id")) != lid][:3]
+    own = str(l.get("owner") or "")
+    sibs = [x for x in all_listings(hub) if str(x.get("id")) != lid and str(x.get("owner") or "") == own]
+    rel = [x for x in all_listings(hub) if str(x.get("id")) != lid and str(x.get("owner") or "") != own][:3]
+    if sibs:
+        a("<section class=\"lrel\"><h2>More from this organizer</h2>"
+          "<div class=\"lmeta\"><a href=\"/org/" + urllib.parse.quote(own, safe="") + "\">All listings by " + esc(own) + " &rarr;</a></div>"
+          "<div class=\"lgrid\">")
+        for x in sibs[:3]:
+            xm = [x.get("date") or "any date", _fmt_price(x.get("price")), x.get("location") or ""]
+            a("<a class=\"lcard\" href=\"/l/" + esc(x.get("id")) + "\"><div class=\"lmeta\">"
+              + " &middot; ".join(esc(m) for m in xm if m) + "</div><h3>" + esc(x.get("title") or "Untitled") + "</h3></a>")
+        a("</div></section>")
     if rel:
         a("<section class=\"lrel\"><h2>More on EverList</h2><div class=\"lgrid\">")
         for x in rel:
@@ -312,6 +323,67 @@ def detail_html(l, hub=None):
             a("<a class=\"lcard\" href=\"/l/" + esc(x.get("id")) + "\"><div class=\"lmeta\">"
               + " &middot; ".join(esc(m) for m in xm if m) + "</div><h3>" + esc(x.get("title") or "Untitled") + "</h3></a>")
         a("</div></section>")
+    a("</div></body></html>")
+    return ("\n".join(h) + "\n").encode("utf-8")
+
+
+def org_page_owners(hub=None):
+    """A-phase: distinct owners with >=1 active public listing (sitemap input)."""
+    seen = []
+    for l in all_listings(hub):
+        o = str(l.get("owner") or "")
+        if o and o not in seen:
+            seen.append(o)
+    return seen
+
+
+def org_html(owner, hub=None):
+    """A-phase /org/{owner}: a pure projection over ALREADY-public catalog data.
+    No account join: the owner principal is shown as-is; anything not in the
+    public catalog (email, account ids, bookings) does not exist on this page.
+    Returns None when the owner has no active public listing (honest 404,
+    no empty shells)."""
+    owner = str(owner)
+    mine = [l for l in all_listings(hub) if str(l.get("owner") or "") == owner]
+    if not mine:
+        return None
+    h = _page_head(owner + " \u2014 organizer on EverList",
+                   "Listings by " + owner + " on EverList \u2014 bookable in one chat message.",
+                   "/org/" + owner)
+    a = h.append
+    a("<!doctype html>")
+    a("<html lang=\"en\"><head>")
+    a("<meta charset=\"utf-8\">")
+    a("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    a("<title>" + esc(owner) + " \u2014 EverList organizer</title>")
+    a("<meta name=\"description\" content=\"Listings by " + esc(owner) + " on EverList.\">")
+    a("<link rel=\"canonical\" href=\"" + BASE + "/org/" + esc(owner) + "\">")
+    a("<meta property=\"og:type\" content=\"profile\">")
+    a("<meta property=\"og:title\" content=\"" + esc(owner) + " \u2014 EverList organizer\">")
+    a("<meta property=\"og:url\" content=\"" + BASE + "/org/" + esc(owner) + "\">")
+    a("<meta property=\"og:image\" content=\"" + BASE + "/og/default.jpg\">")
+    a("<meta name=\"twitter:card\" content=\"summary_large_image\">")
+    a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
+    a("<link rel=\"stylesheet\" href=\"/style.css\">")
+    a("</head><body><div class=\"page ldetail\">")
+    a("<header class=\"top\"><div class=\"brand\"><img src=\"/favicon.svg\" alt=\"\" width=\"30\" height=\"30\"><span>EverList</span></div>"
+      "<nav class=\"nav\"><a href=\"/\">Browse</a></nav></header>")
+    a("<article class=\"lmain\">")
+    a("<div class=\"lmeta\">organizer</div>")
+    a("<h1>" + esc(owner) + "</h1>")
+    a("<div class=\"lmeta\">" + str(len(mine)) + " active listing" + ("" if len(mine) == 1 else "s") + "</div>")
+    a("<div class=\"lnote\">This page is a window over the public catalog: only active public listings appear here \u2014 nothing else is known or shown about the organizer.</div>")
+    a("</article>")
+    a("<section class=\"lrel\"><h2>Listings</h2><div class=\"lgrid\">")
+    for x in mine:
+        xm = [x.get("vertical") or "", x.get("date") or "any date", _fmt_price(x.get("price")), x.get("location") or ""]
+        rb = ratings_bits(x)
+        rline = ("<div class=\"lmeta rline\">" + " &middot; ".join(esc(r) for r in rb) + "</div>") if rb else ""
+        a("<a class=\"lcard\" href=\"/l/" + esc(x.get("id")) + "\"><div class=\"lmeta\">"
+          + " &middot; ".join(esc(m) for m in xm if m) + "</div><h3>" + esc(x.get("title") or "Untitled") + "</h3>"
+          + rline + "</a>")
+    a("</div></section>")
+    a("<div class=\"page ldetail\"><div class=\"lnote\">Want your own page like this? List in one chat message at <a href=\"/\">everlist.network</a> \u2014 free during the pilot.</div></div>")
     a("</div></body></html>")
     return ("\n".join(h) + "\n").encode("utf-8")
 
@@ -416,7 +488,8 @@ def ics_body(l):
 
 def sitemap_xml(hub=None):
     urls = ([BASE + "/", BASE + "/transparency", BASE + "/network", BASE + "/how", BASE + "/agents"]
-            + [BASE + "/l/" + str(l.get("id")) for l in all_listings(hub)])
+            + [BASE + "/l/" + str(l.get("id")) for l in all_listings(hub)]
+            + [BASE + "/org/" + urllib.parse.quote(o, safe="") for o in org_page_owners(hub)])
     body = "".join("<url><loc>" + esc(u) + "</loc></url>" for u in urls)
     return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
             "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">" + body + "</urlset>").encode("utf-8")

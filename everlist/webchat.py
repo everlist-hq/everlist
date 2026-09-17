@@ -302,6 +302,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # W5: agent face — manifest, OpenAPI, SDK flow, rules of the road
             return self._send_bytes(200, _pages.agents_html(HUB_URL), "text/html; charset=utf-8", cache="max-age=300")
+        elif path.startswith("/org/"):
+            # A-phase: organizer public page. Pure projection over ALREADY-public
+            # catalog data (no account join -> no new probe surface). Strict
+            # charset so the path can only ever name a catalog owner principal;
+            # unknown/empty owners get the branded 404 (no empty shells).
+            owner = path[len("/org/"):]
+            body404, ctype404 = static_bytes("404.html")
+            if not owner or len(owner) > 128 or not re.fullmatch(r"[A-Za-z0-9._-]+", owner):
+                return self._send_bytes(404, body404, ctype404, cache="no-store")
+            body = _pages.org_html(urllib.parse.unquote(owner), HUB_URL)
+            if body is None:
+                return self._send_bytes(404, body404, ctype404, cache="no-store")
+            return self._send_bytes(200, body, "text/html; charset=utf-8", cache="max-age=600")
         elif path.startswith("/booking/"):
             # W3: participant-gated booking page. The session's server-side
             # token decides visibility; the hub answers an indistinguishable
@@ -384,11 +397,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(st if st else 502, res if st else {"error": "hub unreachable"})
         if path == "/api/health":
             try:
-                import nlu as _nlu
-                nlu_status = _nlu.status()
+                import brain as _brain
+                brain_status = _brain.status()
             except Exception:
-                nlu_status = {"configured": False, "error": "nlu unavailable"}
-            return self.reply(200, {"ok": hub_ok(), "hub": HUB_URL, "nlu": nlu_status})
+                brain_status = {"ok": 0, "errors": 0, "last_error": "brain unavailable",
+                                "configured": False}
+            # 'nlu' is a legacy alias (same dict) kept one release for monitors
+            return self.reply(200, {"ok": hub_ok(), "hub": HUB_URL,
+                                    "brain": brain_status, "nlu": brain_status})
         if path == "/api/listings":
             # Read-only passthrough so the browser can render the Discover grid
             # without a cross-origin call to the hub (CSP connect-src 'self').
@@ -623,7 +639,17 @@ class Handler(BaseHTTPRequestHandler):
             reply = ("I found %d match%s — they're open on the board for you. "
                      "Say 'book <n>' to book one, or tell me what to refine."
                      % (len(results), "" if len(results) == 1 else "es"))
-        return self.reply(200, {"reply": reply, "results": results}, cookie=self.set_sid(sid))
+        # Brain v2 nav: executors may prefix '[[nav:home|dash|results]]' —
+        # strip it from the transcript and hand it to the UI as a real move.
+        nav = None
+        m = re.match(r"\[\[nav:(home|dash|results)\]\]", reply)
+        if m:
+            nav = m.group(1)
+            reply = reply[m.end():].lstrip("\n")
+            if nav in ("home", "results") and results is None:
+                # board resets to default mode; keep the field shape stable
+                results = []
+        return self.reply(200, {"reply": reply, "results": results, "nav": nav}, cookie=self.set_sid(sid))
 
     # ---- W1: account endpoints (session = sid, tokens stay server-side) ----
     def api_login(self):
