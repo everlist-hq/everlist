@@ -87,7 +87,7 @@ try:
     check("yoga findable via search after seeding", st == 200 and len(yoga) == 1, str(st))
     st, res = get(port1, "/listings")
     verts = {l["vertical"] for l in res.get("listings", [])}
-    check("demo spans events + services verticals", verts == {"events", "services"}, str(verts))
+    check("demo spans events + services + jobs verticals", verts == {"events", "services", "jobs"}, str(verts))
     ids1 = sorted(l["id"] for l in res.get("listings", []))
 
     print("== H16: honesty - refuse double-seed ==")

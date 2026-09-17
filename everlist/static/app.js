@@ -115,6 +115,16 @@ async function send(text) {
           }
         }
       }
+      // Brain v2 nav: the chat can move you around the site for real
+      if (data.nav === "dash") {
+        showView(true);
+      } else if (data.nav === "home") {
+        BOARD = null; SIG = "";
+        renderGrid();
+        showView(false);
+      } else if (data.nav === "results" && openDetailCard) {
+        closeDetail(false);
+      }
       const meta = document.createElement("div");
       meta.className = "msg think";
       const m = document.createElement("div");
@@ -868,6 +878,10 @@ function el(tag, cls, text) {
 }
 
 function showView(name) {
+  // normalize legacy boolean callers (true = dashboard, false = browse)
+  // — the Bookings button and brain nav both used booleans.
+  if (name === true) name = "dash";
+  else if (name === false) name = "browse";
   const dash = name === "dash", post = name === "post";
   browseSec.hidden = dash || post;
   const postSec = document.getElementById("post");

@@ -852,9 +852,16 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - Panel is strictly in flow (pushes rows); only the retreat animation floats, pointer-transparent, unconditionally removed
 - Verified: wedge sequence (open→Esc→immediate reopen→Esc) clean, no stray .detail-panel, board interactive; content parity vs /l/even-1 confirmed; make test ALL PASSED (E2E escrow HELD)
 
-## 2026-09-17 — Owner queue: analytics counter + Phase B email notifications
-- Self-hosted page-view counter (owner approved): page stems only (/l/*, /org/*, trust pages, home), no cookies, no third parties, disk-persisted across restarts, totals at GET /api/stats; suite checks are exact-delta (125/125)
-- Phase B: booking notifications ride the existing honest email layer (off|log|smtp) — created -> organizer, released -> buyer, refunded -> both; verified emails only; best-effort outside LOCK (never fails the money flow); unsubscribe line in every mail
-- New: POST /accounts/notify (notify_email true|false, payout-law auth) + chat 'notify off|on'; per-recipient gating caught by own E2E (notify off still mailed buyer) — fixed, 13/13
-- test_notify.py registered in gate (15 checks); full gate ALL PASSED incl. A2A escrow=HELD; parallel-session brain.py (mercury reasoning budget + show/book actions) gate-verified and synced
-- SMTP: dry-run default (HUB_EMAIL_MODE=log); goes live when owner sets HUB_EMAIL_MODE=smtp + creds
+## 2026-09-17 — Brain v2: chat-first intelligence (owner call: mercury + full expansion)
+- MERCURY DIAGNOSED AND WIRED: empty-content failures were a reasoning-token budget problem — mercury-2-5 spends tokens on internal reasoning BEFORE the JSON (measured ~190 on a short prompt); the old 220 budget returned "" with finish_reason=length. Fix: _MAX_TOKENS=1200 + one retry at 2x budget on empty content. Mercury now 14/14 on the intent battery, ~1.9s avg. (Owner was right to insist on mercury.)
+- NEW ACTIONS: show ('tell me more about the second one') and book ('book the first one for Alex') — the reference resolver matches numbers, ordinals, title tokens, and single-result stashes; brain_book re-enters the typed deterministic path (escrow/PoW/account gates untouched)
+- SITE-STATE GROUNDING: last search results injected into the system prompt so 'the second one'/'that jazz thing' resolve to real listings; _resolve_listing shared by book/show/weather
+- NATURAL BOOKING: 'book the first one' no longer hits the typed-command wall — first-token shape check (number/pvt-claim/hyphenated-id) routes natural language to the brain
+- CONVERSATIONAL SEARCH: 'find me something fun this weekend' now reaches the brain (mercury resolves 'this weekend' to dates) instead of the dumb keyword path; _CONV_RX break-out with fail-open fallback
+- INFINITE RECURSION KILLED: the fail-open tail re-entered handle_text('search '+text) which re-matched the conversational break-out when the brain was off → direct _smart_search call instead
+- KEYERROR FILTER WIPE FIXED (found by test_brain): f[k] raised KeyError on missing max_price/min_price, escaping the inner except, wiping ALL filters — 'search yoga free' became 'search yoga'. f.get(k) fixes it
+- app.js: nav tokens act for real (home/dash/results); showView boolean-vs-string bug fixed (Bookings button was dead); wrapper strips nav tokens for Agentverse surfaces
+- RETIRED: nlu.py + test_nlu.py (owner approved full removal); test_brain.py 67/67 covers card format, pagination, book-by-number (transplanted), brain protocol, fail-open, weather grounding, reference resolution, routing laws
+- Gate: make test ALL PASSED (E2E escrow HELD) with EVERLIST_BRAIN_DISABLED=1 hermetic brain gate; live smoke: nav/greeting/identity/search/refine/show/book/ack/meta/declines all correct through chatlib.handle_text
+- Synced to staging (brain/chatlib/webchat/wrapper/app.js/test_brain/Makefile; nlu.py + test_nlu.py removed there too); chat-replies.md amended (Brain v2 owner calls: nav/ack/refine/show/book in-scope, weather-at-listing, brain architecture)
+- Phase C: jobs vertical shipped as C5 community schema (schemas/jobs.json, apply+pay, worker identity, capacity-tracked) + chat wizard branch + 2 demo job seeds; test_jobs.py (10 checks) + h16 updated; gate ALL PASSED

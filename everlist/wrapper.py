@@ -218,6 +218,8 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     except Exception as ex:  # B4: safe envelope even for chatlib bugs
         log.warning("chat failure detail=%s", redact(repr(ex)))
         reply_text = "Sorry — something went wrong on my side. Please try again."
+    # Brain v2 nav tokens are web-UI moves; agents have no board — strip them.
+    reply_text = re.sub(r"^\[\[nav:(?:home|dash|results)\]\]\n?", "", reply_text)
     await ctx.send(sender, ChatMessage([TextContent(type="text", text=reply_text)]))
 
 

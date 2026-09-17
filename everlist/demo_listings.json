@@ -164,6 +164,42 @@
     "history"
    ],
    "url": "https://bauhaustours.example"
+  },
+  {
+   "slug": "barista-shift",
+   "vertical": "jobs",
+   "title": "Barista for one morning shift",
+   "category": "shift",
+   "date": "2026-10-02",
+   "price": 45,
+   "location": "Berlin",
+   "capacity": 2,
+   "description": "Weekend morning shift at a specialty coffee stand (Markthalle Neun). Espresso machine experience helpful; training on our setup included. Paid per shift into escrow, released at end of shift.",
+   "tags": [
+    "barista",
+    "shift",
+    "weekend",
+    "berlin"
+   ],
+   "duration_minutes": 300
+  },
+  {
+   "slug": "market-photographer",
+   "vertical": "jobs",
+   "title": "Photographer for farmers market",
+   "category": "freelance",
+   "date": "2026-10-10",
+   "price": 120,
+   "location": "Vienna",
+   "capacity": 1,
+   "description": "Cover our farmers-market stall (Karmelitermarkt, 8:00-13:00): candid shots for next season's socials. Deliver 20+ edited photos within a week. Escrow releases on delivery.",
+   "tags": [
+    "photography",
+    "freelance",
+    "market",
+    "vienna"
+   ],
+   "duration_minutes": 300
   }
  ]
 }

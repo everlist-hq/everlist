@@ -855,7 +855,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     # H15: vertical is DATA - chat supports events (default) and services; the
     # hub schema (GET /verticals) decides required fields, not chat code.
     vert = str(extra.get("vertical", "events")).strip().lower()
-    if vert not in ("events", "services", "classes"):
+    if vert not in ("events", "services", "classes", "jobs"):
         # C5: community verticals - ask the hub's live registry instead of hardcoding
         try:
             _known = sorted(_hub_get(hub_url, "/verticals")["verticals"].keys())
@@ -863,7 +863,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
         except Exception:
             _extra = []
         _hint = (", plus community verticals: " + ", ".join(_extra)) if _extra else ","
-        return (f"Unknown vertical '{vert}'. Chat supports: events (default), services{_hint}\n"
+        return (f"Unknown vertical '{vert}'. Chat supports: events (default), services, jobs{_hint}\n"
                 "Example:\nlist\nvertical: services\ntitle: Mobile Massage\n"
                 "provider: Serenity Spa\nprice: 30\ncategory: wellness")
     if vert == "classes":
@@ -907,6 +907,26 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             payload["duration_minutes"] = int(str(extra.get("duration_minutes", "")).strip())
         except (TypeError, ValueError):
             pass
+    elif vert == "jobs":  # C5 community vertical via schemas/jobs.json - payload per ITS hub schema (live)
+        try:
+            sch = _hub_get(hub_url, "/verticals")["verticals"]["jobs"]
+        except Exception:
+            return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+        payload = {"vertical": "jobs", "title": title, "price": float(price),
+                   "date": date, "location": location, "source": "chat-agent"}
+        if category:
+            payload["category"] = category
+        payload["capacity"] = cap  # jobs tracks capacity: worker slots
+        try:
+            payload["duration_minutes"] = int(str(extra.get("duration_minutes", "")).strip())
+        except (TypeError, ValueError):
+            pass
+        missing = [f for f in sch["required"] if f not in payload]
+        if missing:
+            return (f"Jobs listings need: {', '.join(missing)}. Example:\n"
+                    "list\nvertical: jobs\ntitle: Barista for one morning\nprice: 45\n"
+                    "date: 2026-10-02\nlocation: Berlin\ncapacity: 2\ncategory: shift\n"
+                    "duration_minutes: 240")
     elif vert == "events":
         payload = {
             "vertical": "events", "title": title, "category": category,

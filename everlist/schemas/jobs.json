@@ -1,0 +1,10 @@
+{
+  "name": "jobs",
+  "description": "Jobs - dated human work: gig shifts, one-off tasks, freelance engagements with a deadline. A listing = a date where a human is needed; capacity = worker slots; booking = apply+pay. Community vertical via the C5 drop-in extension point.",
+  "required": ["title", "price", "capacity", "date", "location"],
+  "optional": ["description", "category", "tags", "url", "duration_minutes"],
+  "categories": ["gig", "shift", "task", "freelance", "event-staff", "delivery", "handwork", "other"],
+  "tracks_capacity": true,
+  "field_types": {"capacity": "positive_int", "date": "nonempty", "duration_minutes": "positive_int"},
+  "booking": {"required": ["worker"], "fields": ["worker", "quantity"], "identity": "worker", "action": "apply+pay"}
+}

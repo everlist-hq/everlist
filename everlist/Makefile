@@ -139,6 +139,7 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		echo "=== Chat help honesty (B10) ==="; \
 		$(PYTHON) test_chat_help.py || exit 1; \
 		echo '=== B-phase booking notifications ==='; $(PYTHON) test_notify.py || exit 1; \
+		echo '=== Phase C jobs vertical ==='; $(PYTHON) test_jobs.py || exit 1; \
 		echo '=== H7 account deletion ==='; $(PYTHON) test_account_deletion.py || exit 1; \
 		echo '=== H9 single-listing fetch ==='; $(PYTHON) test_h9_listing_fetch.py || exit 1; \
 		echo '=== H10 booking status ==='; $(PYTHON) test_h10_booking_status.py || exit 1; \
@@ -163,7 +164,7 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		echo '=== C5 community schemas ==='; $(PYTHON) test_c5_schemas.py || exit 1; \
 		echo '=== C12 payment terms ==='; $(PYTHON) test_c12_payment_terms.py || exit 1; \
 		echo '=== C9 webchat UI ==='; $(VPY) -u test_webchat.py || exit 1; \
-		echo '=== C9 NLU + card format ==='; $(PYTHON) test_nlu.py || exit 1; \
+		echo '=== C9 Brain v2 + card format ==='; EVERLIST_BRAIN_DISABLED=1 $(PYTHON) test_brain.py || exit 1; \
 		echo "=== A2A E2E (isolated gate hub :$(GATE_PORT)) ==="; \
 		$(MAKE) --no-print-directory gate-up >/dev/null || exit 1; \
 		HUB_PORT=$(GATE_PORT) $(VPY) -u test_client.py || exit 1; \
