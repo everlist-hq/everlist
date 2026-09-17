@@ -695,10 +695,16 @@ function closeDetail(viaPop) {
     } else {
       frames.push({ transform: "translateY(8px) scale(.97)", opacity: 0 });
     }
-    panel.animate(frames, { duration: 340, easing: EASE });
+    /* fill BOTH pins the final frame (opacity 0) after the animation ends.
+       WITHOUT it, WAAPI reverts the panel to its natural style (opacity 1,
+       full size) the instant the animation finishes — a 1-2 frame full-panel
+       flash before the removal timer fires. That was the "briefly opens up
+       again" glitch at the very end of the close. */
+    const retreat = panel.animate(frames, { duration: 340, easing: EASE, fill: "both" });
+    retreat.finished.then(() => panel.remove()).catch(() => {});
   }
   // unconditional cleanup: the floating panel can never outlive its exit
-  setTimeout(() => panel.remove(), 360);
+  setTimeout(() => panel.remove(), 400);
   if (!viaPop && history.state && history.state.detail) history.back();
   // NOTE: no scrollIntoView here — scrolling during the retreat moves the
   // hole relative to the frozen panel and was a prime glitch source
