@@ -919,3 +919,9 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
   NameError and hmac scope pre-push (gate would have silently swallowed it)
 - test_emailkit.py (41 checks) in gate; notify suite 15/15; gate ALL PASSED;
   CI green 5dfd4be; 6 live previews sent to owner inbox for approval
+
+## 2026-09-17 (21:33 CEST) — Owner APPROVED the email rebrand (visual review of 6 live previews)
+- Templates are now the production standard for all booking notifications and
+  account verify/recovery mails. No changes requested.
+- Full approved plan complete: A org pages, B real+branded email, C jobs, D MCP.
+  Remaining lane: human pilot outreach (organizers).
