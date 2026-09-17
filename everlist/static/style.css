@@ -125,10 +125,6 @@ body {
   border-radius: 999px; padding: 3px 9px;
 }
 .card .desc { display: none; }
-.card.open { grid-column: span 2; z-index: 1; }
-.card.open .desc { display: block; }
-@media (max-width: 1080px) { .card.open { grid-column: span 2; } }
-@media (max-width: 860px) { .card.open { grid-column: span 1; } }
 /* ---- detail panel: full-row expansion with a ghost hole (W5) ---- */
 .card.ghost {
   border-style: dashed;

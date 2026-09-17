@@ -25,7 +25,6 @@ let busy = false;
 let ALL = [];           // default board: all live listings
 let BOARD = null;       // chat results mode: listing dicts in 'book <n>' order; null = default board
 let SIG = "";           // signature of rendered chat results (skips no-op re-renders)
-let openCard = null;    // currently expanded card element
 
 const TRANSCRIPT_CAP = 50000; /* chars of live transcript (~12k tokens; the
   brain itself is stateless per message, so this bounds the DOM session) */
@@ -406,8 +405,8 @@ if (filters) filters.addEventListener("click", (e) => {
    Owner call (2026-09-16): no card may ever appear or disappear during a
    reflow. Every non-expanding card moves as a rigid translate, including
    corner moves (row+column changes) — one straight line, no opacity tricks.
-   The peek-hero animates its real width/height together with a translate,
-   so text reflows inside a moving box and never overlaps a neighbor. */
+   Transform-only (compositor) — no width/height animation anywhere, so a
+   reflow never touches layout per frame. */
 const EASE = "cubic-bezier(.2,.7,.2,1)";
 const REDUCE = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -422,47 +421,34 @@ function slideBack(f, l, c) {
   );
 }
 
-function animateBoardChange(mutate, hero) {
+function animateBoardChange(mutate) {
   const before = new Map();
   Array.from(grid.children).forEach((c) => before.set(c, c.getBoundingClientRect()));
   mutate();
   Array.from(grid.children).forEach((c) => {
     const f = before.get(c);
     if (!f) return;                 // inserted node: panel animates itself
-    const l = c.getBoundingClientRect();
-    if (hero && c === hero) {
-      const dx = f.left - l.left, dy = f.top - l.top;
-      const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1 ||
-                    Math.abs(f.width - l.width) > 1 || Math.abs(f.height - l.height) > 1;
-      if (!moved || REDUCE()) return;
-      c.animate(
-        [{ transform: "translate(" + dx + "px," + dy + "px)", width: f.width + "px", height: f.height + "px" },
-         { transform: "none", width: l.width + "px", height: l.height + "px" }],
-        { duration: 340, easing: EASE }
-      );
-      return;
-    }
-    slideBack(f, l, c);            // rigid slide for everyone else — incl. corner moves
+    slideBack(f, c.getBoundingClientRect(), c);
   });
 }
 
-/* ---------- detail panel: full-row expansion with a hole ----------
-   "details" expands a full-width panel in the row BELOW the clicked card.
-   Above stays above; same-row neighbors keep their slots (the clicked slot
-   becomes a dashed ghost "hole"); everything below slides down. The panel
-   is IN FLOW: it pushes rows away, it never floats over them. Content
-   mirrors the server-rendered /l/{id} page 1:1 (same classes, same data).
-   Close paths: × button, Escape, click on the hole, click on empty panel
-   background, browser back. On close the panel detaches to <body> and
-   retreats into the hole while the board closes up; removal is
-   unconditional (onfinish + timeout failsafe) so a stuck invisible
-   overlay can never block the board again. A generation counter
-   (detailGen) serializes open/close/switch. The URL mirrors /l/{id} via
-   pushState; /l/{id} stays a real server page for crawlers, no-JS
-   visitors and deep links — in-app we never navigate. */
+/* ---------- detail panel: one click = the full /l/{id} detail ----------
+   Owner call (2026-09-17): clicking a card opens the FULL detail panel
+   directly — no peek stage. The panel is a real full-row grid item that
+   PUSHES rows away; it never floats over them. Content mirrors the
+   server-rendered /l/{id} page 1:1 (same classes, same data). Open/close
+   morphs are transform-only (translate+scale from/to the card's hole
+   rect) — GPU-composited, zero layout per frame, so closing is smooth
+   even on long panels. Close paths: × button, Escape, click on the hole,
+   click on empty panel background, browser back. On close the panel
+   detaches to <body> (pointer-transparent) and docks back into the hole;
+   removal is unconditional with a failsafe timer, so a stray panel can
+   never block the board. Switching listings swaps the panel inside ONE
+   FLIP step (single continuous motion) and replaces the history entry so
+   the back stack stays clean. /l/{id} stays a real server page for
+   crawlers, no-JS visitors and deep links — in-app we never navigate. */
 let openDetailCard = null;   // card currently holed
 let detailPanel = null;      // panel element (in flow while open)
-let detailGen = 0;           // generation counter: +1 invalidates in-flight work
 
 function cardListing(card) {
   try { return JSON.parse(card.dataset.listing || "null"); } catch (e) { return null; }
@@ -477,11 +463,9 @@ function killStrayPanels() {
 
 function resetBoardState() {
   /* Board re-rendered (search/filter): no cross-board animation is defined,
-     so any open detail/peek is torn down silently and the URL returns home.
+     so any open detail is torn down silently and the URL returns home.
      Called by renderGrid BEFORE innerHTML is cleared. */
-  detailGen++;
   openDetailCard = null;
-  openCard = null;
   killStrayPanels();
   if (history.state && history.state.detail) history.replaceState(null, "", "/");
 }
@@ -591,7 +575,7 @@ function buildDetailPanel(l) {
   }
 
   /* Same board data the SSR page uses for "More from this organizer":
-     switch directly to that listing's panel instead of navigating. */
+     switches straight to that listing's panel. */
   const own = String(l.owner || "");
   if (own && l.id) {
     const sibs = (typeof BOARD !== "undefined" && BOARD ? BOARD : ALL)
@@ -608,7 +592,7 @@ function buildDetailPanel(l) {
           const target = Array.from(grid.querySelectorAll(".card")).find((c) => {
             const xl = cardListing(c); return xl && String(xl.id) === String(x.id);
           });
-          if (target) switchDetail(target);
+          if (target) openDetail(target);
         });
         row.appendChild(b);
       });
@@ -620,57 +604,46 @@ function buildDetailPanel(l) {
 }
 
 function openDetail(card) {
-  if (openDetailCard) return;
+  if (openDetailCard === card) { closeDetail(false); return; }
   const l = cardListing(card);
   if (!l) return;
-  ++detailGen;
-  killStrayPanels();                      // never two panels, never a frozen one
+  // direct swap: old panel (if any) is replaced inside the same FLIP step,
+  // so the board moves once — never collapse-then-reexpand
+  const prevCard = openDetailCard;
+  const prevPanel = detailPanel;
   const rows = rowsOfGrid();
   let anchor = card;
   for (const row of rows) { if (row.indexOf(card) !== -1) { anchor = row[row.length - 1]; break; } }
   animateBoardChange(() => {
-    if (openCard) { openCard.classList.remove("open"); openCard = null; }  // peek yields to detail
+    if (prevCard) prevCard.classList.remove("ghost");
+    if (prevPanel) prevPanel.remove();
     card.classList.add("ghost");
     detailPanel = buildDetailPanel(l);
     anchor.after(detailPanel);
-  }, null);
-  // two-phase morph: drop out of the hole into the empty band, then widen
+  });
+  // transform-only morph (GPU, zero reflow): grow straight out of the hole
   const hole = card.getBoundingClientRect();
   const pr = detailPanel.getBoundingClientRect();
-  if (!REDUCE()) {
-    const dxa = hole.left - pr.left;
+  if (!REDUCE() && pr.width > 0 && pr.height > 0) {
+    detailPanel.style.transformOrigin = "top left";
     detailPanel.animate(
-      [{ transform: "translate(" + dxa + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 },
-       { transform: "translate(" + dxa + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.45 },
-       { transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 }],
-      { duration: 420, easing: EASE }
+      [{ transform: "translate(" + (hole.left - pr.left) + "px," + (hole.top - pr.top) + "px) scale(" + (hole.width / pr.width) + "," + (hole.height / pr.height) + ")", opacity: 0.55 },
+       { transform: "none", opacity: 1 }],
+      { duration: 360, easing: EASE }
     );
   }
   openDetailCard = card;
-  if (l.id && location.pathname !== "/l/" + l.id) {
-    history.pushState({ detail: l.id }, "", "/l/" + encodeURIComponent(l.id));
-  }
+  // push once per detail session; a switch replaces the entry (clean back stack)
+  const url = "/l/" + encodeURIComponent(l.id);
+  if (history.state && history.state.detail) history.replaceState({ detail: l.id }, "", url);
+  else if (location.pathname !== url) history.pushState({ detail: l.id }, "", url);
   detailPanel.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
-}
-
-function switchDetail(card) {
-  /* Close-then-open with the generation counter arbitrating: if anything
-     else bumps the generation first, the queued open is discarded. */
-  if (openDetailCard === card) { closeDetail(false); return; }
-  if (openDetailCard) {
-    closeDetail(false);
-    const gen = detailGen;
-    setTimeout(() => { if (gen === detailGen && !openDetailCard) openDetail(card); }, 430);
-  } else {
-    openDetail(card);
-  }
 }
 
 function closeDetail(viaPop) {
   if (!openDetailCard || !detailPanel) return;
   const card = openDetailCard, panel = detailPanel;
   openDetailCard = null; detailPanel = null;
-  const gen = ++detailGen;
   // capture BEFORE-positions while the panel still holds the row open
   const before = new Map();
   Array.from(grid.children).forEach((c) => { if (c !== panel) before.set(c, c.getBoundingClientRect()); });
@@ -686,25 +659,26 @@ function closeDetail(viaPop) {
   // refill the hole: the card never left, it just un-dims (CSS transition)
   card.classList.remove("ghost");
   requestAnimationFrame(() => {
-    // everyone slides back up into the closed row
+    // everyone slides back up into the closed row (transform-only)
     Array.from(grid.children).forEach((c) => {
       const f = before.get(c);
       if (f) slideBack(f, c.getBoundingClientRect(), c);
     });
-    // panel narrows in its band, then docks back into the hole
+    // transform-only dock back into the hole (GPU, zero reflow — no lag)
     const hole = card.getBoundingClientRect();
     if (REDUCE()) { panel.remove(); return; }
-    const dxa = hole.left - pr.left;
+    panel.style.transformOrigin = "top left";
     panel.animate(
-      [{ transform: "none", width: pr.width + "px", height: pr.height + "px", opacity: 1 },
-       { transform: "translate(" + dxa + "px,0)", width: hole.width + "px", height: pr.height + "px", opacity: 1, offset: 0.55 },
-       { transform: "translate(" + dxa + "px," + (hole.top - pr.top) + "px)", width: hole.width + "px", height: hole.height + "px", opacity: 0.6 }],
-      { duration: 400, easing: EASE }
+      [{ transform: "none", opacity: 1 },
+       { transform: "translate(" + (hole.left - pr.left) + "px," + (hole.top - pr.top) + "px) scale(" + (hole.width / pr.width) + "," + (hole.height / pr.height) + ")", opacity: 0.55 }],
+      { duration: 320, easing: EASE }
     );
     // unconditional cleanup: the floating panel can never outlive its exit
-    setTimeout(() => panel.remove(), 450);
+    setTimeout(() => panel.remove(), 340);
   });
   if (!viaPop && history.state && history.state.detail) history.back();
+  // keep the hole in view so the dock-back animation is always visible
+  card.scrollIntoView({ behavior: REDUCE() ? "auto" : "smooth", block: "nearest" });
 }
 
 window.addEventListener("popstate", () => {
@@ -719,45 +693,24 @@ window.addEventListener("popstate", () => {
   }
 });
 
-function expandCard(card) {
-  animateBoardChange(() => {
-    if (openCard && openCard !== card) openCard.classList.remove("open");
-    openCard = card;
-    card.classList.add("open");
-  }, card);
-}
-
-function collapseCard() {
-  if (openDetailCard) { closeDetail(false); return; }
-  if (!openCard) return;
-  const c = openCard;
-  openCard = null;
-  animateBoardChange(() => c.classList.remove("open"), c);
-}
-
-/* one handler, ordered: details link first (its own behavior), then CTA,
-   then detail-close gestures, then peek expand */
+/* One handler, ordered: chat CTA first, then detail-close gestures, then
+   card click = FULL detail. The details link is folded in here — a second
+   listener would open+close in the same click dispatch (net: nothing).
+   Modifier-clicked links keep native /l/ navigation. */
 grid.addEventListener("click", (e) => {
-  const dl = e.target.closest(".dlink");
-  if (dl) {
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; /* native: open /l page */
-    e.preventDefault();
-    const card = dl.closest(".card");
-    if (card) switchDetail(card);
-    return;
-  }
   if (e.target.closest(".cta")) return;             /* CTA routes to chat itself */
+  const dl = e.target.closest(".dlink");
+  if (dl && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) e.preventDefault(); /* panel, not navigation */
   if (e.target.closest(".detail-panel")) {
     if (e.target === detailPanel) closeDetail(false); /* bg/padding click = close; content stays interactive */
     return;
   }
   const card = e.target.closest(".card");
-  if (openDetailCard) { closeDetail(false); return; }  /* any board click while detail open closes it */
-  if (!card) { collapseCard(); return; }
-  if (openCard === card) { collapseCard(); return; }
-  expandCard(card);
+  if (!card) { if (openDetailCard) closeDetail(false); return; }
+  if (openDetailCard === card) { closeDetail(false); return; }  /* hole click = close */
+  openDetail(card);
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") collapseCard(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openDetailCard) closeDetail(false); });
 
 /* ---------- W3: browser signup (PoW + keygen in-page; seed shown ONCE) ---------- */
 /* The keypair is generated IN THE BROWSER (vendored tweetnacl): the seed is
