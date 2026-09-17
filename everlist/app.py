@@ -479,18 +479,23 @@ MAIL_FROM = os.environ.get("HUB_MAIL_FROM", SMTP_USER or "everlist@localhost")
 
 
 def _send_email(to, subject, body):
-    """Honest delivery: off/log are dev modes (label says so); smtp really sends."""
+    """Honest delivery: off/log are dev modes (label says so); smtp really sends.
+    body: plain string (legacy), or dict from emailkit (subject/text/html +
+    optional unsub_url) -> proper MIME with HTML part + unsubscribe headers."""
     if EMAIL_MODE == "off":
         return "off"
     if EMAIL_MODE == "log":
-        print(f"[EMAIL:log] to={to} subject={subject!r} body={body!r}", flush=True)
+        plain = body["text"] if isinstance(body, dict) else body
+        print(f"[EMAIL:log] to={to} subject={subject!r} body={plain!r}", flush=True)
         return "logged"
-    import smtplib
-    msg = f"From: {MAIL_FROM}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}"
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
-        srv.starttls()
-        srv.login(SMTP_USER, SMTP_PASS)
-        srv.sendmail(MAIL_FROM, [to], msg)
+    import emailkit
+    unsub = body.get("unsub_url") if isinstance(body, dict) else None
+    if isinstance(body, dict):
+        msg = emailkit.mime_message(MAIL_FROM, to, subject, body["text"], body.get("html"),
+                                    unsub_url=unsub, list_id="booking")
+    else:
+        msg = emailkit.mime_message(MAIL_FROM, to, subject, body)
+    emailkit.send_smtp(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM, to, msg)
     return "sent"
 
 
@@ -519,52 +524,84 @@ def _acct_email_of(principal):
     return None
 
 
+def urlquote(s):
+    from urllib.parse import quote as _q
+    return _q(s, safe='')
+
+
+def emailkit_code(kind, code):
+    import emailkit as _ek
+    return _ek.code_email(kind, code)
+
+
+def _html_resp(self, code, html):
+    body = html.encode()
+    self.send_response(code)
+    self.send_header("Content-Type", "text/html; charset=utf-8")
+    self.send_header("Content-Length", str(len(body)))
+    self.send_header("Cache-Control", "no-store")
+    self.end_headers()
+    self.wfile.write(body)
+
+
+def _unsub_token(principal):
+    import hmac as _hmac
+    return _hmac.new(BOOKING_KEY.encode(), principal.encode(), 'sha256').hexdigest()[:32]
+
+
+def _unsub_valid(princ, tok):
+    import hmac as _hm
+    try:
+        return (isinstance(princ, str) and princ.startswith('acct-')
+                and _hm.compare_digest(_unsub_token(princ), tok))
+    except Exception:
+        return False
+
+
 def _notify_booking(event, booking, listing, *, extra=''):
     # Best-effort booking event mail to buyer and/or owner. Never raises.
+    # Branded multipart templates (emailkit); every mail carries a signed
+    # one-click unsubscribe link (RFC 8058) scoped to THAT account.
     try:
-        nl = chr(10)
+        import emailkit
         bid = booking.get('id', '?')
         title = (listing or {}).get('title', 'a listing')
         amt = booking.get('amount')
-        amt_s = ('%.2f' % amt) if isinstance(amt, (int, float)) else str(amt)
-        buyer = _acct_email_of(booking.get('booked_by'))
-        owner = _acct_email_of((listing or {}).get('owner'))
-        base = 'EverList: ' + title
-        mails = []
+        esc = booking.get('escrow', '?')
+        buyer_p = booking.get('booked_by')
+        owner_p = (listing or {}).get('owner')
+        buyer = _acct_email_of(buyer_p)
+        owner = _acct_email_of(owner_p)
+
+        def _unsub(principal):
+            if not (isinstance(principal, str) and principal.startswith('acct-')):
+                return None
+            return '%s/accounts/notify/unsubscribe?u=%s&t=%s' % (
+                emailkit.PUBLIC_URL, urlquote(principal), _unsub_token(principal))
+
+        jobs = []
         if event == 'created' and owner:
-            mails.append((owner, 'New booking: ' + base, nl.join([
-                'New booking for: ' + title + ' (booking ' + bid + ')',
-                'Amount: ' + amt_s + ' (escrow: ' + str(booking.get('escrow', '?')) + ')',
-                '',
-                'Confirm it in the EverList chat (my-listings) or via POST /book/' + bid + '/confirm.',
-                'Turn notifications off: say notify off in the EverList chat.'])))
+            jobs.append(('created', owner, owner_p, 'owner'))
         elif event == 'released' and buyer:
-            mails.append((buyer, 'Confirmed: ' + base, nl.join([
-                'Your booking for: ' + title + ' (booking ' + bid + ') is confirmed.',
-                'Escrow released to the organizer. Amount: ' + amt_s + '.',
-                'Confirmation: ' + bid + '-ticket',
-                '',
-                'Turn notifications off: say notify off in the EverList chat.'])))
+            jobs.append(('released', buyer, buyer_p, 'buyer'))
         elif event == 'refunded':
             if buyer:
-                mails.append((buyer, 'Refunded: ' + base, nl.join([
-                    'Your booking for: ' + title + ' (booking ' + bid + ') was cancelled.',
-                    'Full refund. Amount: ' + amt_s + '.',
-                    '',
-                    'Turn notifications off: say notify off in the EverList chat.'])))
+                jobs.append(('refunded', buyer, buyer_p, 'buyer'))
             if owner:
-                mails.append((owner, 'Cancelled: ' + base, nl.join([
-                    'Booking ' + bid + ' for: ' + title + ' was cancelled by the buyer.',
-                    'Escrow refunded to the buyer.',
-                    '',
-                    'Turn notifications off: say notify off in the EverList chat.'])))
-        for to, subj, body in mails:
-            _send_email(to, subj, body + ((nl + nl + extra) if extra else ''))
+                # hub event 'refunded' -> owner-facing template is 'cancelled'
+                jobs.append(('cancelled', owner, owner_p, 'owner'))
+        for ev, to, principal, role in jobs:
+            tmpl = emailkit.booking_email(ev, title=title, booking_id=bid,
+                                          amount=amt, escrow=esc, role=role,
+                                          note=(extra or None),
+                                          unsub_url=_unsub(principal))
+            _send_email(to, tmpl['subject'], tmpl)
     except Exception as e:  # notifications must never break the money flow
         try:
             print('[notify:error] %s: %s' % (type(e).__name__, e), flush=True)
         except Exception:
             pass
+
 
 
 if PAY_MODE == "testnet":
@@ -872,6 +909,8 @@ def _openapi_spec():
             "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
+            "/accounts/notify/unsubscribe": {"get": op("Unsubscribe landing page (signed link from email footer)", "accounts"),
+                                             "post": op("One-click unsubscribe (RFC 8058)", "accounts")},
             "/accounts/payout": {"post": op("Register organizer payout coin PUBLIC key (64-hex; secrets never accepted)", "accounts")},
             "/accounts/notify": {"post": op("Booking-notification preference (notify_email: true|false)", "accounts")},
             "/accounts/verify-midnight": {"post": op("Tier-2 sign-in: verify a Midnight credential (admitted + not revoked) and mark the account verified_by: midnight-zk", "accounts",
@@ -916,6 +955,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._t0 = time.time()  # H12: latency start
         u = urlparse(self.path)
+        if u.path == "/accounts/notify/unsubscribe":
+            # Signed, account-scoped unsubscribe landing (email footer link).
+            # Honest + idempotent: valid signature flips notify off (stays off);
+            # anything else gets the branded 'say notify off' page. Never 500s.
+            try:
+                import emailkit as _ek
+                q = parse_qs(u.query)
+                princ = q.get("u", [""])[0]
+                tok = q.get("t", [""])[0]
+                if (princ.startswith("acct-") and tok
+                        and _unsub_valid(princ, tok)
+                        and princ in ACCOUNTS):
+                    with LOCK:
+                        ACCOUNTS[princ]["notify_email"] = False
+                        _persist_locked()
+                    return self._html_resp(200, _ek.unsub_page(ok=True))
+                return self._html_resp(200, _ek.unsub_page(ok=False))
+            except Exception:
+                return self._html_resp(200, "<html><body><p>Unsubscribe link invalid. "
+                    "Say notify off in the EverList chat.</p></body></html>")
         if u.path == "/auth/challenge":
             """HARDENING-v2: challenge issuance for cost curves.
             kind=signup -> sha256 PoW challenge (must be solved to signup)
@@ -1431,6 +1490,24 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw) if raw.strip() else {}
         except Exception as ex:
             return self._json(400, {"error": str(ex)})
+        if path == "/accounts/notify/unsubscribe":
+            # RFC 8058 one-click unsubscribe (List-Unsubscribe-Post). Same
+            # signature law as the GET landing page. Never fails a mailbox.
+            try:
+                import emailkit as _ek
+                q = parse_qs(u.query)
+                princ = q.get("u", [""])[0]
+                tok = q.get("t", [""])[0]
+                if (princ.startswith("acct-") and tok
+                        and _unsub_valid(princ, tok)
+                        and princ in ACCOUNTS):
+                    with LOCK:
+                        ACCOUNTS[princ]["notify_email"] = False
+                        _persist_locked()
+                    return self._json(200, {"ok": True, "notify_email": False})
+                return self._json(400, {"error": "invalid unsubscribe token"})
+            except Exception:
+                return self._json(400, {"error": "invalid unsubscribe token"})
         if path == "/mcp":
             # Phase D: MCP (Model Context Protocol) face - JSON-RPC 2.0 over
             # HTTP, thin loopback adapter onto this hub's own REST contract.
@@ -1789,8 +1866,8 @@ class Handler(BaseHTTPRequestHandler):
                 ACCOUNTS[aid]["pending_exp"] = time.time() + 900   # 15 min
                 _persist_locked()
                 try:
-                    delivery = _send_email(email, "EverList email verification",
-                        f"Your EverList verification code: {vcode}\nValid 15 minutes. If you did not request this, ignore it.")
+                    _vt = emailkit_code("verify", vcode)
+                    delivery = _send_email(email, _vt["subject"], _vt)
                 except Exception as ex:
                     return self._json(502, {"error": f"email delivery failed: {ex}"})
             return self._json(200, {"ok": True, "account_id": aid, "email": email,
@@ -1838,8 +1915,8 @@ class Handler(BaseHTTPRequestHandler):
                 ACCOUNTS[aid]["recovery_exp"] = time.time() + 900
                 _persist_locked()
                 try:
-                    delivery = _send_email(email, "EverList account recovery",
-                        f"Your EverList recovery code: {rcode}\nValid 15 minutes.\nConfirm with email + code + a new code at /accounts/email/recover/confirm.")
+                    _rt = emailkit_code("recover", rcode)
+                    delivery = _send_email(email, _rt["subject"], _rt)
                 except Exception as ex:
                     return self._json(502, {"error": f"email delivery failed: {ex}"})
             return self._json(200, {"ok": True, "delivery": delivery,
