@@ -865,3 +865,37 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - Gate: make test ALL PASSED (E2E escrow HELD) with EVERLIST_BRAIN_DISABLED=1 hermetic brain gate; live smoke: nav/greeting/identity/search/refine/show/book/ack/meta/declines all correct through chatlib.handle_text
 - Synced to staging (brain/chatlib/webchat/wrapper/app.js/test_brain/Makefile; nlu.py + test_nlu.py removed there too); chat-replies.md amended (Brain v2 owner calls: nav/ack/refine/show/book in-scope, weather-at-listing, brain architecture)
 - Phase C: jobs vertical shipped as C5 community schema (schemas/jobs.json, apply+pay, worker identity, capacity-tracked) + chat wizard branch + 2 demo job seeds; test_jobs.py (10 checks) + h16 updated; gate ALL PASSED
+
+## 2026-09-17 — Phase D: MCP server shipped (owner-approved plan, final phase)
+- mcp.py: hand-rolled MCP (JSON-RPC 2.0 over HTTP POST /mcp) as a THIN loopback
+  adapter onto the hub's own REST contract — no SDK dep (box is system Python);
+  all hub laws (auth, rate limits, validation, escrow) apply unchanged
+- 6 tools: contract / verticals / search / listing / book / booking status;
+  X-Hub-Token via header or per-call token argument; MCP layer holds no logic
+- Wired: app.py route + manifest capabilities + OpenAPI path; gate registers
+  test_mcp.py (18 checks incl. REAL booking E2E through MCP) — suite caught a
+  real tuple-shape bug (-32600 guard) pre-push; full gate ALL PASSED
+- Deployed 4e97ab5; live-verified on everlist.network: initialize negotiates
+  2024-11-05 + session header, 6 tools, search returns Rooftop Jazz Night,
+  manifest advertises /mcp. Caddy: no matcher change needed (catch-all → hub)
+- Owner-approved plan complete: A org pages, B notify (dry-run), C jobs,
+  D MCP. Pending owner inputs: SMTP creds (real email), IG drafts deleted per
+  owner order (Postiz server keys stale — manual delete path given)
+
+## 2026-09-17 — Hotfix: stray CSS brace killed the chat dock styling (owner report)
+- Owner saw the chat window "unstyled" on production; all static assets were byte-identical live vs repo, so the bug was IN the code: static/style.css had ONE unclosed brace — commit 5f332e5 (detail-panel close fix) left an empty '.dclose {' opener at line 166 while the real rule lived at 178; CSS parsed everything after it as nested-inside-.dclose and silently dropped it: cards (earlier in file) styled, entire chat dock raw HTML
+- LESSON: CSS failures are silent — no suite checked syntax, so the gate stayed green while shipping broken UI
+- Fix: removed the stray opener; NEW permanent gate check in test_webchat.py 'style.css braces balanced' (comment+string-stripped depth must be 0) so a silent CSS kill can never ship again; webchat suite 127 passed
+- Shipped 86ac45c, CI deploy success; live style.css verified byte-identical to fix, depth 0; browser screenshot confirms dock fully styled
+
+## 2026-09-17 (evening) — Real email went live (Phase B flip, Resend free tier)
+- Owner created Resend account, domain everlist.network verified: all 4 DNS
+  records confirmed live via DoH (DKIM TXT, rsend+send CNAMEs, DMARC p=none);
+  rsend needed one re-save (propagation gap, then resolved)
+- /home/deploy/everlist.env (0600) gained the SMTP block (mode=smtp,
+  smtp.resend.com:587, user=resend, pass from secret store, MAIL_FROM=
+  notify@everlist.network); hub restarted; running process env verified
+- SMTP auth proven from box (STARTTLS + login, 250 OK); first real email
+  SENT-OK to owner's address — owner to confirm inbox placement
+- deploy.sh: fresh installs now opt-in email-capable (RESEND_SMTP_PASS secret);
+  existing installs keep their env file (pushed c4c724e)
