@@ -48,6 +48,7 @@ WC_PORT = free_port()
 HUB_PORT = free_port()
 TMP = tempfile.mkdtemp(prefix="hub-webchat-e2e-")
 STATE = os.path.join(TMP, "state.json")
+os.environ["EVERLIST_STATS_FILE"] = os.path.join(TMP, "pageviews.json")
 
 # ---- start isolated hub ----------------------------------------------------
 HUB_ENV = dict(os.environ, HUB_STATE_FILE=STATE, PYTHONFAULTHANDLER="1")
@@ -519,6 +520,27 @@ def main():
     check("pwa manifest", code == 200 and b"logo-512.png" in body and "manifest" in hdrs.get("Content-Type", ""))
     code, _, body = c.get("/sitemap.xml")
     check("sitemap w5 urls", b"/how" in body and b"/agents" in body)
+
+    # ---- self-hosted page-view counter (owner decision, 2026-09-17) ----
+    # exact-delta proof: counted pages increment their stem by exactly the
+    # traffic sent; /api/* and assets produce NO new keys and NO deltas
+    code, _, body = c.get("/api/stats")
+    before = json.loads(body.decode()).get("pageviews", {}) if code == 200 else {}
+    c.get("/"); c.get("/")
+    c.get("/l/even-1")
+    c.get("/org/demo-surya-kriya")
+    c.get("/transparency")
+    c.get("/api/health")          # must NOT count
+    c.get("/app.js")              # must NOT count
+    c.get("/api/stats")           # must NOT count
+    code, _, body = c.get("/api/stats")
+    after = json.loads(body.decode()).get("pageviews", {}) if code == 200 else {}
+    delta = {k: after.get(k, 0) - before.get(k, 0) for k in set(after) | set(before)}
+    want = {"/": 2, "/l/*": 1, "/org/*": 1, "/transparency": 1}
+    got = {k: v for k, v in delta.items() if v}
+    check("counter counts pages exactly", got == want, "want %s got %s" % (want, got))
+    check("counter ignores api+assets", got == want, "non-page deltas: %s" % {k: v for k, v in got.items() if k not in want})
+    check("counter stats honest note", "no cookies" in json.loads(body.decode()).get("note", ""))
 
     # cleanup
     srv.shutdown()

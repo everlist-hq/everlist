@@ -57,8 +57,13 @@ _load_env()
 
 _API_URL = os.environ.get("EVERLIST_NLU_API_URL", "https://api.agent-zero.ai/venice/v1")
 _API_KEY = os.environ.get("EVERLIST_NLU_API_KEY", "")
-_MODEL = os.environ.get("EVERLIST_BRAIN_MODEL", "qwen3-vl-235b-a22b")
-_TIMEOUT = float(os.environ.get("EVERLIST_BRAIN_TIMEOUT", "10"))
+_MODEL = os.environ.get("EVERLIST_BRAIN_MODEL", "mercury-2-5")
+_TIMEOUT = float(os.environ.get("EVERLIST_BRAIN_TIMEOUT", "12"))
+_MAX_TOKENS = 1200  # mercury is a reasoning model: tokens are spent on internal
+                     # reasoning BEFORE the JSON (measured ~190) — 220 emptied the
+                     # budget and returned "" with finish_reason=length (2026-09-17
+                     # probe: 14/14 correct at 1200+, ~1.9s avg).
+_DISABLED = bool(os.environ.get("EVERLIST_BRAIN_DISABLED"))  # hermetic gates
 _FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://openrouter.ai/api/v1")
 _FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
 _FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "inception/mercury-2.5")
@@ -138,14 +143,16 @@ _SYS = (
     "weather FOR a specific listing or event ('weather at the jazz night?'; "
     "owner-approved 2026-09-16).\n\n"
     "Reply with EXACTLY ONE JSON object and nothing else:\n"
-    '{"action": "search|refine|nav|ack|meta|off_topic", '
+    '{"action": "search|refine|nav|ack|meta|show|book|off_topic", '
     '"say": "...", "q": "...", '
     '"filters": {"free": false, "max_price": null, "min_price": null, '
     '"from": null, "to": null, "sort": null}, '
-    '"target": null, "refine": false}\n'
+    '"target": null, "which": null, "who": null, "refine": false}\n'
     "Field rules: include q only for search/refine; include only filter keys "
     "that are set; target only for nav (home|dashboard|results); refine=true "
-    "marks an adjustment of the previous search.\n\n"
+    "marks an adjustment of the previous search; which = the result the user "
+    "means ('2', 'the second one', 'the jazz night'); who = name to book "
+    "under.\n\n"
     "Action rules:\n"
     "- search: user wants listings. q = 1-5 lowercase keywords of WHAT they "
     "want ('jazz', 'yoga class', 'sushi'). filters: free=true only when "
@@ -160,6 +167,12 @@ _SYS = (
     "number), just set refine=true — the site handles it.\n"
     "- nav: user wants to move around the site ('go back', 'main page', "
     "'dashboard', 'show my results again'). target: home|dashboard|results.\n"
+    "- show: user wants full details of one result ('tell me more about 2', "
+    "'details on the jazz night', 'what is number 3'). which = the result they "
+    "mean ('2', 'the second one', 'the jazz night').\n"
+    "- book: user wants to book one result ('book the second one', 'book 2 for "
+    "alex', 'get me a spot at the jazz night'). which = the result; who = the "
+    "name to book under if given.\n"
     "- ack: thanks/ok/great/perfect/cool/greetings. say = one short friendly "
     "line steering back to searching or booking.\n"
     "- meta: questions about this site or a listing under discussion: how "
@@ -187,7 +200,11 @@ _SYS = (
     '  "thanks!" -> {"action":"ack","say":"Anytime! Say the word when you want to book something."}\n'
     '  "actually cheaper" -> {"action":"refine","refine":true}\n'
     '  "only free ones" -> {"action":"refine","filters":{"free":true},"refine":true}\n'
-    '  "weather at the event?" -> {"action":"meta","say":"Which event? Tell me the name and I will pull it up with its date and place."}\n'
+    '  "tell me more about the second one" -> {"action":"show","which":"the second one"}\n'
+    '  "details on the jazz night" -> {"action":"show","which":"the jazz night"}\n'
+    '  "book the second one for alex" -> {"action":"book","which":"the second one","who":"alex"}\n'
+    '  "get me a spot at the jazz night" -> {"action":"book","which":"the jazz night","who":""}\n'
+    '  "weather at the event?" -> {"action":"meta","which":"","say":"Which event? Tell me the name and I will pull it up with its date and place."}\n'
     '  "how does escrow work" -> {"action":"meta","say":"Your money is held in escrow until the event ends, then released to the organizer. Refund windows are shown on every listing before you book."}\n'
     '  "what is 2+2" -> {"action":"off_topic","say":"I only do EverList: finding, booking and listing real-world things."}\n'
     '  "capital of france" -> {"action":"off_topic","say":"I only do EverList: finding, booking and listing real-world things. What are you looking to book?"}\n'
@@ -308,35 +325,48 @@ def _providers() -> list:
     return chain
 
 
-def _call(user_msg: str, ctx: list):
+def _call(user_msg: str, ctx: list, site_state: str = ""):
     """One LLM turn over the provider chain. Returns a validated action dict
-    or None (indeterminate -> fail-open)."""
+    or None (indeterminate -> fail-open). site_state is injected into the
+    system prompt so references like 'the second one' resolve."""
     chain = _providers()
     if not chain:
         return None
     sys_prompt = _SYS.replace("@TODAY@", _dt.now().strftime("%Y-%m-%d"))
+    if site_state:
+        sys_prompt += "\n" + site_state
     msgs = [{"role": "system", "content": sys_prompt}]
     msgs += [m for m in (ctx or []) if m.get("role") in ("user", "assistant")]
     msgs.append({"role": "user", "content": user_msg[:600]})
     for name, url, key, model in chain:
-        body = json.dumps({"model": model, "messages": msgs,
-                           "temperature": 0.2, "max_tokens": 220}).encode()
-        req = urllib.request.Request(
-            url.rstrip("/") + "/chat/completions", data=body,
-            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-                d = json.loads(r.read())
-            content = (d.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-            if not content.strip():
-                _perr(name, "empty content")
-                continue
-            obj = _extract_json(content)
-            if obj and obj.get("action") in ("search", "refine", "nav", "ack", "meta", "off_topic"):
-                return obj
-            _perr(name, "invalid action object")
-        except Exception as e:
-            _perr(name, "%s: %s" % (type(e).__name__, e))
+        for attempt, budget in ((1, _MAX_TOKENS), (2, _MAX_TOKENS * 2)):
+            body = json.dumps({"model": model, "messages": msgs,
+                               "temperature": 0.2, "max_tokens": budget}).encode()
+            req = urllib.request.Request(
+                url.rstrip("/") + "/chat/completions", data=body,
+                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
+                    d = json.loads(r.read())
+                content = (d.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                if not content.strip():
+                    # mercury is a reasoning model: on long prompts it sometimes
+                    # spends the whole budget thinking. One retry with a doubled
+                    # budget usually lands the JSON (measured 2026-09-17).
+                    if attempt == 1:
+                        _perr(name, "empty content, retrying with 2x budget")
+                        continue
+                    _perr(name, "empty content after retry")
+                    break
+                obj = _extract_json(content)
+                if obj and obj.get("action") in ("search", "refine", "nav", "ack", "meta",
+                                                 "show", "book", "off_topic"):
+                    return obj
+                _perr(name, "invalid action object")
+                break
+            except Exception as e:
+                _perr(name, "%s: %s" % (type(e).__name__, e))
+                break
     return None
 
 
@@ -398,6 +428,32 @@ def _filters_of(act: dict) -> dict:
 
 # ---- the public entry ----------------------------------------------------
 
+def _site_state(chatlib, sender: str) -> str:
+    """Compact summary of what the user is currently looking at (their last
+    search results), injected into the system prompt so references like
+    'the second one' or 'that jazz thing' resolve to a real listing."""
+    if chatlib is None:
+        return ""
+    try:
+        results = chatlib.last_results(sender, cap=6)
+        if not results:
+            return ""
+        lines = ["THE USER IS CURRENTLY LOOKING AT THESE SEARCH RESULTS "
+                 "(number = handle for which):"]
+        for i, l in enumerate(results, 1):
+            title = str(l.get("title") or "?")
+            date = str(l.get("date") or "")
+            price = l.get("price")
+            loc = str(l.get("location") or "")
+            lines.append("%d. %s%s%s%s" % (i, title,
+                         (" · " + date) if date else "",
+                         (" · $%s" % price) if price is not None else "",
+                         (" · " + loc) if loc else ""))
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def respond(hub_url: str, text: str, sender: str, chatlib):
     """One turn of Brain v2. Returns the reply text, or None when the brain
     cannot serve this message (chatlib then fail-opens to deterministic search)."""
@@ -413,15 +469,18 @@ def respond(hub_url: str, text: str, sender: str, chatlib):
             return chatlib._HELP        # greeting = show the way in (template)
         if _IDENTITY_RX.match(low):
             return chatlib._WHOAMI      # identity = site intro (template)
-    if os.environ.get("EVERLIST_BRAIN_DISABLED"):
+    if _DISABLED:
         return None                     # hermetic gates: deterministic path only
     if not _rate_ok(sender):
         return None                     # brain budget spent -> fail-open
-    act = _call(text, _ctx(sender))
+    state = _site_state(chatlib, sender)
+    act = _call(text, _ctx(sender), state)
     if act is None:
         return None                     # indeterminate -> fail-open
     a = act["action"]
     say = _sanitize_say(str(act.get("say") or ""))
+    which = str(act.get("which") or "").strip()[:80]
+    who = str(act.get("who") or "").strip()[:40]
     try:
         if a == "off_topic":
             _STAT["off_topic"] += 1
@@ -429,13 +488,17 @@ def respond(hub_url: str, text: str, sender: str, chatlib):
         if a == "ack":
             out = say or "Anytime! Tell me what you're looking for — e.g. 'free yoga this weekend'."
         elif a == "nav":
-            out = chatlib.nav_reply(str(act.get("target") or "home"), sender)
+            out = chatlib.nav_reply(hub_url, str(act.get("target") or "home"), sender)
         elif a in ("search", "refine"):
             out = chatlib.brain_search(hub_url, sender, act, text)
             if out is None:
                 return None             # nothing searchable -> fail-open
+        elif a == "show":
+            out = chatlib.brain_show(hub_url, sender, which or text)
+        elif a == "book":
+            out = chatlib.brain_book(hub_url, sender, which or text, who)
         else:                           # meta
-            out = chatlib.brain_meta(hub_url, sender, text, say or "")
+            out = chatlib.brain_meta(hub_url, sender, text, say or "", which)
         _ctx_add(sender, "user", text)
         _ctx_add(sender, "assistant", out if isinstance(out, str) else "")
         _STAT["ok"] += 1

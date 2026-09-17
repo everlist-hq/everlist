@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -641,6 +642,23 @@ def _set_payout(hub_url: str, sender: str, pk: str) -> str:
     s["payout_pk"] = pk
     return (f"✅ Payout key registered ({pk[:12]}…). Midnight escrow releases target this coin key.\n"
             "Keep the matching secret ONLY in your wallet — no one else will ever need it.")
+
+
+def _notify_pref(hub_url: str, sender: str, arg: str) -> str:
+    s = _session(sender)
+    if not s:
+        return "Login first ('login <code>' / 'login-seed <seed>'), then change notification settings."
+    arg = arg.strip().lower()
+    if arg not in ("off", "on"):
+        return ("Usage: notify off | notify on\n"
+                "Notifications = booking created / confirmed / refunded mails (verified email only).")
+    code, res = _hub_post(hub_url, "/accounts/notify", {"notify_email": arg == "on"}, s["tokens"].get("list"))
+    if code is None:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code != 200:
+        return "x " + str(res.get("error", "could not update notification preference"))
+    return ("Notifications ON: you get booking created/confirmed/refunded mails." if arg == "on"
+            else "Notifications OFF: no booking mails to this account.")
 
 
 def _logout(sender: str) -> str:
@@ -1353,7 +1371,7 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
             spec["filters"]["free"] = True
         for k in ("max_price", "min_price"):
             try:
-                v = float(f[k])
+                v = float(f.get(k))
             except (TypeError, ValueError):
                 continue
             if 0 <= v <= 1_000_000:
@@ -1483,7 +1501,71 @@ def _weather_reply(hub_url: str, sender: str, text: str):
         return "I couldn't fetch the forecast just now — try again in a moment."
 
 
-def brain_meta(hub_url: str, sender: str, text: str, say: str) -> str:
+_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+             "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10}
+
+
+def _resolve_listing(sender: str, which: str):
+    """Resolve a brain-provided reference ('2', 'the second one', 'the jazz
+    night') to (1-based index, listing) in the sender's last search, or None.
+    Single-result stashes resolve regardless of text (the only thing shown)."""
+    results = _LAST_RESULTS.get(sender) or []
+    if not results:
+        return None
+    w = (which or "").strip().lower()
+    m = re.search(r"\b(\d+)\b", w)
+    if m:
+        i = int(m.group(1))
+        if 1 <= i <= len(results):
+            return i, results[i - 1]
+    for word, i in _ORDINALS.items():
+        if word in w and 1 <= i <= len(results):
+            return i, results[i - 1]
+    toks = set(re.findall(r"[a-z0-9']+", w)) - {"the", "one", "a", "an", "that", "this"}
+    if toks:
+        best, best_score = None, 0
+        for i, l in enumerate(results, 1):
+            title_toks = set(re.findall(r"[a-z0-9']+", str(l.get("title") or "").lower()))
+            score = len(title_toks & toks)
+            if score > best_score:
+                best, best_score = (i, l), score
+        if best:
+            return best
+    if len(results) == 1:
+        return 1, results[0]
+    return None
+
+
+def brain_show(hub_url: str, sender: str, which: str) -> str:
+    """Brain action 'show': full details of one result the user means."""
+    got = _resolve_listing(sender, which)
+    if not got:
+        return _show_results(hub_url, sender, "all")
+    i, l = got
+    out = _show_listing(hub_url, str(l.get("id") or ""))
+    return out
+
+
+def brain_book(hub_url: str, sender: str, which: str, who: str = "") -> str:
+    """Brain action 'book': resolve the reference, then delegate to the typed
+    deterministic book path (handle_text 'book <n> <name>') — escrow facts,
+    PoW and account gates stay exactly where they were."""
+    who = (who or "").strip()
+    if not re.fullmatch(r"[\w \-.']{0,40}", who):
+        who = ""
+    got = _resolve_listing(sender, which)
+    if not got:
+        stash = _LAST_RESULTS.get(sender) or []
+        if stash:
+            return ("Which one do you mean? The last search found %d — say e.g. "
+                    "'book the second one' or 'book 2' (plus a name to book under)." % len(stash))
+        return ("Run a search first (e.g. 'search jazz'), then tell me which one "
+                "to book — 'book the first one for <your-name>'.")
+    i, l = got
+    return handle_text(hub_url, ("book %d %s" % (i, who)).strip(), sender=sender)
+
+
+def brain_meta(hub_url: str, sender: str, text: str, say: str, which: str = "") -> str:
     """Execute a brain meta action. Policy questions (fees, escrow, refunds,
     payments) always get deterministic template answers — the LLM may never
     state a policy. Weather-at-a-listing is grounded in the stash + a real
@@ -1494,7 +1576,9 @@ def brain_meta(hub_url: str, sender: str, text: str, say: str) -> str:
     if _ESCROWQ_RX.search(low):
         return _ESCROW_EXPLAINER
     if _WEATHER_RX.search(low):
-        out = _weather_reply(hub_url, sender, text)
+        anchor = (which or "") + " " + (text or "")
+        got = _resolve_listing(sender, which or text)
+        out = _weather_reply(hub_url, sender, anchor if not got else which or text)
         if out:
             return out
         return (say or "").strip() or (
@@ -1551,6 +1635,10 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
     # --- payout key (M9)
     if low.startswith("set-payout "):
         return _set_payout(hub_url, sender, text.strip()[11:].strip())
+    if low.startswith("notify "):
+        return _notify_pref(hub_url, sender, text.strip()[7:].strip())
+    if low == "notify":
+        return _notify_pref(hub_url, sender, "")
     if low == "set-payout":
         return _set_payout(hub_url, sender, "")
 
@@ -1646,8 +1734,19 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
         return _owned_listing(hub_url, sender, text.strip()[8:].strip(), "archive")
 
     # --- smart natural-language search
-    for kw in ("search", "find", "listings", "events", "show"):
+    # Brain v2: genuinely typed keyword queries stay deterministic (fast,
+    # zero-LLM). Conversational searches — relative dates ('this weekend'),
+    # fuzzy asks ('something fun', 'near me') — break out to the brain tail,
+    # which resolves dates and intent properly. Fail-open law intact: brain
+    # unavailable -> the tail re-enters as 'search <text>' -> this path.
+    _CONV_RX = re.compile(
+        r"\b(me|us|my|our|something|anything|nice|fun|cool|good|great|please|"
+        r"around|near|tonight|today|tomorrow|weekend|next week|this week|"
+        r"next month|sometime|maybe|looking for)\b")
+    for kw in ("search", "find", "listings", "events"):
         if low == kw or low.startswith(kw + " "):
+            if _CONV_RX.search(low):
+                break               # conversational -> brain tail below
             rest = text.strip()[len(kw):].strip()
             return _smart_search(hub_url, (kw + " " + rest) if rest else kw, sender)
 
@@ -1664,7 +1763,13 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
 
     # --- booking intent (H15: FREE listings book IN CHAT for logged-in accounts;
     # paid listings stay honest guidance - payment is a real gate)
-    if low.startswith("book"):
+    # Brain v2: TYPED forms only — the token after 'book' must be a number,
+    # a pvt-claim, or a hyphenated listing id ('book 2 Alex', 'book even-2',
+    # 'book p2p-3 pvt-<claim> Name', bare 'book' = guidance). Natural language
+    # ('book the first one', 'book the jazz night') falls through to the brain,
+    # which resolves the reference and re-enters as a clean typed command.
+    if low == "book" or (low.startswith("book ") and re.fullmatch(
+            r"\d+|pvt-[0-9a-f]{16}|[a-z][a-z0-9]*(?:-[a-z0-9]+)+", low.split()[1])):
         rest = text.strip()[4:].strip()
         bits = rest.split(None, 1)
         lid = bits[0] if bits else ""
@@ -1799,4 +1904,8 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
             out = None  # fail-open law: brain must never take the chat down
         if out is not None:
             return out
-    return handle_text(hub_url, "search " + text.strip(), sender=sender)
+    # Fail-open: deterministic keyword search. Direct _smart_search call —
+    # deliberately NOT a handle_text re-entry: conversational texts
+    # ('find me something fun') would match the conversational break-out
+    # above and recurse infinitely when the brain is unavailable (2026-09-17).
+    return _smart_search(hub_url, "search " + text.strip(), sender)

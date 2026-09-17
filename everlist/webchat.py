@@ -75,6 +75,61 @@ ORDER_FIELDS = ("id", "listing_id", "vertical", "escrow", "amount", "hub_fee",
 _TITLES = {"ts": 0.0, "map": {}}
 _TITLES_LOCK = threading.Lock()
 
+# ---- self-hosted page-view counter (owner decision, 2026-09-17) ------------
+# No cookies, no third parties, no per-visitor tracking: one integer per page
+# stem (e.g. /l/<id> -> /l/*), persisted to disk so restarts keep counts.
+# Read by the owner at GET /api/stats (totals only, nothing per-visitor).
+_STATS_PATH = os.environ.get(
+    "EVERLIST_STATS_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".run", "pageviews.json"))
+_PAGEVIEWS = {}
+_PV_LOCK = threading.Lock()
+_PV_HOME = re.compile(r"^/(?:index\.html)?$")
+
+
+def _pv_key(path):
+    """Map a GET path to its counter stem, or None if not a counted page."""
+    if _PV_HOME.match(path):
+        return "/"
+    if re.match(r"^/l/[^/]+$", path):
+        return "/l/*"
+    if re.match(r"^/org/[A-Za-z0-9._-]+$", path):
+        return "/org/*"
+    if path in ("/transparency", "/network", "/how", "/agents"):
+        return path
+    return None
+
+
+def _pv_load():
+    global _PAGEVIEWS
+    try:
+        with open(_STATS_PATH) as f:
+            _PAGEVIEWS = json.load(f)
+    except Exception:
+        _PAGEVIEWS = {}
+
+
+def _pv_save():
+    try:
+        tmp = _STATS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_PAGEVIEWS, f)
+        os.replace(tmp, _STATS_PATH)
+    except Exception:
+        pass
+
+
+def _pv_count(path):
+    key = _pv_key(path)
+    if key is None:
+        return
+    with _PV_LOCK:
+        _PAGEVIEWS[key] = _PAGEVIEWS.get(key, 0) + 1
+        _pv_save()
+
+
+_pv_load()
+
 
 def hub_fetch(path, token=None, payload=None):
     """Tiny hub JSON client for W1 proxy routes. Returns (status, dict).
@@ -282,6 +337,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        _pv_count(path)
         if path in ("/", "/index.html"):
             body, ctype = static_bytes("index.html")
         elif path.startswith("/api/"):
@@ -381,6 +437,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def api_get(self, path):
+        if path == "/api/stats":
+            with _PV_LOCK:
+                pv = dict(sorted(_PAGEVIEWS.items()))
+            return self.reply(200, {"ok": True, "pageviews": pv,
+                                    "note": "self-hosted totals; no cookies, no per-visitor data"})
         if path == "/api/signup-challenge":
             # W3: proxy the hub's PoW challenge for the browser signup form
             st, res = hub_fetch("/auth/challenge?kind=signup")

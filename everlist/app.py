@@ -380,7 +380,7 @@ def _load_state():
         ACCOUNTS.update(snap.get("accounts", {}))
         ID_COUNTERS.update(snap.get("id_counters", {}))
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
-        _EFIELDS = {"email": None, "email_verified": False, "pending_email": None,
+        _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
                     "recovery_code_hash": None, "recovery_exp": 0, "gen": 0,
                     "payout_pk": None, "midnight_credential": None}
@@ -492,6 +492,79 @@ def _send_email(to, subject, body):
         srv.login(SMTP_USER, SMTP_PASS)
         srv.sendmail(MAIL_FROM, [to], msg)
     return "sent"
+
+
+# ---- B-phase booking notifications (owner-approved 2026-09-17) -------------
+# Ride the existing honest email layer: off = silent, log = dry-run visible in
+# tests, smtp = live (when the owner drops creds in). Rules:
+#   * only accounts with a VERIFIED email get mail (never raw strings)
+#   * best-effort: notification failures NEVER fail the booking/money flow
+#   * never called while holding LOCK (SMTP can take 15s -> would stall hub)
+#   * every mail says how to turn notifications off (honest unsubscribe)
+
+
+def _listing_of(b):
+    with LOCK:
+        return next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
+
+
+def _acct_email_of(principal):
+    """Verified email for an account principal whose notify pref is ON, or None.
+    Per-recipient: each mail is gated by THAT account's preference."""
+    if not (isinstance(principal, str) and principal.startswith("acct-")):
+        return None
+    a = ACCOUNTS.get(principal)
+    if a and a.get("email_verified") and a.get("email") and a.get("notify_email") is not False:
+        return a["email"]
+    return None
+
+
+def _notify_booking(event, booking, listing, *, extra=''):
+    # Best-effort booking event mail to buyer and/or owner. Never raises.
+    try:
+        nl = chr(10)
+        bid = booking.get('id', '?')
+        title = (listing or {}).get('title', 'a listing')
+        amt = booking.get('amount')
+        amt_s = ('%.2f' % amt) if isinstance(amt, (int, float)) else str(amt)
+        buyer = _acct_email_of(booking.get('booked_by'))
+        owner = _acct_email_of((listing or {}).get('owner'))
+        base = 'EverList: ' + title
+        mails = []
+        if event == 'created' and owner:
+            mails.append((owner, 'New booking: ' + base, nl.join([
+                'New booking for: ' + title + ' (booking ' + bid + ')',
+                'Amount: ' + amt_s + ' (escrow: ' + str(booking.get('escrow', '?')) + ')',
+                '',
+                'Confirm it in the EverList chat (my-listings) or via POST /book/' + bid + '/confirm.',
+                'Turn notifications off: say notify off in the EverList chat.'])))
+        elif event == 'released' and buyer:
+            mails.append((buyer, 'Confirmed: ' + base, nl.join([
+                'Your booking for: ' + title + ' (booking ' + bid + ') is confirmed.',
+                'Escrow released to the organizer. Amount: ' + amt_s + '.',
+                'Confirmation: ' + bid + '-ticket',
+                '',
+                'Turn notifications off: say notify off in the EverList chat.'])))
+        elif event == 'refunded':
+            if buyer:
+                mails.append((buyer, 'Refunded: ' + base, nl.join([
+                    'Your booking for: ' + title + ' (booking ' + bid + ') was cancelled.',
+                    'Full refund. Amount: ' + amt_s + '.',
+                    '',
+                    'Turn notifications off: say notify off in the EverList chat.'])))
+            if owner:
+                mails.append((owner, 'Cancelled: ' + base, nl.join([
+                    'Booking ' + bid + ' for: ' + title + ' was cancelled by the buyer.',
+                    'Escrow refunded to the buyer.',
+                    '',
+                    'Turn notifications off: say notify off in the EverList chat.'])))
+        for to, subj, body in mails:
+            _send_email(to, subj, body + ((nl + nl + extra) if extra else ''))
+    except Exception as e:  # notifications must never break the money flow
+        try:
+            print('[notify:error] %s: %s' % (type(e).__name__, e), flush=True)
+        except Exception:
+            pass
 
 
 if PAY_MODE == "testnet":
@@ -798,6 +871,7 @@ def _openapi_spec():
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
             "/accounts/payout": {"post": op("Register organizer payout coin PUBLIC key (64-hex; secrets never accepted)", "accounts")},
+            "/accounts/notify": {"post": op("Booking-notification preference (notify_email: true|false)", "accounts")},
             "/accounts/verify-midnight": {"post": op("Tier-2 sign-in: verify a Midnight credential (admitted + not revoked) and mark the account verified_by: midnight-zk", "accounts",
                                          note="fail-closed; mode (chain|simulated) labels the verification source")},
             "/accounts/me": {"delete": op("Account self-deletion (GDPR-style; ledger survives pseudonymously)", "accounts", sec=tok)},
@@ -1511,6 +1585,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "account_id": aid, "payout_pk": pk,
                 "note": "coin PUBLIC key stored - escrow payouts target this key; keep its secret ONLY in your wallet" +
                         (" (previous key replaced)" if replaced else "")})
+        if path == "/accounts/notify":
+            # B-phase: honest unsubscribe for booking notifications. Same auth
+            # law as /accounts/payout (login token or account_code; rate limit
+            # BEFORE any secret comparison). Default is ON (only for accounts
+            # that bind AND verify an email - no email, no mail, ever).
+            code = str(data.get("account_code", "")).strip()
+            want = data.get("notify_email")
+            if want not in (True, False):
+                return self._json(400, {"error": "notify_email must be true or false"})
+            ch = hashlib.sha256(code.encode()).hexdigest() if code else None
+            cred = self.headers.get("X-Hub-Token", "")
+            p, _err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred else (None, None)
+            if p:
+                p, _err = _gen_check(p)
+            with LOCK:
+                if not _auth_allow("payout", _source_of(self)):
+                    return self._json(429, {"error": "rate limit reached, retry later"})
+                if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
+                    aid = p["sub"]
+                else:
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
+                if not aid:
+                    return self._json(403, {"error": "login token or valid account_code required"})
+                ACCOUNTS[aid]["notify_email"] = bool(want)
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid, "notify_email": bool(want),
+                "note": "notifications on: booking created/confirmed/refunded mails (verified email only)" if want
+                        else "notifications off: no booking mails to this account"})
         if path == "/accounts/verify-midnight":
             # M14 Tier-2 sign-in: the account presents its Midnight credential
             # (credential.compact, M13). The hub READS the credential contract's
@@ -2318,6 +2420,7 @@ class Handler(BaseHTTPRequestHandler):
                 if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
                     listing["registered"] = listing.get("registered", 0) + qty
                 _persist_locked()
+            _notify_booking("created", booking, listing)
             # C12: per-rail flow lines (plain list building — no starred unpacks)
             if escrow_state == "DIRECT":
                 _flow = ["instant rail — payment settled at booking (DIRECT, no refund window)"]
@@ -2359,6 +2462,7 @@ class Handler(BaseHTTPRequestHandler):
                 for t in LEDGER:
                     if t["booking"] == bid: t["escrow"] = "RELEASED"; t["released_to"] = "owner"
                 _persist_locked()
+            _notify_booking("released", b, _listing_of(b))
             return self._json(200, {"ok": True, "id": bid, "escrow": "RELEASED",
                 "owner_received": b["owner_payout"], "confirmation": f"{bid}-ticket"})
         if path.startswith("/book/") and path.endswith("/cancel"):
@@ -2385,6 +2489,7 @@ class Handler(BaseHTTPRequestHandler):
                 for t in LEDGER:
                     if t["booking"] == bid: t["escrow"] = "REFUNDED"; t["refunded_to"] = "buyer"
                 _persist_locked()
+            _notify_booking("refunded", b, _listing_of(b))
             return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED"})
         if path.startswith("/book/") and path.endswith("/rate"):
             # S2: mutating route - per-source backstop before any auth work

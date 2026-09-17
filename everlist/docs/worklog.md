@@ -851,3 +851,10 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
 - Panel content now mirrors SSR /l/{id} 1:1: lmeta line (vertical · date · price · location), spots-left, full description, tag chips, ratings line, escrow note w/ refund window, 💬 book CTA + 📅 .ics link, organizer url, 'More from this organizer' switcher (in-board switchDetail) — reuses .ldetail classes so shared style.css renders panel = SSR page
 - Panel is strictly in flow (pushes rows); only the retreat animation floats, pointer-transparent, unconditionally removed
 - Verified: wedge sequence (open→Esc→immediate reopen→Esc) clean, no stray .detail-panel, board interactive; content parity vs /l/even-1 confirmed; make test ALL PASSED (E2E escrow HELD)
+
+## 2026-09-17 — Owner queue: analytics counter + Phase B email notifications
+- Self-hosted page-view counter (owner approved): page stems only (/l/*, /org/*, trust pages, home), no cookies, no third parties, disk-persisted across restarts, totals at GET /api/stats; suite checks are exact-delta (125/125)
+- Phase B: booking notifications ride the existing honest email layer (off|log|smtp) — created -> organizer, released -> buyer, refunded -> both; verified emails only; best-effort outside LOCK (never fails the money flow); unsubscribe line in every mail
+- New: POST /accounts/notify (notify_email true|false, payout-law auth) + chat 'notify off|on'; per-recipient gating caught by own E2E (notify off still mailed buyer) — fixed, 13/13
+- test_notify.py registered in gate (15 checks); full gate ALL PASSED incl. A2A escrow=HELD; parallel-session brain.py (mercury reasoning budget + show/book actions) gate-verified and synced
+- SMTP: dry-run default (HUB_EMAIL_MODE=log); goes live when owner sets HUB_EMAIL_MODE=smtp + creds
