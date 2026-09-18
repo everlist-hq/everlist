@@ -2091,6 +2091,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": "require_verified_buyer must be a boolean"})
             else:
                 data.pop("require_verified_buyer", None)
+            # S8: title/location intake hygiene — same discipline as the edit
+            # path. These fields flow into SSR pages, email subjects, ICS
+            # SUMMARY/LOCATION, JSON-LD and chat frames; strip, cap, and
+            # reject control chars/newlines at the door.
+            t2 = str(data.get("title", "")).strip()
+            if not t2:
+                return self._json(400, {"error": "title must not be empty"})
+            if len(t2) > 80:
+                return self._json(400, {"error": "title too long (max 80 chars)"})
+            if re.search(r"[\x00-\x1f\x7f\u202a-\u202e]", t2):
+                return self._json(400, {"error": "title must not contain control characters or newlines"})
+            data["title"] = t2
+            if data.get("location") is not None:
+                loc2 = str(data["location"]).strip()
+                if len(loc2) > 120:
+                    return self._json(400, {"error": "location too long (max 120 chars)"})
+                if re.search(r"[\x00-\x1f\x7f\u202a-\u202e]", loc2):
+                    return self._json(400, {"error": "location must not contain control characters or newlines"})
+                data["location"] = loc2
             allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # P2: private deals — 'listed but not public'. visibility=private keeps a

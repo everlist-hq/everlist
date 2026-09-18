@@ -92,9 +92,20 @@ def restore(state_path, backup_name, dry_run=False):
         shutil.copy2(state_path, undo)
         print(f"undo   : current state saved -> {os.path.basename(undo)}")
     tmp = state_path + ".restore-tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    # 0600 from creation: restored state.json carries booking secrets +
+    # account hashes; never let umask decide (storage.py discipline).
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(snap, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, state_path)
+    os.chmod(state_path, 0o600)
+    dfd = os.open(os.path.dirname(os.path.abspath(state_path)) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
     print(f"restored -> {state_path}")
     print("start the hub and verify with: curl <hub>/listings | count + /ledger totals")
 

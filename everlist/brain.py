@@ -86,10 +86,15 @@ def status() -> dict:
 _CTX: dict = {}          # sender -> (ts, [ {role, content}, ... ])
 _CTX_CAP = 16            # last 8 turns (user+assistant) — enough for 'actually cheaper'
 _CTX_TTL = 24 * 3600.0
+_CTX_SENDERS_CAP = 10_000  # M-C: cap law — every client-keyed dict gets a cap
 
 
 def _ctx(sender: str) -> list:
     now = time.time()
+    if len(_CTX) > _CTX_SENDERS_CAP and sender not in _CTX:
+        # evict oldest 10% by last-touch ts
+        for k in sorted(_CTX, key=lambda k: _CTX[k][0])[:len(_CTX) // 10]:
+            _CTX.pop(k, None)
     ent = _CTX.get(sender)
     if not ent or now - ent[0] > _CTX_TTL:
         _CTX[sender] = [now, []]
@@ -115,6 +120,7 @@ def forget(sender: str) -> None:
 _RL: dict = {}
 _RL_WINDOW = 300.0
 _RL_CAP = 30
+_RL_SENDERS_CAP = 10_000  # M-C: cap law — every client-keyed dict gets a cap
 
 
 def _rate_ok(sender: str) -> bool:
@@ -122,9 +128,18 @@ def _rate_ok(sender: str) -> bool:
     hits, win = _RL.get(sender) or ([], now)
     if now - win > _RL_WINDOW:
         hits, win = [], now
-    hits.append(now)
-    _RL[sender] = (hits, win)
-    return len(hits) <= _RL_CAP
+    over = len(hits) >= _RL_CAP
+    if not over:
+        # append only when the request will be allowed — a flood must not
+        # grow the timestamp list (M-C: append-before-check grew state on
+        # rejected requests too)
+        hits.append(now)
+        _RL[sender] = (hits, win)
+    if len(_RL) > _RL_SENDERS_CAP:
+        # evict oldest 10% by window start
+        for k in sorted(_RL, key=lambda k: _RL[k][1])[:len(_RL) // 10]:
+            _RL.pop(k, None)
+    return not over
 
 
 # ---- the system prompt: scope law + action protocol + voice --------------

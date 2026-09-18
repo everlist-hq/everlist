@@ -98,8 +98,12 @@ from uagents_core.contrib.protocols.chat import (
 proto = Protocol(name="hub-access", version="0.2")
 chat_proto = Protocol(spec=chat_protocol_spec)  # B3b: ASI:One chat (Agentverse discovery)
 
+import time  # token-cache clock; mid-file import matches uagents_core import below
+
 _http: httpx.AsyncClient | None = None
 _book_token: str | None = None
+_book_token_ts: float = 0.0
+_BOOK_TOKEN_TTL = 3300.0  # hub mints ttl=3600s; re-mint 5 min before expiry
 
 
 def _client() -> httpx.AsyncClient:
@@ -124,16 +128,33 @@ async def _shutdown(ctx: Context):
 
 
 async def _bootstrap_token(ctx: Context) -> str:
-    """I2: books as its own principal; bootstraps a reusable book token (cached)."""
-    global _book_token
-    if _book_token:
+    """I2 + H-A fix: books as its own principal; reuses the book token but
+    re-mints BEFORE hub TTL expiry (hub default ttl=3600s; we minted without
+    an explicit ttl, so the cache must never outlive the token)."""
+    global _book_token, _book_token_ts
+    if _book_token and (time.monotonic() - _book_token_ts) < _BOOK_TOKEN_TTL:
         return _book_token
     c = _client()
     r = await c.post(f"{HUB_URL}/access", json={"agent": "agent-hub-wrapper", "acts": ["book"]})
     r.raise_for_status()
     _book_token = r.json()["tokens"]["book"]
-    log.info("book token bootstrapped (value never logged)")  # B4: raw tokens are credentials
+    _book_token_ts = time.monotonic()
+    log.info("book token minted (value never logged)")  # B4: raw tokens are credentials
     return _book_token
+
+
+async def _book_with_token(c: httpx.AsyncClient, payload: dict) -> httpx.Response:
+    """POST /book with the cached token; on a 401 (expired/revoked token) force
+    one re-mint and retry — a cached-token expiry must never kill a booking."""
+    tok = await _bootstrap_token(None)
+    r = await c.post(f"{HUB_URL}/book", json=payload, headers={"X-Hub-Token": tok})
+    if r.status_code == 401:
+        global _book_token, _book_token_ts
+        log.warning("book token rejected (401) — re-minting once")
+        _book_token, _book_token_ts = None, 0.0
+        tok = await _bootstrap_token(None)
+        r = await c.post(f"{HUB_URL}/book", json=payload, headers={"X-Hub-Token": tok})
+    return r
 
 
 # B4: safe envelope codes - generic to the sender, detail only in local logs
@@ -170,18 +191,29 @@ async def handle(ctx: Context, sender: str, msg: HubRequest):
     if msg.action == "search":
         result = await _call_hub(ctx, c.get(f"{HUB_URL}/search", params={"q": msg.q}))
     elif msg.action == "book":
-        payload = {
-            "listing_id": msg.listing_id,
-            "attendee": msg.attendee or "unknown-via-uagent",
-            "human_verified": msg.human_verified,
-        }
-        try:
-            tok = await _bootstrap_token(ctx)
-            result = await _call_hub(ctx, c.post(f"{HUB_URL}/book", json=payload,
-                                                 headers={"X-Hub-Token": tok}))
-        except httpx.HTTPError as ex:
-            log.warning("bootstrap failure detail=%s", redact(repr(ex)))
-            result = json.dumps({"error": "hub is not reachable", "code": "UPSTREAM_UNREACHABLE"})
+        # H-B: optional sender allowlist (WRAPPER_BOOK_SENDERS, comma-separated
+        # agent addresses). Unset = pilot-open, mirroring the interim-open REST
+        # /book surface; set = only listed senders may book via this wrapper.
+        allow = os.environ.get("WRAPPER_BOOK_SENDERS", "").strip()
+        if allow and sender not in {s.strip() for s in allow.split(",") if s.strip()}:
+            log.warning("book request from non-allowlisted sender")
+            result = json.dumps({"error": "booking not permitted for this sender",
+                                 "code": "FORBIDDEN"})
+        else:
+            # H-B note: human_verified stays a hub-owned interim stub (SPEC §22:
+            # REST /book accepts the same flag; retirement is owner-gated when
+            # Tier-2 personhood lands). Relay hardening = sender allowlist.
+            payload = {
+                "listing_id": msg.listing_id,
+                "attendee": msg.attendee or "unknown-via-uagent",
+                "human_verified": msg.human_verified,
+            }
+            try:
+                result = await _call_hub(ctx, _book_with_token(c, payload))
+            except Exception as ex:  # L-C: sender always gets a reply envelope
+                log.warning("booking failure detail=%s", redact(repr(ex)))
+                result = json.dumps({"error": "hub request failed",
+                                     "code": "UPSTREAM_ERROR"})
     elif msg.action == "manifest":
         result = await _call_hub(ctx, c.get(f"{HUB_URL}/.well-known/agent-hub.json"))
     else:

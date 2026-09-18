@@ -416,6 +416,12 @@ def _sign_login(hub_url: str, seed_hex: str, agent: str):
 
 
 def _set_session(sender: str, res: dict) -> None:
+    # F5: cap enforced on the WRITE path too — a flood of successful logins
+    # with unique senders must not grow _SESSIONS unboundedly between reads
+    # (mirrors the _session() read-path eviction).
+    if len(_SESSIONS) >= _SESSIONS_CAP and sender not in _SESSIONS:
+        for k in sorted(_SESSIONS, key=lambda k: _SESSIONS[k].get("ts", 0))[:len(_SESSIONS) // 10]:
+            _SESSIONS.pop(k, None)  # evict oldest 10%
     _SESSIONS[sender] = {"account_id": res.get("account_id"), "tokens": res.get("tokens", {}),
                          "verified": bool(res.get("human_verified")), "ts": time.time(),
                          "payout_pk": res.get("payout_pk"),
@@ -1259,8 +1265,11 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         return (f"No listings matched{qualifier}. Try: 'search' (all), 'search jazz', "
                 "or 'find me a free yoga class'.")
     if len(_LAST_RESULTS) > 500:
-        _LAST_RESULTS.clear()
-        _LAST_SEARCH.clear()
+        # F8: evict the OLDEST sender's stash (insertion order) — never wipe
+        # every user's follow-up state because the cap was hit
+        for k in list(_LAST_RESULTS)[:len(_LAST_RESULTS) - 500]:
+            _LAST_RESULTS.pop(k, None)
+            _LAST_SEARCH.pop(k, None)
     _LAST_RESULTS[sender] = listings
     _LAST_SEARCH[sender] = {
         "q": " ".join(words) if words else "",

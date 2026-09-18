@@ -152,6 +152,20 @@ def _check_ip(host: str):
             raise FetchError(f"blocked destination: {ip} (private/loopback/link-local)")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """SSRF fix: urllib's default opener AUTO-FOLLOWS redirects (up to 10)
+    BEFORE our HTTPError branch can run — per-hop revalidation and
+    MAX_REDIRECTS were effectively dead code. Returning None forces every
+    3xx to raise HTTPError; fetch_json then recurses with full
+    scheme/credential/_check_ip checks per hop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def fetch_json(url: str, redirects: int = 0) -> dict:
     """SSRF-safe bounded JSON fetch with redirect revalidation."""
     parsed = urllib.parse.urlparse(url)
@@ -168,7 +182,7 @@ def fetch_json(url: str, redirects: int = 0) -> dict:
 
     req = urllib.request.Request(url, headers={"User-Agent": "agent-hub-registry/0.1"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with _OPENER.open(req, timeout=TIMEOUT) as resp:
             raw = resp.read(MAX_BYTES + 1)
             if len(raw) > MAX_BYTES:
                 raise FetchError("response exceeds byte budget")
@@ -211,6 +225,11 @@ def validate_manifest(man) -> tuple:
         return False, "hub must be a non-empty string"
     if not isinstance(man.get("protocol"), str):
         return False, "protocol must be a string"
+    if "fairness" in man and not isinstance(man["fairness"], dict):
+        return False, "fairness must be an object (F5)"
+    for _k in ("api_contract", "content_policy"):
+        if _k in man and not isinstance(man[_k], (dict, str)):
+            return False, f"{_k} must be an object or string (F5)"
     if not isinstance(man.get("payments"), dict):
         return False, "payments must be an object"
     if not isinstance(man.get("capabilities"), dict):
@@ -221,7 +240,11 @@ def validate_manifest(man) -> tuple:
 def ledger_url(rec: dict) -> str | None:
     """Resolve the hub's public ledger endpoint from its manifest.
     fairness.ledger is a hub-relative path (e.g. '/ledger')."""
-    path = rec.get("manifest", {}).get("fairness", {}).get("ledger")
+    path = (rec.get("manifest") or {}).get("fairness")
+    if isinstance(path, dict):
+        path = path.get("ledger")
+    else:
+        path = None  # fairness null/string/list: no ledger resolvable (F5 fix)
     if isinstance(path, str) and path.startswith("/"):
         return rec["url"].rstrip("/") + path
     if isinstance(path, str) and path.startswith("http"):

@@ -322,6 +322,24 @@ class Handler(BaseHTTPRequestHandler):
     def set_sid(self, sid):
         return self.cookie_attr(SESSION_MAX_AGE) % sid
 
+    def client_ip(self):
+        """Rate-limit key: real client IP when behind the local reverse proxy.
+
+        Caddy proxies chat.<domain> to 127.0.0.1:8804, so client_address is
+        127.0.0.1 for every visitor — an ip: bucket would be one GLOBAL bucket.
+        Trust X-Forwarded-For ONLY for loopback peers (the proxy), taking the
+        LAST hop (proxy-appended); direct non-loopback callers keep their own
+        address and cannot spoof the header to rotate buckets.
+        """
+        peer = self.client_address[0] if self.client_address else ""
+        if peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            xff = self.headers.get("X-Forwarded-For", "")
+            if xff:
+                last = xff.split(",")[-1].strip()
+                if last:
+                    return last[:64]
+        return peer
+
     def sid(self):
         """Existing valid sid, or a freshly minted one (caller sets the cookie)."""
         c = SimpleCookie()
@@ -669,7 +687,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 429, {"error": "rate limited"},
                 cookie=self.set_sid(sid), extra={"Retry-After": str(retry)})
-        ip = self.client_address[0]
+        ip = self.client_ip()
         ok, retry = allow("ip:" + ip, burst=RL_IP_BURST, per_minute=RL_IP_PER_MIN)
         if not ok:
             return self.reply(

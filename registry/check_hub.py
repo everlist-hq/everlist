@@ -27,7 +27,10 @@ Registry document verification (C6):
 Output verdicts:
   CONFORMANT            all checks pass
   NON-CONFORMANT        any inconsistency found (exit 1)
-  INSUFFICIENT-EVIDENCE cannot verify (empty ledger, missing endpoints)
+  INSUFFICIENT-EVIDENCE reachable but nothing verifiable (empty ledger,
+                    missing declarations) — honest zero state, exit 0
+  UNREACHABLE       hub/registry/ledger not contactable at all (exit 2) —
+                    a dark trust anchor must never look green to gates
 
 Usage: check_hub.py <hub_url>
 """
@@ -93,7 +96,7 @@ def check_registry(registry_url: str, expect_hub: str | None = None,
     try:
         doc = fetch_json(registry_url.rstrip("/") + "/registry.json")
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
-        return "INSUFFICIENT-EVIDENCE", [f"registry.json unreachable: {ex}"]
+        return "UNREACHABLE", [f"registry.json unreachable: {ex}"]
     ok, payload, why = verify_envelope(doc)
     if not ok:
         return "NON-CONFORMANT", [f"C6-REG FAIL: signature verification failed: {why}"]
@@ -132,9 +135,11 @@ def check_hub(base_url):
     try:
         man = fetch_json(base_url.rstrip("/") + "/.well-known/agent-hub.json")
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
-        return "INSUFFICIENT-EVIDENCE", [f"manifest unreachable: {ex}"]
-    fee_pct = man.get("fairness", {}).get("fee_policy", {}).get("actual_fee_pct")
-    led_path = man.get("fairness", {}).get("ledger")
+        return "UNREACHABLE", [f"manifest unreachable: {ex}"]
+    fair = man.get("fairness") or {}
+    fp = fair.get("fee_policy") or {}
+    fee_pct = fp.get("actual_fee_pct")
+    led_path = fair.get("ledger")
     if not isinstance(fee_pct, (int, float)):
         return "INSUFFICIENT-EVIDENCE", ["manifest declares no actual_fee_pct"]
     if not isinstance(led_path, str) or not led_path.startswith("/"):
@@ -144,7 +149,7 @@ def check_hub(base_url):
     try:
         led = fetch_json(base_url.rstrip("/") + led_path)
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as ex:
-        return "INSUFFICIENT-EVIDENCE", findings + [f"ledger unreachable: {ex}"]
+        return "UNREACHABLE", findings + [f"ledger unreachable: {ex}"]
     # separate-kind ledger events carry their own shape (no escrow key): the
     # x402 settlements since E-phase, and the M7 escrow_sync mirror entries
     # (from/to/chain_tx) - excluded from booking-escrow state accounting
@@ -296,7 +301,16 @@ def main():
     for f in findings:
         print(f"  - {f}")
     print(f"VERDICT: {verdict}")
-    sys.exit(1 if verdict == "NON-CONFORMANT" else 0)
+    # 0=CONFORMANT, or empty-ledger INSUFFICIENT-EVIDENCE (reachable hub,
+    # honest zero state); 1=NON-CONFORMANT; 2=UNREACHABLE (dark target).
+    # Cron/CI gates: treat 2 as failure — a down hub must never look green.
+    # (a dark hub/registry/ledger must NEVER look green to cron/CI gates)
+    if verdict == "NON-CONFORMANT":
+        sys.exit(1)
+    elif verdict == "UNREACHABLE":
+        sys.exit(2)
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":

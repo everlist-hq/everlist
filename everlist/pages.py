@@ -1,4 +1,4 @@
-import html, json, urllib.parse, urllib.request
+import html, json, re, urllib.parse, urllib.request
 from datetime import datetime as _dt, timedelta as _td
 
 # W2 discovery + SEO: server-rendered, indexable pages. The ONLY non-JS
@@ -275,7 +275,7 @@ def detail_html(l, hub=None):
     a("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">")
     a("<link rel=\"alternate\" type=\"text/calendar\" href=\"/l/" + esc(lid) + ".ics\">")
     a("<link rel=\"stylesheet\" href=\"/style.css\">")
-    a("<script type=\"application/ld+json\">" + json.dumps(_jsonld(l), ensure_ascii=False) + "</script>")
+    a("<script type=\"application/ld+json\">" + json.dumps(_jsonld(l), ensure_ascii=False).replace("</", "<\\/") + "</script>")
     a("</head><body><div class=\"page ldetail\">")
     a("<header class=\"top\"><div class=\"brand\"><img src=\"/favicon.svg\" alt=\"\" width=\"30\" height=\"30\"><span>EverList</span></div>"
       "<nav class=\"nav\"><a href=\"/\">Browse</a></nav></header>")
@@ -466,6 +466,29 @@ def booking_html(b, l=None):
     return ("\n".join(h) + "\n").encode("utf-8")
 
 
+def _ics_escape(v):
+    """RFC 5545 3.3.11 TEXT: escape backslash, semicolon, comma, newlines."""
+    v = str(v)
+    v = v.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+    v = v.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
+    # control chars other than escaped newline have no place in ICS TEXT
+    v = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", v)
+    return v
+
+def _ics_fold(line):
+    """RFC 5545 3.1: fold content lines longer than 75 octets (CRLF + space)."""
+    if len(line.encode("utf-8")) <= 75:
+        return line
+    parts, cur, curlen = [], "", 0
+    for ch in line:
+        chlen = len(ch.encode("utf-8"))
+        if curlen + chlen > 74:  # continuation keeps 74 chars + 1 space = 75
+            parts.append(cur)
+            cur, curlen = "", 0
+        cur += ch
+        curlen += chlen
+    return "\r\n ".join(parts + [cur])
+
 def ics_body(l):
     try:
         ymd = _dt.strptime(str(l.get("date")), "%Y-%m-%d").strftime("%Y%m%d")
@@ -478,12 +501,12 @@ def ics_body(l):
              "DTSTAMP:" + _dt.utcnow().strftime("%Y%m%dT%H%M%SZ"),
              "DTSTART;VALUE=DATE:" + ymd,
              "DTEND;VALUE=DATE:" + end,
-             "SUMMARY:" + (l.get("title") or "EverList listing"),
-             "LOCATION:" + (l.get("location") or ""),
-             "DESCRIPTION:" + (l.get("description") or "")[:400].replace("\n", " "),
+             "SUMMARY:" + _ics_escape(l.get("title") or "EverList listing"),
+             "LOCATION:" + _ics_escape(l.get("location") or ""),
+             "DESCRIPTION:" + _ics_escape((l.get("description") or "")[:400]),
              "URL:" + BASE + "/l/" + str(l.get("id")),
              "END:VEVENT", "END:VCALENDAR"]
-    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+    return ("\r\n".join(_ics_fold(ln) for ln in lines) + "\r\n").encode("utf-8")
 
 
 def sitemap_xml(hub=None):
