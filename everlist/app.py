@@ -380,7 +380,7 @@ def _load_state():
         ACCOUNTS.update(snap.get("accounts", {}))
         ID_COUNTERS.update(snap.get("id_counters", {}))
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
-        _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "pending_email": None,
+        _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "marketing_email": True, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
                     "recovery_code_hash": None, "recovery_exp": 0, "gen": 0,
                     "payout_pk": None, "midnight_credential": None}
@@ -978,7 +978,11 @@ class Handler(BaseHTTPRequestHandler):
                         and _unsub_valid(princ, tok)
                         and princ in ACCOUNTS):
                     with LOCK:
-                        ACCOUNTS[princ]["notify_email"] = False
+                        # S1 split: the EMAIL FOOTER link unsubscribes MARKETING
+                        # (weekly digest) only. Transactional booking
+                        # notifications stay on notify_email (chat-toggled),
+                        # security codes are never gated.
+                        ACCOUNTS[princ]["marketing_email"] = False
                         _persist_locked()
                     return _html_resp(self, 200, _ek.unsub_page(ok=True))
                 return _html_resp(self, 200, _ek.unsub_page(ok=False))
@@ -1512,9 +1516,9 @@ class Handler(BaseHTTPRequestHandler):
                         and _unsub_valid(princ, tok)
                         and princ in ACCOUNTS):
                     with LOCK:
-                        ACCOUNTS[princ]["notify_email"] = False
+                        ACCOUNTS[princ]["marketing_email"] = False
                         _persist_locked()
-                    return self._json(200, {"ok": True, "notify_email": False})
+                    return self._json(200, {"ok": True, "marketing_email": False})
                 return self._json(400, {"error": "invalid unsubscribe token"})
             except Exception:
                 return self._json(400, {"error": "invalid unsubscribe token"})
@@ -1584,6 +1588,7 @@ class Handler(BaseHTTPRequestHandler):
                 acct = {"bound": [agent], "human_verified": False,
                         "verified_by": None, "created": time.time(),
                         "email": None, "email_verified": False,
+                        "notify_email": True, "marketing_email": True,
                         "pending_email": None, "pending_code_hash": None,
                         "pending_exp": 0, "recovery_code_hash": None, "recovery_exp": 0,
                         "payout_pk": None, "midnight_credential": None}
@@ -1712,8 +1717,8 @@ class Handler(BaseHTTPRequestHandler):
                 ACCOUNTS[aid]["notify_email"] = bool(want)
                 _persist_locked()
             return self._json(200, {"ok": True, "account_id": aid, "notify_email": bool(want),
-                "note": "notifications on: booking created/confirmed/refunded mails (verified email only)" if want
-                        else "notifications off: no booking mails to this account"})
+                "note": "notifications on: transactional booking mails (created/confirmed/refunded; verified email only; marketing digest has its own opt-out)" if want
+                        else "notifications off: no booking mails to this account (security codes always send)"})
         if path == "/accounts/verify-midnight":
             # M14 Tier-2 sign-in: the account presents its Midnight credential
             # (credential.compact, M13). The hub READS the credential contract's
@@ -2710,7 +2715,7 @@ class Handler(BaseHTTPRequestHandler):
                 for o, d in sorted(per.items()):
                     a = ACCOUNTS.get(o)
                     if not (a and a.get("email_verified") and a.get("email")
-                            and a.get("notify_email") is not False):
+                            and a.get("marketing_email") is not False):
                         continue
                     wk_end = time.strftime('%Y-%m-%d', time.gmtime(now))
                     wk_start = time.strftime('%Y-%m-%d', time.gmtime(wstart))

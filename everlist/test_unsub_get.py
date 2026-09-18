@@ -1,8 +1,10 @@
-"""S1 red-team regression: GET /accounts/notify/unsubscribe used to crash the
-handler (module-level _html_resp called as self._html_resp) -> empty reply at
-the edge / 502 in production. Locks: garbage token -> 200 branded HTML page
-(never a crash), valid token -> 200 + notify_email flipped off + persisted,
-idempotent second hit, POST RFC8058 garbage -> 400 JSON.
+"""S1 red-team regression + owner email-split decision (2026-09-18):
+GET /accounts/notify/unsubscribe used to crash the handler (module-level
+_html_resp called as self._html_resp) -> empty reply at the edge / 502 in
+production. Locks: garbage token -> 200 branded HTML page (never a crash);
+valid token -> 200 + MARKETING_EMAIL flipped off while NOTIFY_EMAIL is
+preserved (transactional booking mails keep sending; codes are never gated);
+idempotent second hit; POST RFC8058 garbage -> 400 JSON.
 Run: python test_unsub_get.py
 """
 import hashlib, json, os, socket, subprocess, sys, time, atexit, tempfile, hmac
@@ -86,16 +88,19 @@ def main():
     st, body = req("GET", "/accounts/notify/unsubscribe?u=acct-fake&t=deadbeef")
     check("garbage token -> 200 html", st == 200 and "<html" in body.lower(), f"st={st}")
 
-    # 2. valid token -> 200 success page + notify_email flipped off + persisted
+    # 2. valid token -> 200 success page + MARKETING flag off, notify_email kept
     tok = hmac.new(b"dev-booking-key-change-me", princ.encode(), "sha256").hexdigest()[:32]
     st, body = req("GET", f"/accounts/notify/unsubscribe?u={princ}&t={tok}")
     check("valid token -> 200", st == 200, f"st={st}")
-    after = json.load(open(STATE))["accounts"][princ].get("notify_email")
-    check("notify_email flipped False", after is False, repr(after))
+    acct = json.load(open(STATE))["accounts"][princ]
+    check("marketing_email flipped False", acct.get("marketing_email") is False, repr(acct.get("marketing_email")))
+    check("notify_email PRESERVED (transactional)", acct.get("notify_email") is True, repr(acct.get("notify_email")))
 
-    # 3. idempotent second hit
+    # 3. idempotent second hit, notify_email still untouched
     st, body = req("GET", f"/accounts/notify/unsubscribe?u={princ}&t={tok}")
     check("second hit still 200", st == 200, f"st={st}")
+    acct = json.load(open(STATE))["accounts"][princ]
+    check("notify_email still True after 2nd hit", acct.get("notify_email") is True, repr(acct.get("notify_email")))
 
     # 4. POST RFC8058 garbage -> 400 JSON (unchanged contract)
     rq = urllib.request.Request(BASE + "/accounts/notify/unsubscribe?u=acct-x&t=yy", data=b"", method="POST")

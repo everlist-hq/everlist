@@ -84,8 +84,9 @@ def _footer_lines(unsub_url, note=None):
     if note:
         lines.append(_esc(note))
     if unsub_url:
-        lines.append('<a href="%s" style="color:%s;">Unsubscribe from booking emails</a>'
-                     ' &nbsp;or say <b>notify off</b> in the EverList chat.'
+        lines.append('<a href="%s" style="color:%s;">Unsubscribe from promotional emails</a>'
+                     ' (weekly digest; booking + security emails unaffected)'
+                     ' &nbsp;or say <b>notify off</b> in the EverList chat for booking mails.'
                      % (_esc(unsub_url), _C["cyan"]))
     else:
         lines.append('Say <b>notify off</b> in the EverList chat to turn these off.')
@@ -263,9 +264,10 @@ def send_smtp(host, port, user, password, from_addr, to, msg, timeout=15):
 def unsub_page(ok=True, already=False):
     if ok:
         head = "You're unsubscribed"
-        body = _p('You will no longer receive booking notification emails. '
-                  'Your bookings and escrow are unaffected - say <b>notify on</b> '
-                  'in the EverList chat any time to turn them back on.')
+        body = _p('You will no longer receive the weekly promotional digest. '
+                  '<b>Booking notifications and security codes are NOT affected</b> - '
+                  'those are service messages and keep arriving. To also silence '
+                  'booking mails, say <b>notify off</b> in the EverList chat.')
     elif already is not None and not ok:
         head = "Link expired"
         body = _p('That unsubscribe link is not valid. Say <b>notify off</b> '
