@@ -69,6 +69,9 @@ _FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
 _FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "inception/mercury-2.5")
 
 _STAT = {"ok": 0, "off_topic": 0, "errors": 0, "last_error": "", "model": _MODEL}
+# last LLM call info for the chat log (chatlog._brain_info reads this):
+# {"provider": primary|fallback, "action": <action>, "ms": float}
+LAST: dict = {}
 
 
 def status() -> dict:
@@ -338,6 +341,7 @@ def _call(user_msg: str, ctx: list, site_state: str = ""):
     msgs = [{"role": "system", "content": sys_prompt}]
     msgs += [m for m in (ctx or []) if m.get("role") in ("user", "assistant")]
     msgs.append({"role": "user", "content": user_msg[:600]})
+    _t0 = time.time()
     for name, url, key, model in chain:
         for attempt, budget in ((1, _MAX_TOKENS), (2, _MAX_TOKENS * 2)):
             body = json.dumps({"model": model, "messages": msgs,
@@ -361,12 +365,18 @@ def _call(user_msg: str, ctx: list, site_state: str = ""):
                 obj = _extract_json(content)
                 if obj and obj.get("action") in ("search", "refine", "nav", "ack", "meta",
                                                  "show", "book", "off_topic"):
+                    LAST.clear()
+                    LAST.update({"provider": name, "action": obj.get("action"),
+                                 "ms": round((time.time() - _t0) * 1000, 1)})
                     return obj
                 _perr(name, "invalid action object")
                 break
             except Exception as e:
                 _perr(name, "%s: %s" % (type(e).__name__, e))
                 break
+    LAST.clear()
+    LAST.update({"provider": "none", "action": None,
+                 "ms": round((time.time() - _t0) * 1000, 1)})
     return None
 
 

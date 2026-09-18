@@ -21,6 +21,8 @@ import sys
 import time
 import urllib.error
 import urllib.parse
+
+import chatlog
 import urllib.request
 import sys
 from datetime import datetime as _dt
@@ -1615,6 +1617,27 @@ def last_results(sender: str, cap: int = 48) -> list:
 
 
 def handle_text(hub_url: str, text: str, sender: str = "") -> str:
+    """Public entry: delegates to _handle_text_core and logs the top-level
+    turn (owner call 2026-09-18: keep all chat messages to improve the chat).
+    Depth-guarded: internal re-entries (brain_book typed re-entry, fail-open
+    re-entry) do NOT double-log. Logging can never break the chat."""
+    _d0 = chatlog.depth_inc()
+    _t0 = time.time()
+    try:
+        reply = _handle_text_core(hub_url, text, sender)
+    except Exception as e:
+        if _d0 == 0:
+            chatlog.log_turn(sender, text, "", (time.time() - _t0) * 1000,
+                             ok=False, error=e)
+        raise
+    finally:
+        chatlog.depth_dec()
+    if _d0 == 0:
+        chatlog.log_turn(sender, text, reply, (time.time() - _t0) * 1000)
+    return reply
+
+
+def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
 
