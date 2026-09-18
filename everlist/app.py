@@ -980,10 +980,10 @@ class Handler(BaseHTTPRequestHandler):
                     with LOCK:
                         ACCOUNTS[princ]["notify_email"] = False
                         _persist_locked()
-                    return self._html_resp(200, _ek.unsub_page(ok=True))
-                return self._html_resp(200, _ek.unsub_page(ok=False))
+                    return _html_resp(self, 200, _ek.unsub_page(ok=True))
+                return _html_resp(self, 200, _ek.unsub_page(ok=False))
             except Exception:
-                return self._html_resp(200, "<html><body><p>Unsubscribe link invalid. "
+                return _html_resp(self, 200, "<html><body><p>Unsubscribe link invalid. "
                     "Say notify off in the EverList chat.</p></body></html>")
         if u.path == "/auth/challenge":
             """HARDENING-v2: challenge issuance for cost curves.
