@@ -53,3 +53,18 @@ PrivateTmp, kernel/controlgroup protections. Pre-change units backed up in
   (Backblaze B2 etc.) = 5-min owner signup; then point pull-backup.sh at it.
 - Email deliverability depends on Resend free tier (100/day).
 - Container cron dies with the container; the A0 supervisor restarts it.
+
+## Hardening pass 2 (2026-09-18, owner request)
+
+| Layer | State |
+| --- | --- |
+| SSH | key-only (PasswordAuthentication no, first-match drop-in `00-everlist-hardening.conf` beats cloud-init's `50-`), X11 off, root login prohibit-password. Proven: fresh key login OK, password refused (`Permission denied (publickey)`) |
+| ufw | 22/tcp now LIMIT (rate-limited), 80/443 allow; default deny incoming |
+| fail2ban | installed, sshd jail on systemd backend, ban 1h / 5 tries / 10min. Already holding failed attempts |
+| Web headers | HSTS(1y+subdomains), nosniff, SAMEORIGIN, strict-origin-when-cross-origin, Server stripped — live on everlist.network |
+| Durability | `tools/deploy.sh` now renders headers AND the `/org/*` matcher (Caddy drift class closed at the source) |
+| Backups | nightly payload now includes server configs (`conf.tar.gz`: Caddyfile, sshd drop-ins, fail2ban jail, cron, systemd units+drop-ins). Verified: pulled off-box, decrypted container-side, all parts open |
+
+**Trap recorded:** sshd_config.d is FIRST-match-wins — `50-cloud-init.conf` silently shadowed `99-*.conf`. EverList drop-ins sort `00-`.
+
+**Pending owner GO: kernel + 158 package updates installed but awaiting reboot** (running 6.8.0-31, installed 6.8.0-139). ~1 min downtime, any low-traffic time.

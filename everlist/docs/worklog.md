@@ -979,3 +979,34 @@ Shipped in one session, every layer verified:
 
 Honest limits: offsite = A0 container (same operator; B2 upgrade = owner signup,
 5 min). External watchdog depends on container cron (A0 supervisor restarts it).
+
+## 2026-09-18 (12:45) — S1 red-team pass 3 started: prod unsubscribe 502 root-caused
+- Owner GO: red items (S1+S2), then the rest (O5/O6 already shipped by concurrent resilience batch — verified, not redone).
+- Ops: dev hub was STALE (Sep 17 22:03 process serving pre-digest code) + wrapper/webchat DEAD; bounced to current build before probing.
+- Live probes (discovery-first): admin walls 403 (review-queue POST 404 = GET-only, correct), suggest oversize 400, traversal 404, forged unsub no state change, MCP initialize/tools-list anon but tool calls follow REST auth, ledger anon-by-design (opaque refs only).
+- REAL BUG (S1-1, production-impacting): GET /accounts/notify/unsubscribe crashed with AttributeError (module-level _html_resp called as self._html_resp) -> empty reply locally, 502 in production. Every branded email's unsubscribe landing link was broken at the edge; mailbox auto-fetch of List-Unsubscribe URLs hits it too.
+- Fix: _html_resp(self, ...) called correctly at all 3 sites; new self-contained suite test_unsub_get.py (7 checks: garbage->200 html, valid->flip+persist, idempotent, POST 400) wired into gate after digest stage.
+- Verified: suite 7/7; full gate ALL PASSED (escrow E2E HELD). Push pending -> CI deploy fixes production.
+
+## 2026-09-18 (12:50) — S1 red-team pass 3 + S2 rate-limit sweep 2 COMPLETE
+- S1-1 fixed & shipped: GET unsub crash (prod 502 on email unsubscribe links); CI tests+deploy green e7a5ec5; PRODUCTION re-verified: unsub GET 200 + branded HTML, manifest/listings unharmed.
+- S2: all new POST endpoints burst-probed (auth/validation walls correct), MCP inherits REST limiters, read backstop verified (600/min, trip locked by B7 suite), source rotation blocked (TRUST_PROXY opt-in only).
+- Backlog S1+S2 ticked with dates. Gated remainders untouched (C7/C10 as before).
+
+## 2026-09-18 (13:05) — Email split: unsubscribe = marketing only (owner decision)
+- Owner point: "unsubscribe should be only for marketing emails". Audit: verify/recover codes were ALREADY never gated; but the email-footer link killed transactional booking notifications too (notify_email).
+- Split shipped: new account field marketing_email (default True, legacy migration + explicit at signup); email-footer unsubscribe (GET landing + POST RFC8058) flips ONLY marketing_email; weekly digest gates on marketing_email; booking notifications remain on notify_email (chat 'notify off/on'); security codes never gated.
+- Wording made honest: footer link says 'Unsubscribe from promotional emails (weekly digest; booking + security emails unaffected)'; landing page states booking mails keep arriving and teaches 'notify off' for those.
+- test_unsub_get.py extended to 9 checks (marketing off + notify_email preserved after 1st and 2nd hit); full gate ALL PASSED (notify 15, emailkit 41, digest 12, webchat 127, escrow E2E HELD).
+
+## 2026-09-18 (2) — Hardening pass 2 (owner: "what else can be done to harden it?")
+
+- SSH: password auth OFF (proven by fresh-connection test), X11 off, root prohibit-password.
+  Trap: sshd first-match drop-ins — cloud-init 50- shadowed 99-; fixed with 00- prefix.
+- ufw: 22/tcp LIMIT. fail2ban: sshd jail live (systemd backend), already 20 failed held.
+- Caddy security headers live (HSTS/nosniff/SAMEORIGIN/referrer/−Server) + deploy.sh
+  renders them now; also restored missing /org/* matcher in deploy.sh (drift class).
+- Nightly backup payload extended with server configs; verified off-box decrypt with
+  secret key held only in container; hub.db opens (15 listings).
+- Pending owner GO: kernel/updates reboot (158 pkgs, kernel 6.8.0-139 installed).
+- Live checks: all services active; headers curl-verified; MCP POST handshake OK.

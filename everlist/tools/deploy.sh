@@ -38,9 +38,17 @@ cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
     encode zstd gzip
 
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
     # Browser chat is the face of the site; the agent hub API shares the same
     # domain under its own paths (agents discover it via /.well-known/...).
-    @chat path / /index.html /api/* /app.js /style.css /favicon.svg /nacl-fast.min.js /l/* /booking/* /transparency /network /how /agents /og/* /theme.js /sw.js /manifest.webmanifest /logo-512.png /sitemap.xml /robots.txt
+    @chat path / /index.html /api/* /app.js /style.css /favicon.svg /nacl-fast.min.js /l/* /booking/* /transparency /network /how /agents /og/* /theme.js /sw.js /manifest.webmanifest /logo-512.png /org/* /sitemap.xml /robots.txt
     handle @chat {
         reverse_proxy 127.0.0.1:$WEBCHAT_PORT
     }
