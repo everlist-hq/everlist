@@ -476,6 +476,7 @@ SMTP_PORT = int(os.environ.get("HUB_SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("HUB_SMTP_USER", "")
 SMTP_PASS = os.environ.get("HUB_SMTP_PASS", "")
 MAIL_FROM = os.environ.get("HUB_MAIL_FROM", SMTP_USER or "everlist@localhost")
+PUBLIC_URL_DIGEST = os.environ.get("HUB_PUBLIC_URL", "https://everlist.network").rstrip("/")
 
 
 def _send_email(to, subject, body):
@@ -527,6 +528,15 @@ def _acct_email_of(principal):
 def urlquote(s):
     from urllib.parse import quote as _q
     return _q(s, safe='')
+
+
+def emailkit_digest(org_name, week_start, week_end, created, confirmed, cancelled,
+                    gross, listings_active, unsub_url=None):
+    import emailkit as _ek
+    return _ek.organizer_digest(org_name=org_name, week_start=week_start,
+        week_end=week_end, created=created, confirmed=confirmed,
+        cancelled=cancelled, gross=gross, listings_active=listings_active,
+        unsub_url=unsub_url)
 
 
 def emailkit_code(kind, code):
@@ -2656,6 +2666,66 @@ class Handler(BaseHTTPRequestHandler):
             if not sub: return self._json(400, {"error": "booking_id required"})
             tok = hublib.mint_token(ADMIN_KEY, "confirm", sub, ttl=int(data.get("ttl", 3600)))
             return self._json(201, {"ok": True, "token": tok, "act": "confirm", "booking_id": sub})
+        if path == "/admin/digest/send":
+            # Weekly organizer digest (Phase B follow-up, owner-approved polish
+            # batch 2026-09-18). Admin-gated; body: {weeks: N (default 1),
+            # dry_run: bool}. For every organizer account with a VERIFIED email
+            # and notify_email on: counts bookings on their listings created in
+            # the window + gross amount, sends ONE branded summary. Returns
+            # per-organizer results; dry_run computes but sends nothing.
+            cred = self.headers.get("X-Hub-Token", "")
+            if not hmac.compare_digest(cred, ADMIN_KEY):
+                return self._json(403, {"error": "invalid admin key"})
+            with LOCK:
+                if not _auth_allow("admin", _source_of(self)):
+                    return self._json(429, {"error": "admin rate limit reached for your source, retry later"})
+                weeks = data.get("weeks", 1)
+                if not isinstance(weeks, int) or weeks < 1 or weeks > 12:
+                    return self._json(400, {"error": "weeks must be int 1..12"})
+                dry = bool(data.get("dry_run"))
+                now = time.time()
+                wstart = now - weeks * 7 * 86400
+                per = {}
+                for b in BOOKINGS:
+                    if not isinstance(b.get("created"), (int, float)) or b["created"] < wstart:
+                        continue
+                    lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
+                    if not lst:
+                        continue
+                    o = lst.get("owner")
+                    if not (isinstance(o, str) and o.startswith("acct-")):
+                        continue
+                    d = per.setdefault(o, {"created": 0, "confirmed": 0, "cancelled": 0, "gross": 0.0})
+                    d["created"] += 1
+                    esc = b.get("escrow")
+                    amt = b.get("amount") or 0
+                    if esc == "RELEASED":
+                        d["confirmed"] += 1
+                    elif esc in ("REFUNDED", "CANCELLED"):
+                        d["cancelled"] += 1
+                    if esc in ("HELD", "RELEASED"):
+                        d["gross"] += amt
+                active = sum(1 for l in LISTINGS if not l.get("archived"))
+                results = []
+                for o, d in sorted(per.items()):
+                    a = ACCOUNTS.get(o)
+                    if not (a and a.get("email_verified") and a.get("email")
+                            and a.get("notify_email") is not False):
+                        continue
+                    wk_end = time.strftime('%Y-%m-%d', time.gmtime(now))
+                    wk_start = time.strftime('%Y-%m-%d', time.gmtime(wstart))
+                    _unsub_url = PUBLIC_URL_DIGEST + "/accounts/notify/unsubscribe?u=%s&t=%s" % (
+                        urlquote(o), _unsub_token(o))
+                    tmpl = emailkit_digest("organizer", wk_start, wk_end,
+                                           d["created"], d["confirmed"], d["cancelled"],
+                                           d["gross"], active, unsub_url=_unsub_url)
+                    if dry:
+                        results.append({"to": a["email"], "would_send": True, **d})
+                    else:
+                        _send_email(a["email"], tmpl["subject"], tmpl)
+                        results.append({"to": a["email"], "sent": True, **d})
+                return self._json(200, {"ok": True, "window_days": weeks * 7,
+                    "dry_run": dry, "sent": len(results), "results": results})
         if path == "/admin/sync-escrow":
             # M7: mirror sync - the CHAIN is the source of truth for escrow
             # state. Pulls public escrow state from a Midnight indexer for every

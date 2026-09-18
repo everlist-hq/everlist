@@ -163,6 +163,41 @@ def _with_unsub(text):
     return text + "\n\nTurn notifications off: say notify off in the EverList chat."
 
 
+# ------------------------------------------------------------------ digest ---
+
+def organizer_digest(*, org_name, week_start, week_end, created=0, confirmed=0,
+                     cancelled=0, gross=0.0, listings_active=0, unsub_url=None):
+    """Weekly summary for an organizer. Amounts in hub currency. Returns
+    dict(subject, text, html)."""
+    span = '%s to %s' % (week_start, week_end)
+    heading = 'Your week on EverList'
+    rows = [("Week", span), ("Active listings", listings_active)]
+    if created:
+        rows.append(("New bookings", created))
+    if confirmed:
+        rows.append(("Confirmed (escrow released)", confirmed))
+    if cancelled:
+        rows.append(("Cancelled (auto-refunded)", cancelled))
+    rows.append(("Gross booked", '%.2f' % gross))
+    intro = _p('Here is your week at a glance. Nothing to do unless something '
+               'needs confirming - unconfirmed bookings auto-refund when the '
+               'refund window lapses.')
+    if created == 0 and confirmed == 0 and cancelled == 0:
+        intro = _p('A quiet week - no new bookings. Your listings stay up and '
+                   'bookable; agents can find them around the clock.')
+        body = intro + _detail_rows(rows) + _btn('Open EverList', PUBLIC_URL)
+    else:
+        body = intro + _detail_rows(rows) + _btn('Review bookings', PUBLIC_URL)
+    text = ('Your week on EverList (%s)\n'
+            'Active listings: %d\nNew bookings: %d\nConfirmed: %d\n'
+            'Cancelled: %d\nGross booked: %.2f\n\n'
+            'Turn notifications off: say notify off in the EverList chat.'
+            % (span, listings_active, created, confirmed, cancelled, gross))
+    return {"subject": "Your week on EverList: %d booking%s" % (
+                created + confirmed + cancelled, '' if (created + confirmed + cancelled) == 1 else 's'),
+            "text": text, "html": _shell(heading, body, _footer_lines(unsub_url))}
+
+
 # ------------------------------------------------------------------- codes ---
 
 def code_email(kind, code, minutes=15):
