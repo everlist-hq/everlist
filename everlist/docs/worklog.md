@@ -925,3 +925,57 @@ synced. Suite 94/94, full gate ALL PASSED (A2A escrow=HELD).
   account verify/recovery mails. No changes requested.
 - Full approved plan complete: A org pages, B real+branded email, C jobs, D MCP.
   Remaining lane: human pilot outreach (organizers).
+
+## 2026-09-17 (late) — Board v5: detail overlay on top, no page scroll
+- Owner call: detail opens ON TOP — dimmed backdrop, centered panel (max-height, internal scroll), scroll lock on body. Board never reflows; ghost-hole/push system removed entirely (all FLIP board-motion code deleted).
+- Flash fix: on close the panel fades fast (half transparent by 40% of the run) BEFORE shrinking toward the card rect — the end-of-shrink flash is structurally impossible.
+- Close paths: x (sticky, always visible while panel scrolls), Escape, backdrop click, browser back. Book CTA closes the overlay first so the chat dock is visible.
+- Fixed chat-nav guard (openDetailCard -> overlayEl) after the model switch.
+- Ops: stale hubs from Sep 15/16 (8802/8812/40389) were holding the state lock and one served the dev board; stopped the lock holder, restored canonical stack (hub 8802 + wrapper + webchat 8804) via make up / make webchat-up.
+- Verified: make test ALL PASSED (escrow E2E HELD); live 8804: overlay open via card+details, close via x/Escape/backdrop, deep link /l/even-1 200.
+
+## 2026-09-17 (night) — Board v6: detail panel back in-grid, row ABOVE the clicked card
+- Owner call: NOT an overlay — full-row in-grid panel like the earlier implementation, but inserted in a row ABOVE the clicked card. Rows above stay put; clicked row + everything below slide down; clicked slot is the dashed ghost hole.
+- Open morph: panel grows straight out of the clicked card into its slot above (transform-only). Close: fade FAST first (half gone by 40%), then shrink into the card — flash structurally impossible.
+- Overlay/scroll-lock CSS replaced with the v4-style in-grid rules (ghost hole, full-row panel); chat-nav guard back to openDetailCard.
+- Ops: restored canonical dev stack (hub :8802 + wrapper + webchat :8804) after stale processes held the state lock.
+- Verified: make test ALL PASSED (escrow E2E HELD); live 8804: row-above placement screenshot-confirmed (row 1 intact, panel between rows, below pushed down), Esc close OK.
+
+## 2026-09-17 (22:45) — Board v7: close-retreat glitch root-caused and fixed
+- Owner report: the close still did not slide back perfectly. Three real defects found in closeDetail:
+  1. Mis-dock: the hole rect was measured INSIDE requestAnimationFrame after the board slides had started — getBoundingClientRect includes transforms, so the panel aimed at the hole's animated START position (a row below its final resting place). Now measured synchronously BEFORE any transform runs.
+  2. One-frame jump: compensating board slides were applied in the next frame (rAF), so the board teleported for one frame before sliding. Slides now start in the same task — first painted frame is already the sliding state.
+  3. Scroll fight: the frozen panel used position:fixed while closeDetail also ran smooth scrollIntoView — scrolling moved the hole relative to the frozen panel. Panel now frozen with position:absolute in document coordinates (+border-box) and the close-time scroll was removed entirely.
+- Panel retreat now shares the board slide's exact 340ms/EASE timing so panel and cards land together, pixel-exact.
+- Verified: make test ALL PASSED (escrow E2E HELD); live 8804: close via x returns board to pixel-clean state (screenshot), rapid open->open switches in one FLIP step, Esc close clean.
+
+## 2026-09-18 (00:40) — Board v8: end-of-close flash root-caused (WAAPI revert)
+- Owner report: at the very end of the close the panel "opens up briefly again".
+- Root cause (mechanical): the retreat animation (Web Animations API) had no fill mode. WAAPI reverts the element to its natural style (opacity 1, full size) the instant the 340ms animation finishes; the removal timer fired 20ms later — a 1-2 frame full-panel flash at the end.
+- Fix: fill:"both" pins the final invisible frame, and removal is chained to animation.finished (no gap); failsafe timer kept at 400ms.
+- Verified: make test ALL PASSED (escrow E2E HELD); live 8804: close via x, end state pixel-clean (screenshot).
+
+## 2026-09-18 — Resilience polish batch (owner: "Do all of it!")
+
+Shipped in one session, every layer verified:
+
+- **Weekly organizer digest**: emailkit `organizer_digest` template (+zero-state),
+  admin-gated `POST /admin/digest/send` (dry_run support), `test_digest.py` 12/12
+  registered in gate. Box cron Mondays 09:00 UTC. Live dry-run verified (sent=0 —
+  honest: no organizer bookings yet). Staging `2e9323d` (+`ab93fb8` docs path fix).
+- **Backlog cleanup**: C8 (MCP), O4 (email), O8 (landing) marked shipped in backlog-v3.
+- **Systemd hardening**: all 3 units sandboxed (NoNewPrivileges, ProtectSystem=strict,
+  ProtectHome=tmpfs+BindPaths, PrivateTmp, kernel protections); units backed up first;
+  all services re-verified 200 after.
+- **On-server watchdog**: 5-min cron, restarts hung services, email alert (1/h limit).
+- **External watchdog** (container = separate machine): 10-min cron against
+  everlist.network public URL, DOWN + RECOVERED emails, 45s double-check.
+- **Nightly encrypted backups**: consistent SQLite snapshot + env, GPG-encrypted
+  (secret key ONLY in container .secrets/gnupg), 14 kept on box, pulled off-box
+  daily to container. **Restore drill PASSED**: decrypt → SQLite opens (15 listings)
+  → env present.
+- Both alert paths test-fired (2 real emails). Runbook: docs/ops/runbook.md.
+- Full gate ALL PASSED (incl. new digest suite); CI tests+deploy green on both commits.
+
+Honest limits: offsite = A0 container (same operator; B2 upgrade = owner signup,
+5 min). External watchdog depends on container cron (A0 supervisor restarts it).
