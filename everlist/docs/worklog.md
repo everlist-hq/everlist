@@ -1010,3 +1010,14 @@ Honest limits: offsite = A0 container (same operator; B2 upgrade = owner signup,
   secret key held only in container; hub.db opens (15 listings).
 - Pending owner GO: kernel/updates reboot (158 pkgs, kernel 6.8.0-139 installed).
 - Live checks: all services active; headers curl-verified; MCP POST handshake OK.
+
+## 2026-09-18 (3) — Owner-approved reboot (kernel + updates activation)
+
+- Fresh encrypted backup taken seconds before reboot (everlist-20260918-1154.tar.gpg).
+- Reboot issued 11:57 UTC; server back after ~20s.
+- Verified post-boot: kernel 6.8.0-139 active, reboot-required flag cleared (158
+  package updates now live), all 7 services active, fail2ban jail fresh + watching,
+  ufw rules intact, SSH key-only policy survived, local endpoints 200, public site
+  200 + security headers present (Caddy config persisted).
+- Note: HEAD requests return 501 (pre-existing Python http.server quirk in webchat,
+  visible before the reboot too); GET is the operative method everywhere incl. watchdogs.
