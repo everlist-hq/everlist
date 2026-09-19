@@ -2559,7 +2559,12 @@ class Handler(BaseHTTPRequestHandler):
                          f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
             resp = {**booking,
                 "booking_secret": secret, "secret_note": "shown ONCE; required to view private details",
-                "cancel_token": hublib.mint_token(BOOKING_KEY, "cancel", bid, ttl=7*24*3600),
+                "cancel_token": hublib.mint_token(BOOKING_KEY, "cancel", bid,
+                    # S7: TTL must outlive the advertised refund window — a buyer
+                    # on a 30-day window loses their only self-refund credential
+                    # at day 7 with a fixed 7d token.
+                    ttl=max(7 * 24 * 3600,
+                            int((_pt or {}).get("refund_window_hours", 0) or 0) * 3600 + 48 * 3600)),
                 "flow": _flow}
             if idem_key:
                 with LOCK:
@@ -2606,6 +2611,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(409, {"error": "instant rail: payment settled at booking - no refund window (listing terms)"})
                 if b["escrow"] not in ("HELD", "WAIVED"):  # H15: WAIVED (free) bookings are cancellable too
                     return self._json(409, {"error": f"escrow is {b['escrow']}"})
+                # S7: enforce the advertised refund window — the hub must never
+                # bookkeep a refund the escrow contract will not execute (the
+                # chain walls refunds past its claim deadline; sync-escrow
+                # refuses the divergent hub REFUNDED / chain RELEASED pair).
+                # Deadline = booking creation + the server-owned terms snapshot
+                # taken at booking time; pre-C12 bookings get the vertical
+                # default. WAIVED moves no money and stays cancellable.
+                if b["escrow"] == "HELD":
+                    _ptc = b.get("payment_terms") or {}
+                    _win = _ptc.get("refund_window_hours")
+                    if not isinstance(_win, int) or _win <= 0:
+                        _win = _DEFAULT_REFUND_WINDOW_HOURS.get(b.get("vertical"), 72)
+                    if time.time() > b["created"] + _win * 3600:
+                        return self._json(409, {
+                            "error": f"refund window closed ({_win}h after booking)",
+                            "note": "the escrow contract auto-releases funds to the organizer after the claim deadline; hub bookkeeping mirrors the chain, so a late hub-side refund is refused",
+                            "hint": "on-chain timeoutRefund stays available to the buyer until the chain claim deadline; the hub cannot co-sign a refund past it"})
                 b["escrow"] = "REFUNDED"
                 # I3: restore capacity exactly once, atomically with the escrow transition
                 lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)

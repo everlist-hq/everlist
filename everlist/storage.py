@@ -11,15 +11,16 @@
 - app.py injects its RESOLVED paths via configure() (no guessed defaults here).
 - H4 note: the single-instance flock stays on the canonical state-file path;
   in sqlite mode the DB lives alongside it (same operator config).
-- B8 backups stay file-mode in 1.1: in sqlite mode _backup_locked no-ops
-  naturally (no STATE_FILE yet) - the WAL'd DB file is the recovery surface.
+- B8 backups (2026-09-18): BOTH modes rotate pre-persist snapshots to
+  <state_dir>/backups/state-<ns>.json (plain JSON, identical restore tooling);
+  in sqlite mode the CURRENT meta.snap is dumped before each overwrite.
 - C6 (vertical expansion plan 1.2): sqlite mode additionally maintains a
   DERIVED, rebuildable listing index - normalized columns (vertical, city,
   date, tags) + an FTS5 external-content index over title/description/tags -
   updated in the SAME transaction as meta.snap. meta.snap remains the single
   source of truth; the index is a pure cache (safe to drop/rebuild anytime).
 """
-import json, os, re, sqlite3
+import json, os, re, sqlite3, time
 
 FSYNC = os.environ.get("HUB_FSYNC", "1") != "0"
 _cfg = {"mode": os.environ.get("HUB_STORAGE_MODE", "file").strip().lower(),
@@ -131,8 +132,56 @@ def read_snapshot():
     with open(sf) as f:
         return json.load(f)
 
+# B8 parity: same env knobs as app.py's file-mode rotation (shared operator config).
+BACKUP_MIN_BYTES = int(os.environ.get("HUB_BACKUP_MIN_BYTES", "1000000"))
+BACKUP_KEEP = int(os.environ.get("HUB_BACKUP_KEEP", "5"))
+
+
+def _backup_snap_locked():
+    """B8 parity for sqlite mode: called at the START of a sqlite write_snapshot,
+    BEFORE the incoming snapshot overwrites meta.snap - dumps the CURRENT
+    meta.snap to <state_dir>/backups/state-<ns>.json (plain JSON so
+    tools/restore_backup.py and the H2 drill work unchanged in both modes) and
+    keeps the newest BACKUP_KEEP. Caller wraps in try/except: backup failure
+    must NEVER break persistence (same discipline as file mode)."""
+    if not _cfg.get("state_file"):
+        return
+    cur = read_snapshot()
+    if cur is None:
+        return
+    blob = json.dumps(cur)
+    if len(blob.encode()) < BACKUP_MIN_BYTES:  # small dev states stay clean
+        return
+    bdir = os.path.join(os.path.dirname(os.path.abspath(_cfg["state_file"])), "backups")
+    os.makedirs(bdir, exist_ok=True)
+    try:
+        os.chmod(bdir, 0o700)  # H17: backups hold the same secrets
+    except OSError:
+        pass
+    bpath = os.path.join(bdir, f"state-{time.time_ns()}.json")
+    fd = os.open(bpath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # H17: 0600 from creation
+    with os.fdopen(fd, "w") as f:
+        f.write(blob)
+        f.flush()
+        os.fsync(f.fileno())
+    baks = sorted(f for f in os.listdir(bdir)
+                  if f.startswith("state-") and f.endswith(".json"))
+    for old_b in baks[:-BACKUP_KEEP]:
+        try:
+            os.remove(os.path.join(bdir, old_b))
+        except OSError:
+            pass
+
+
 def write_snapshot(snap):
     if _cfg["mode"] == "sqlite":
+        # B8 parity (2026-09-18): sqlite mode previously kept NO pre-persist
+        # backups while deploy.sh production sets HUB_STORAGE_MODE=sqlite -
+        # mirror the file-mode B8 contract here; never break the write.
+        try:
+            _backup_snap_locked()
+        except Exception as ex:
+            print(f"[BACKUP] warning: sqlite rotation failed ({ex})", flush=True)
         conn = _db()
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")

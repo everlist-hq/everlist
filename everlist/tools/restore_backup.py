@@ -13,6 +13,8 @@ Safety:
 - The CURRENT state.json is saved to state.pre-restore-<ns>.json first — a
   restore can itself be undone.
 - Atomic replace after verification (JSON parses + has the expected keys).
+- sqlite mode (HUB_STORAGE_MODE=sqlite): restores write meta.snap into
+  hub.db via the storage adapter; the undo point is the current DB snapshot.
 
 Usage: python tools/restore_backup.py [--state PATH] (--list | --latest | --file N)
 State path defaults to HUB_STATE_FILE or ./state.json (backups live in <dir>/backups/).
@@ -85,6 +87,26 @@ def restore(state_path, backup_name, dry_run=False):
     if hub_is_live(state_path):
         raise SystemExit("REFUSING: a live hub appears to hold this state lock. "
                          "Stop it first (make down).")
+    if os.environ.get("HUB_STORAGE_MODE", "file").strip().lower() == "sqlite":
+        # B8 parity: in sqlite mode meta.snap inside hub.db is the single
+        # source of truth - restore INTO the DB through the storage adapter
+        # (also rebuilds the derived C6 index in the same transaction).
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import storage
+        db_file = os.path.join(os.path.dirname(state_path), "hub.db")
+        storage.configure(state_path, db_file)
+        cur = storage.read_snapshot()
+        if cur is not None:
+            undo = os.path.join(os.path.dirname(state_path),
+                                f"state.pre-restore-{time.time_ns()}.json")
+            fd = os.open(undo, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(cur, fh)
+            print(f"undo   : current DB snapshot saved -> {os.path.basename(undo)}")
+        storage.write_snapshot(snap)
+        print(f"restored -> {db_file} (meta.snap; sqlite mode)")
+        print("start the hub and verify with: curl <hub>/listings | count + /ledger totals")
+        return
     # keep the current state as an undo point
     if os.path.exists(state_path):
         undo = os.path.join(os.path.dirname(state_path),

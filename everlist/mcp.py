@@ -76,7 +76,9 @@ TOOLS = [
                 'buyer': {'type': 'string'},
                 'client': {'type': 'string'},
                 'worker': {'type': 'string'},
-                'token': {'type': 'string', 'description': 'hub token if no X-Hub-Token header'},
+                # M-B: token removed from the advertised schema — auth is
+                # header-only (X-Hub-Token); a token in tool arguments lands
+                # in the client LLM's visible transcript (injection/exfil risk)
                 'idempotency_key': {'type': 'string'},
             },
         },
@@ -89,7 +91,6 @@ TOOLS = [
             'required': ['booking_id'],
             'properties': {
                 'booking_id': {'type': 'string'},
-                'token': {'type': 'string', 'description': 'hub token if no X-Hub-Token header'},
             },
         },
     },
@@ -215,9 +216,10 @@ def _call_tool(handler, hub_port, name, args):
             raise MCPError(-32000, 'fetch failed (HTTP %s)' % st)
         return res
     if name == 'everlist_book':
-        token = args.get('token') or handler.headers.get('X-Hub-Token', '')
+        # M-B: header-only auth — never accept a token from tool arguments
+        token = handler.headers.get('X-Hub-Token', '')
         if not token:
-            raise MCPError(-32001, 'missing hub token: pass X-Hub-Token header or token argument (see everlist_contract auth)')
+            raise MCPError(-32001, 'missing hub token: pass the X-Hub-Token header (see everlist_contract auth)')
         payload = {'listing_id': args.get('listing_id'), 'human_verified': bool(args.get('human_verified'))}
         if args.get('quantity') is not None:
             payload['quantity'] = args.get('quantity')
@@ -231,9 +233,9 @@ def _call_tool(handler, hub_port, name, args):
         return {'isError': True, 'http_status': st, 'error': res.get('error', 'booking failed'),
                 'hint': res.get('hint', res.get('note', ''))}
     if name == 'everlist_booking':
-        token = args.get('token') or handler.headers.get('X-Hub-Token', '')
+        token = handler.headers.get('X-Hub-Token', '')
         if not token:
-            raise MCPError(-32001, 'missing hub token: pass X-Hub-Token header or token argument')
+            raise MCPError(-32001, 'missing hub token: pass the X-Hub-Token header')
         bid = str(args.get('booking_id', '')).strip()
         if not bid or '/' in bid or '..' in bid:
             raise MCPError(-32602, 'invalid booking id')

@@ -158,14 +158,14 @@ lid = li["id"]
 st, _, call = mcp({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
                    "params": {"name": "everlist_book", "arguments": {
                        "listing_id": lid, "quantity": 1, "human_verified": True,
-                       "attendee": "Ana Attendee", "token": btok}}}, tok=btok)
+                       "attendee": "Ana Attendee"}}}, tok=btok)
 booking = json.loads(result_text(call)) if st == 200 else {}
 check("booking E2E via MCP", booking.get("escrow") in ("HELD", "WAIVED"), call)
 bid = booking.get("id", "")
 
 st, _, call = mcp({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
                    "params": {"name": "everlist_booking", "arguments": {
-                       "booking_id": bid, "token": btok}}})
+                       "booking_id": bid}}}, tok=btok)
 bstat = json.loads(result_text(call)) if st == 200 else {}
 check("booking status via MCP", bstat.get("escrow") in ("HELD", "WAIVED"), call)
 

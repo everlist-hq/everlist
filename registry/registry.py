@@ -55,6 +55,12 @@ MAX_REDIRECTS = 3
 
 _LOCK = threading.Lock()
 REGISTRY = {"open": [], "verified": []}
+# R-cap: /register hardening (2026-09-18) - env-tunable so tests and small
+# deployments can loosen them; defaults sized for a public open tier.
+OPEN_CAP = int(os.environ.get("REG_OPEN_CAP", "1000"))
+REG_PER_SOURCE = int(os.environ.get("REG_REGISTER_PER_SOURCE", "20"))
+REG_WINDOW_S = int(os.environ.get("REG_REGISTER_WINDOW_S", "600"))
+_REG_HITS = {}  # source -> [window_start, count] (fixed window, /register only)
 
 # C6: signed registry document - Ed25519 keypair (persistent, 0600, gitignored
 # via *.key). /registry.json serves {format, payload, signature}; the signature
@@ -335,10 +341,34 @@ class Handler(BaseHTTPRequestHandler):
         if not valid:
             return self._json(400, {"error": f"invalid manifest: {why}"})
 
+        # R-cap: per-source fixed-window limit on the expensive registration
+        # path (each request forces a challenge fetch + manifest fetch); the
+        # limiter sits AFTER format validation so garbage never grows state.
+        src = self.client_address[0]
+        with _LOCK:
+            hit = _REG_HITS.get(src)
+            now = time.time()
+            if hit is None or now - hit[0] >= REG_WINDOW_S:
+                _REG_HITS[src] = [now, 1]
+            else:
+                hit[1] += 1
+                if hit[1] > REG_PER_SOURCE:
+                    return self._json(429, {"error": "registration rate limit reached for your source, retry later"})
         hid = "hub-" + os.urandom(6).hex()
         rec = {"hub_id": hid, "url": url, "tier": "open",
                "registered": time.time(), "manifest": man}
         with _LOCK:
+            # R-cap: dedup - one record per URL; re-registration is refused
+            # honestly instead of growing unbounded duplicate records.
+            if any(r["url"] == url for r in REGISTRY["open"]):
+                dup = next(r["hub_id"] for r in REGISTRY["open"] if r["url"] == url)
+                return self._json(409, {"error": "hub already registered",
+                                        "hub_id": dup,
+                                        "hint": "contact the registry operator to update a manifest"})
+            # R-cap: open-tier capacity with oldest-eviction (bounded memory).
+            if len(REGISTRY["open"]) >= OPEN_CAP:
+                oldest = min(REGISTRY["open"], key=lambda r: r.get("registered", 0))
+                REGISTRY["open"].remove(oldest)
             REGISTRY["open"].append(rec)
             _persist()
         return self._json(201, {"hub_id": hid, "tier": "open",

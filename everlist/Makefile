@@ -144,6 +144,8 @@ test: ## G2 suite + A2A E2E against an ISOLATED gate stack (never touches live)
 		echo '=== Email format suite ==='; $(PYTHON) test_emailkit.py || exit 1; \
 		echo '=== Weekly organizer digest ==='; $(PYTHON) test_digest.py || exit 1; \
 		echo '=== S1 unsub GET landing (red-team regression) ==='; $(PYTHON) test_unsub_get.py || exit 1; \
+		echo '=== S7 cancel refund-window enforcement ==='; $(PYTHON) test_cancel_window.py || exit 1; \
+		echo '=== S8 sqlite-mode backup parity ==='; $(PYTHON) test_sqlite_backups.py || exit 1; \
 		echo '=== H7 account deletion ==='; $(PYTHON) test_account_deletion.py || exit 1; \
 		echo '=== H9 single-listing fetch ==='; $(PYTHON) test_h9_listing_fetch.py || exit 1; \
 		echo '=== H10 booking status ==='; $(PYTHON) test_h10_booking_status.py || exit 1; \
