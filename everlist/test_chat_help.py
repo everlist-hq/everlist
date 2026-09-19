@@ -105,7 +105,7 @@ SIGS = {
     "login": "❌",                            # B10 fix: rejected logins never welcome
     "whoami": "anonymously",                  # probe order: signup(auto-login) -> ... -> logout-all
                                               # REVOKED the session before whoami -> anonymous is CORRECT
-    "fee": "declare their fee openly",
+    "fee": "service fee",
     "book": "Bookings need two things",
     "set-payout": "Login first",             # probe order: logout-all ran earlier -> gate is correct
     "verify-midnight": "Login first",        # same probe order: session revoked before the probe

@@ -348,6 +348,191 @@ _SESSION_TTL = 24 * 3600
 _ACCOUNT_CAP = 25   # verified organizers get a higher listing cap than anonymous chat
 
 
+# ---- U2: conversational listing intake (owner call 2026-09-18: no forms) ----
+# Per-sender guided listing: bare 'list' starts it, answers fill fields one at
+# a time, 'confirm' composes the same rich text _create_listing already
+# parses (one validation path — no duplicate rules), 'cancel' aborts.
+_INTAKE = {}                 # sender -> {fields: {...}, ts: float}
+_INTAKE_CAP = 500            # bounded like _LAST_RESULTS
+_INTAKE_TTL = 15 * 60        # idle intake dies after 15 minutes
+_INTAKE_STEPS = [            # guided order; title+price are the only musts
+    ("title", "the name of your thing", "Rooftop Jazz Night"),
+    ("price", "what it costs in EUR (0 = free)", "15"),
+    ("date", "when it happens (YYYY-MM-DD, or 'any')", "2026-10-03"),
+    ("location", "where (city or address, or 'any')", "Vienna"),
+    ("category", "type of thing (concert, workshop, food, repair, ...)", "concert"),
+    ("capacity", "how many people fit (seats, spots...)", "50"),
+    ("description", "a short pitch — what happens, what to expect", "Live jazz on a rooftop, one set, drinks at the bar"),
+]
+
+
+def _intake_get(sender: str):
+    s = _INTAKE.get(sender)
+    if s and (time.time() - s.get("ts", 0)) > _INTAKE_TTL:
+        _INTAKE.pop(sender, None)
+        return None
+    return s
+
+
+def _intake_put(sender: str, fields: dict):
+    if len(_INTAKE) >= _INTAKE_CAP and sender not in _INTAKE:
+        for k in sorted(_INTAKE, key=lambda k: _INTAKE[k].get("ts", 0))[:len(_INTAKE) // 10]:
+            _INTAKE.pop(k, None)
+    _INTAKE[sender] = {"fields": fields, "ts": time.time()}
+
+
+def _intake_next_question(fields: dict) -> str:
+    """The next unfilled step's question, with a progress line."""
+    skipped = set(fields.get("__skipped", []))
+    for i, (key, what, example) in enumerate(_INTAKE_STEPS):
+        if not fields.get(key) and key not in skipped:
+            done = sum(1 for k, _, _ in _INTAKE_STEPS if fields.get(k) or k in skipped)
+            return (f"[{done + 1}/{len(_INTAKE_STEPS)}] {what}?\n"
+                    f"(example: {example} — or 'skip', 'cancel')")
+    return ""
+
+
+def _intake_reply(hub_url: str, sender: str, text: str) -> str | None:
+    """Conversational listing intake. Returns a reply string, or None when
+    the message isn't intake-related (caller falls through to normal routing).
+    Non-destructive: the one-shot 'list | ...' syntax (agents) is untouched —
+    only bare 'list' starts the guided flow, and any 'list ...' with fields
+    still goes straight to _create_listing."""
+    t = (text or "").strip()
+    low = t.lower()
+    s = _intake_get(sender)
+
+    # --- start: bare 'list' only ---
+    if low == "list":
+        if s:
+            q = _intake_next_question(s["fields"])
+            if q:
+                return "We're already listing something. " + q
+            return _intake_preview(s["fields"])
+        _intake_put(sender, {})
+        return ("\u2728 Let's list it. I'll ask a few things — answer each in one line.\n"
+                + _intake_next_question({}))
+
+    if not s:
+        return None  # not in intake; normal routing
+
+    # --- control words ---
+    if low in ("cancel", "stop", "nevermind", "never mind", "abort"):
+        _INTAKE.pop(sender, None)
+        return "Okay, listing cancelled. Say 'list' whenever you want to try again."
+    if low in ("confirm", "done", "finish", "create it", "publish"):
+        return _intake_create(hub_url, sender, s["fields"])
+    if low in ("yes", "y"):
+        # 'yes' only confirms once every step is answered or skipped
+        skipped = set(s["fields"].get("__skipped", []))
+        if all(s["fields"].get(k) or k in skipped for k, _, _ in _INTAKE_STEPS):
+            return _intake_create(hub_url, sender, s["fields"])
+        return "Not everything is answered yet — " + _intake_next_question(s["fields"])
+    if low in ("skip", "no idea", "dunno", "later", "next"):
+        t = ""  # mark this field skipped, ask the next
+
+    # --- break-out commands (search/book/help/one-shot 'list ...') run
+    # normally; intake survives so 'list' can resume it ---
+    if _INTAKE_BREAK.match(t):
+        return None
+
+    # --- 'key: value' mid-flow corrections (e.g. 'price: 20' at the preview) ---
+    ed = _intake_edit_field(sender, t)
+    if ed:
+        return ed
+
+    # --- fill current step ---
+    fields = dict(s["fields"])
+    skipped = set(fields.pop("__skipped", []))
+    for key, _, _ in _INTAKE_STEPS:
+        if fields.get(key) or key in skipped:
+            continue
+        if t:
+            v = t[:300].strip()
+            if key == "price":
+                try:
+                    float(v.replace(",", ".").replace("\u20ac", "").replace("eur", "").strip())
+                except ValueError:
+                    return "Price must be a number — try again (example: 15, or 0 for free)."
+            if key == "date":
+                v2 = v.lower()
+                if v2 not in ("any", "tbd", "flexible") and not re.match(r"^\d{4}-\d{2}-\d{2}", v2):
+                    return "Dates look like 2026-10-03 — or say 'any' if it has no fixed date."
+            if key == "capacity":
+                try:
+                    int(v)
+                except ValueError:
+                    return "Capacity must be a whole number — try again (example: 50)."
+            fields[key] = v
+        else:
+            skipped.add(key)  # explicit skip: never ask again this round
+        fields["__skipped"] = sorted(skipped)
+        _intake_put(sender, fields)
+        q = _intake_next_question(fields)
+        if q:
+            return ("\u2713 " if t else "") + q
+        return _intake_preview(fields)   # everything answered/skipped
+    return None
+
+
+def _intake_preview(fields: dict) -> str:
+    """Compact recap of what will be created."""
+    skipped = set(fields.get("__skipped", []))
+    bits = []
+    for key, _, _ in _INTAKE_STEPS:
+        if fields.get(key):
+            bits.append(f"{key}: {fields[key]}")
+        elif key in skipped:
+            bits.append(f"{key}: —")
+    return ("Here's your listing:\n" + "\n".join("  " + b for b in bits) +
+            "\n\nSay 'confirm' to publish it, or send changes like 'price: 20' to edit a field.")
+
+
+def _intake_create(hub_url: str, sender: str, fields: dict) -> str:
+    """Compose the rich-format list command and run it through the SAME
+    _create_listing path (one validation chain, no duplicated rules)."""
+    if not fields.get("title"):
+        return "A listing needs at least a title. " + _intake_next_question(fields)
+    if not fields.get("price"):
+        fields["price"] = "0"
+    L = ["list", "title: " + fields["title"], "price: " + str(fields["price"])]
+    for k in ("date", "location", "category", "capacity", "description"):
+        if fields.get(k) and fields[k].lower() not in ("any", "tbd", "flexible"):
+            L.append(f"{k}: " + fields[k])
+    _INTAKE.pop(sender, None)
+    return _create_listing(hub_url, sender, "\n".join(L))
+
+
+def _intake_edit_field(sender: str, text: str) -> str | None:
+    """Handle 'price: 20' style edits while intake is active."""
+    s = _intake_get(sender)
+    if not s:
+        return None
+    m = re.match(r"^([a-z_]{2,20}):\s*(.+)$", (text or "").strip(), re.IGNORECASE)
+    if not m:
+        return None
+    key = m.group(1).lower()
+    known = {k for k, _, _ in _INTAKE_STEPS}
+    if key not in known:
+        return None
+    fields = dict(s["fields"])
+    skipped = set(fields.pop("__skipped", []))
+    skipped.discard(key)  # editing un-skips
+    fields[key] = m.group(2)[:300].strip()
+    fields["__skipped"] = sorted(skipped)
+    _intake_put(sender, fields)
+    return "\u2713 " + _intake_preview(fields)
+
+
+# commands that break out of intake (they run normally; intake stays alive)
+_INTAKE_BREAK = re.compile(
+    r"^(?:search\b|find\b|show\b|browse\b|book\b|help\b|signup\b|login\b|logout\b|whoami\b|"
+    r"account\b|status\b|my-(?:bookings|listings)\b|edit\s|delete\s|archive\s|unarchive\s|"
+    r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|email-|recover\b|delete-account\b|"
+    r"unsubscribe\b|home\b|reset\b)",
+    re.IGNORECASE)
+
+
 def _session(sender: str):
     """Return the session dict for this sender, or None if expired/absent."""
     if len(_SESSIONS) >= _SESSIONS_CAP and sender not in _SESSIONS:
@@ -1297,7 +1482,7 @@ _HELP = (
     "where AI agents book real things.\n\nCommands:\n"
     "• search — all listings; 'search jazz' — filtered; 'find me a free yoga class' — natural language\n"
     "• filters: under/over <price> · from/until <YYYY-MM-DD> · soonest · cheapest (combine freely)\n"
-    "• list <title> | <category> | <date> | <price> | <location> | <capacity> — publish in one message\n"
+    "• list — publish something: guided chat (one question at a time), or all at once: list <title> | <category> | <date> | <price> | <location> | <capacity>\n"
     "• deal <title> | <price> | <date> | <location> | [category] — PRIVATE escrow deal; you get a one-time claim code to send the other party\n"
     "• book <id> <pvt-claim> <name> — book a private deal (claim code = the key)\n"
     "• list\n title: … description: … tags: … url: … verified_only: yes — rich listing (verified_only = Tier-2 buyer gate)\n"
@@ -1649,6 +1834,13 @@ def handle_text(hub_url: str, text: str, sender: str = "") -> str:
 def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
+
+    # --- U2: conversational listing intake (owner call 2026-09-18: no forms).
+    # Bare 'list' starts the guided flow; mid-intake free text fills fields.
+    # One-shot 'list ...' syntax (agents) still routes to _create_listing.
+    _ireply = _intake_reply(hub_url, sender, text or "")
+    if _ireply is not None:
+        return _ireply
 
     # --- one-prompt listing creation (B3c) — before search ('list' vs 'listings')
     if low == "list" or low.startswith("list ") or low.startswith("list\n") or low.startswith("list\r\n"):
